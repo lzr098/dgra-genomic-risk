@@ -1,0 +1,15 @@
+{
+  "id": "dgra-genomic-risk",
+  "name": "DGRA",
+  "version": "0.4.0",
+  "description": "Donor Genomic Risk Assessment with dynamic tissue-context analysis and offline archive",
+  "author": "",
+  "license": "MIT-0",
+  "requires": {
+    "python": ">=3.10",
+    "packages": ["aiohttp", "pandas"]
+  },
+  "entry": "scripts/dgra_core.py",
+  "profiles": ["hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"],
+  "offline_archive": "references/offline_data"
+}
