@@ -31,7 +31,7 @@ description: >
 ### 1. Tissue-Context Adaptive
 
 The same variant gets different tiers depending on clinical context.
-Set context with --tissue. Default: hematopoietic.
+**--tissue is REQUIRED. No default.** Available: hematopoietic, cardiovascular, hepatic, renal, neurological.
 
 ### 2. Three-Tier Classification
 
@@ -69,8 +69,7 @@ Normal mode (queries live APIs, caches + archives results):
 Offline mode (loads archived data if available):
   python3 scripts/dgra_core.py --input donor_variants.tsv --tissue hematopoietic --offline --output offline_report.md
 
-Available tissue profiles: hematopoietic (default), cardiovascular, hepatic, renal, neurological.
-Add profiles by editing references/tissue_context.json -- no code changes needed.
+**--tissue is required.** Available: hematopoietic, cardiovascular, hepatic, renal, neurological.
 
 ## Output
 
@@ -121,7 +120,7 @@ dgra-genomic-risk/
 
 ## Version
 
-DGRA v0.4 -- 2026-05-19
+DGRA v0.4.1 -- 2026-05-20
 
 Key updates from v0.3:
 - API-first architecture with live Ensembl/UniProt/GTEx queries and 30-day SQLite cache
@@ -129,3 +128,9 @@ Key updates from v0.3:
 - Async batch queries with rate limiting and retry
 - special_gene_lists as irreplaceable clinical rules
 - Confidence annotation per result (HIGH/MEDIUM/LOW)
+
+Bug fixes in v0.4.1:
+- **tissue_profile no longer has default** — must be explicitly specified via --tissue or config
+- **UniProt search now prioritizes reviewed/canonical entries** — fixes fragment isoform bug that caused 0% protein domain mapping
+- **Cache JSON corruption handling** — non-JSON API responses no longer poison cache
+- **Hardcoded date removed** — analysis date is now dynamic

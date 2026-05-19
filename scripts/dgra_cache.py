@@ -135,13 +135,19 @@ class DGRACache:
                 )
                 conn.commit()
                 
-                return {
-                    "data": json.loads(row["response_data"]),
-                    "http_status": row["http_status"],
-                    "confidence": row["confidence"],
-                    "from_cache": True,
-                    "expires_at": row["expires_at"],
-                }
+                try:
+                    return {
+                        "data": json.loads(row["response_data"]),
+                        "http_status": row["http_status"],
+                        "confidence": row["confidence"],
+                        "from_cache": True,
+                        "expires_at": row["expires_at"],
+                    }
+                except json.JSONDecodeError:
+                    # Corrupted cache entry — treat as miss and delete
+                    conn.execute("DELETE FROM api_cache WHERE cache_key = ?", (cache_key,))
+                    conn.commit()
+                    return None
             else:
                 # Record miss
                 conn.execute(

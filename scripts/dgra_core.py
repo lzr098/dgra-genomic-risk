@@ -97,18 +97,20 @@ class Variant:
 
 @dataclass
 class DGRAConfig:
-    """User-facing config (kept simple). Maps to DGRAGlobalConfig internally."""
+    """User-facing config (kept simple). Maps to DGRAGlobalConfig internally.
+    v0.4-fix: tissue_profile has NO default — must be specified by user.
+    """
     min_dp: int = 20
     min_gq: float = 90.0
     common_af_threshold: float = 0.01
     low_af_threshold: float = 0.001
     vaf_deviation_threshold: float = 0.20
-    tissue_profile: str = "hematopoietic"
-    offline_mode: bool = False  # v0.4: skip APIs, cache only
+    tissue_profile: Optional[str] = None  # NO default — caller must specify
+    offline_mode: bool = False
 
     def to_global(self) -> DGRAGlobalConfig:
         gc = DGRAGlobalConfig()
-        gc.tissue_profile = self.tissue_profile
+        gc.tissue_profile = self.tissue_profile or ""
         gc.offline_mode = self.offline_mode
         gc.min_dp = self.min_dp
         gc.min_gq = self.min_gq
@@ -118,7 +120,14 @@ class DGRAConfig:
         return gc
 
     def get_tissue_profile(self) -> Dict:
-        """Load tissue profile from references/tissue_context.json."""
+        """Load tissue profile from references/tissue_context.json.
+        Raises if tissue_profile is not set.
+        """
+        if not self.tissue_profile:
+            raise ValueError(
+                "tissue_profile is required. Available profiles: hematopoietic, cardiovascular, "
+                "hepatic, renal, neurological. Specify via --tissue or config.tissue_profile."
+            )
         ref_path = Path(__file__).parent.parent / "references" / "tissue_context.json"
         with open(ref_path, 'r') as f:
             data = json.load(f)
@@ -756,7 +765,7 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     report.append(f"**Analysis Context**: {profile_name}\n")
     report.append(f"**Tissue Profile**: `{config.tissue_profile}`\n")
     report.append(f"**Offline Mode**: {'Yes' if config.offline_mode else 'No'}\n")
-    report.append(f"**Analysis Date**: 2026-05-19\n")
+    report.append(f"**Analysis Date**: {datetime.now().isoformat()}\n")
     report.append(f"**Total Variants Assessed**: {len(variants)}\n")
     report.append(f"**Tier 1 (Action Required)**: {len(tier1)}\n")
     report.append(f"**Tier 2 (Inform & Monitor)**: {len(tier2)}\n")
@@ -1037,7 +1046,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         "meta": {
             "tissue_profile": config.tissue_profile,
             "profile_display_name": profile_name,
-            "analysis_date": "2026-05-19",
+            "analysis_date": datetime.now().isoformat(),
             "total_variants": len(variants),
             "offline_mode": config.offline_mode,
             "api_coverage": {
@@ -1078,8 +1087,8 @@ def main():
     parser.add_argument("--patient-mutations", "-p", help="JSON file with patient somatic mutations")
     parser.add_argument("--output", "-o", default="dgra_report.md", help="Output report file")
     parser.add_argument("--json", "-j", help="Output JSON file with structured results")
-    parser.add_argument("--tissue", "-t", default="hematopoietic",
-                        help="Tissue/organ context profile (default: hematopoietic). "
+    parser.add_argument("--tissue", "-t", required=True,
+                        help="Tissue/organ context profile (REQUIRED). "
                              "Controls which genes are considered relevant for tier classification. "
                              "Available: hematopoietic, cardiovascular, hepatic, renal, neurological")
     parser.add_argument("--offline", action="store_true",

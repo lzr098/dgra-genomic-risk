@@ -135,8 +135,20 @@ class DGRAAPIClient:
                     if http_status == 200:
                         try:
                             data = await response.json()
-                        except:
-                            data = await response.text()
+                        except Exception:
+                            # Try to parse text as JSON fallback
+                            text = await response.text()
+                            try:
+                                data = json.loads(text)
+                            except Exception:
+                                # Not valid JSON — don't cache, return as error
+                                return {
+                                    "data": None,
+                                    "http_status": http_status,
+                                    "from_cache": False,
+                                    "confidence": "low",
+                                    "error": f"HTTP 200 but response is not valid JSON (len={len(text)})",
+                                }
                         
                         # Cache successful response
                         self.cache.set(
@@ -329,14 +341,14 @@ class DGRAAPIClient:
             "confidence": "high|medium|low",
         }
         """
-        # Step 1: Search
+        # Step 1: Search — fetch up to 5 results, prefer reviewed/canonical with longest sequence
         search_result = await self._request_with_retry(
             api_name="uniprot",
             endpoint="/uniprotkb/search",
             params={
                 "query": f"gene:{gene_symbol} AND organism_id:9606",
                 "format": "json",
-                "size": 1,
+                "size": 5,
             },
         )
         
@@ -352,7 +364,7 @@ class DGRAAPIClient:
                 "error": search_result.get("error"),
             }
         
-        # Extract uniprot ID from search results
+        # Extract uniprot ID from search results — prefer reviewed + longest sequence
         search_data = search_result["data"]
         results = search_data.get("results", [])
         if not results:
@@ -367,7 +379,15 @@ class DGRAAPIClient:
                 "error": "No UniProt entry found for gene",
             }
         
-        uniprot_id = results[0].get("primaryAccession")
+        # Pick best entry: reviewed (Swiss-Prot) preferred, then longest sequence
+        def _entry_score(entry):
+            is_reviewed = 1 if entry.get("entryType") == "UniProtKB reviewed (Swiss-Prot)" else 0
+            seq_len = entry.get("sequence", {}).get("length", 0) or 0
+            return (is_reviewed, seq_len)
+        
+        sorted_results = sorted(results, key=_entry_score, reverse=True)
+        best_entry = sorted_results[0]
+        uniprot_id = best_entry.get("primaryAccession")
         
         # Step 2: Fetch full entry
         entry_result = await self._request_with_retry(

@@ -1,4 +1,4 @@
-# DGRA v0.4 Architecture: API-First, Cache-Assisted
+# DGRA v0.4.1 Architecture: API-First, Cache-Assisted
 
 ## Problem Statement
 
