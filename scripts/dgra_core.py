@@ -684,21 +684,109 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
 # Multi-hit Gene Detection
 # =============================================================================
 
-def detect_multi_hit_genes(variants: List[Variant]) -> List[Dict]:
+def _variant_has_pathogenic_evidence(v: Variant, gtex_data: Optional[Dict] = None) -> bool:
     """
-    Detect genes with multiple variants that may require phase analysis.
+    Check if a variant has evidence suggesting pathogenicity.
+    
+    Criteria (OR):
+      1. Affects protein domain (has specific domain mapping, not unknown/inter-domain)
+         AND gene is expressed in target tissue (GTEx TPM >= 1.0)
+      2. ClinVar pathogenic/likely pathogenic or HIGH impact or rare gnomAD (<0.001)
+      3. Splice site change (consequence contains 'splice')
+    
+    Note: Domain impact in non-expressed genes (TPM < 1.0) is irrelevant for
+    the target tissue context.
     """
-    gene_counts = {}
-    for v in variants:
-        gene_counts[v.gene] = gene_counts.get(v.gene, 0) + 1
+    # Quick check: splice site changes are always considered
+    consequence = str(v.consequence or "").lower()
+    if "splice" in consequence:
+        return True
+    
+    # Check tissue expression for domain relevance
+    # If gene is not expressed in target tissue (TPM < 1.0), domain mapping
+    # does not constitute pathogenic evidence for this context
+    tissue_tpm = None
+    if gtex_data and v.gene in gtex_data:
+        tissue_tpm = gtex_data[v.gene].get("median_tpm")
+    
+    # Check ClinVar status for benign exclusion
+    clinvar = str(v.clinvar or "").lower()
+    is_benign = "benign" in clinvar and "conflicting" not in clinvar
+    
+    # 1. Domain impact — only counts if gene is expressed in target tissue
+    # AND variant is not already classified as benign
+    di = v.domain_info
+    if di and not is_benign:
+        domain = di.get("domain", "")
+        if domain and domain not in ("unknown", "N/A", "inter-domain / unannotated"):
+            # Domain impact is only relevant if tissue-expressed
+            if tissue_tpm is not None and tissue_tpm < 1.0:
+                pass  # Low expression: domain not relevant for this tissue
+            else:
+                return True
+    
+    # 2. Pathogenic evidence — always counts regardless of tissue expression
+    if "pathogenic" in clinvar and "conflicting" not in clinvar:
+        return True
+    if v.impact == "HIGH":
+        return True
+    if v.gnomad_af is not None and v.gnomad_af < 0.001:
+        return True
+    
+    # 3. Splice site changes — always considered
+    consequence = str(v.consequence or "").lower()
+    if "splice" in consequence:
+        return True
+    
+    return False
 
+
+def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = None) -> List[Dict]:
+    """
+    Detect genes with multiple pathogenic variants that may require phase analysis.
+    
+    Only counts variants with evidence of pathogenicity:
+      - Domain impact, or
+      - ClinVar pathogenic / HIGH impact / rare gnomAD, or  
+      - Splice site change
+    
+    Normal polymorphisms (benign / common / no domain impact) are excluded.
+    """
+    # Group variants by gene
+    gene_variants = {}
+    for v in variants:
+        gene_variants.setdefault(v.gene, []).append(v)
+    
     multi_hits = []
-    for gene, count in gene_counts.items():
-        if count >= 2:
+    for gene, var_list in gene_variants.items():
+        # Count only variants with pathogenic evidence
+        pathogenic_vars = [v for v in var_list if _variant_has_pathogenic_evidence(v, gtex_data)]
+        
+        if len(pathogenic_vars) >= 2:
+            # Collect details for each pathogenic variant
+            var_details = []
+            for v in pathogenic_vars:
+                detail = {
+                    "hgvsp": v.hgvsp,
+                    "hgvsc": v.hgvsc,
+                    "chrom": v.chrom,
+                    "pos": v.pos,
+                    "impact": v.impact,
+                    "clinvar": v.clinvar,
+                    "gnomad_af": v.gnomad_af,
+                    "consequence": v.consequence,
+                }
+                if v.domain_info:
+                    detail["domain"] = v.domain_info.get("domain")
+                    detail["domain_range"] = v.domain_info.get("domain_range")
+                var_details.append(detail)
+            
             multi_hits.append({
                 "gene": gene,
-                "variant_count": count,
+                "variant_count": len(var_list),           # total variants in gene
+                "pathogenic_count": len(pathogenic_vars),  # variants with evidence
                 "warning": "MULTI_HIT_GENE",
+                "pathogenic_variants": var_details,
                 "phases": {
                     "cis": "Both variants on same allele → other allele normal → heterozygous function retained",
                     "trans": "Variants on different alleles → compound heterozygous → function may be severely impaired"
@@ -800,54 +888,101 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     if tier1:
         report.append("---\n\n## 🔴 Tier 1: Action Required\n")
         report.append(f"*Variants requiring intervention for {profile_name} context*\n\n")
-        for i, v in enumerate(tier1, 1):
-            report.append(f"### {i}. {v.gene} - {v.hgvsp or v.hgvsc}\n")
-            report.append(f"| Attribute | Value |\n")
-            report.append(f"|-----------|-------|\n")
-            report.append(f"| Position | {v.chrom}:{v.pos} |\n")
-            report.append(f"| Zygosity | {v.gt} |\n")
-            report.append(f"| Impact | {v.impact} |\n")
-            report.append(f"| ClinVar | {v.clinvar or 'Not provided'} |\n")
-            report.append(f"| gnomAD | {v.gnomad_status or 'Not queried'} |\n")
-            if v.domain_info:
+        
+        # Group by gene
+        from collections import OrderedDict
+        gene_groups = OrderedDict()
+        for v in tier1:
+            gene_groups.setdefault(v.gene, []).append(v)
+        
+        for gene, var_list in gene_groups.items():
+            report.append(f"### {gene}\n")
+            
+            # Gene summary
+            report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
+            
+            # Variant table
+            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 说明 |\n")
+            report.append("|---|-----------|--------|---------|--------|--------|---------|------|\n")
+            
+            for i, v in enumerate(var_list, 1):
+                # Position
+                pos = f"{v.chrom}:{v.pos}"
+                
+                # Transcript
+                tx = v.transcript or "N/A"
+                
+                # Variant name
+                var_name = v.hgvsp or v.hgvsc or "N/A"
+                
+                # Domain
                 di = v.domain_info
-                report.append(f"| Domain | {di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')}) |\n")
-                report.append(f"| Domain Function | {di.get('function', 'N/A')} |\n")
-                report.append(f"| Damage | {di.get('damage_type', 'N/A')} |\n")
-            if v.tissue_relevance:
-                tr = v.tissue_relevance
-                report.append(f"| Tissue Relevance | {tr.get('relevance', 'N/A')} |\n")
-                report.append(f"| Rationale | {tr.get('rationale', 'N/A')[:60]} |\n")
-            report.append(f"\n**Action Required**: {v.tier_reason}\n")
-            if v.tier_actions:
-                report.append(f"**Recommended Actions**:\n")
-                for a in v.tier_actions:
-                    report.append(f"- {a}\n")
-            report.append(f"\n")
+                if di:
+                    domain = f"{di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')})"
+                else:
+                    domain = "N/A"
+                
+                # Zygosity
+                zyg = v.gt or "N/A"
+                
+                # ClinVar
+                clin = v.clinvar or "N/A"
+                
+                # Reason (shortened)
+                reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
+                reason = reason.replace("|", "/")  # avoid markdown table break
+                
+                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {reason} |\n")
+            
+            report.append(f"\n**详细说明**:\n")
+            for i, v in enumerate(var_list, 1):
+                report.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}):\n")
+                report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
+                if v.domain_info:
+                    di = v.domain_info
+                    report.append(f"   - 功能域: {di.get('domain', 'N/A')} {di.get('domain_range', 'N/A')}\n")
+                rp = di.get('relative_position')
+                if isinstance(rp, (int, float)):
+                    report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp:.2f})\n")
+                else:
+                    report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp})\n")
+                    report.append(f"   - 损伤评估: {di.get('damage_type', 'N/A')}\n")
+                if v.tissue_relevance:
+                    tr = v.tissue_relevance
+                    report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
+                report.append(f"   - 分级原因: {v.tier_reason}\n")
+                if v.tier_actions:
+                    report.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
+                report.append(f"\n")
 
     # Tier 2
     if tier2:
         report.append("---\n\n## 🟡 Tier 2: Inform & Monitor\n")
         report.append(f"*Variants donors should be informed of for {profile_name} context*\n\n")
+        
         for i, v in enumerate(tier2, 1):
-            report.append(f"### {i}. {v.gene} - {v.hgvsp or v.hgvsc}\n")
-            report.append(f"| Attribute | Value |\n")
-            report.append(f"|-----------|-------|\n")
-            report.append(f"| Position | {v.chrom}:{v.pos} |\n")
-            report.append(f"| Zygosity | {v.gt} |\n")
-            report.append(f"| Impact | {v.impact} |\n")
+            report.append(f"### {i}. {v.gene}\n")
+            report.append(f"| 属性 | 值 |\n")
+            report.append(f"|------|-----|\n")
+            report.append(f"| 染色体位置 | {v.chrom}:{v.pos} |\n")
+            report.append(f"| 转录本 | {v.transcript or 'N/A'} |\n")
+            report.append(f"| 变异 | {v.hgvsp or v.hgvsc or 'N/A'} |\n")
+            report.append(f"| 合子型 | {v.gt or 'N/A'} |\n")
+            report.append(f"| 影响程度 | {v.impact} |\n")
+            report.append(f"| 后果 | {v.consequence} |\n")
             report.append(f"| ClinVar | {v.clinvar or 'Not provided'} |\n")
             report.append(f"| gnomAD | {v.gnomad_status or 'Not queried'} |\n")
             if v.domain_info:
                 di = v.domain_info
-                report.append(f"| Domain | {di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')}) |\n")
-                report.append(f"| Damage | {di.get('damage_type', 'N/A')} |\n")
+                report.append(f"| 功能域 | {di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')}) |\n")
+                report.append(f"| 域内位置 | {di.get('position_in_domain', 'N/A')} |\n")
+                report.append(f"| 损伤评估 | {di.get('damage_type', 'N/A')} |\n")
             if v.tissue_relevance:
                 tr = v.tissue_relevance
-                report.append(f"| Tissue Relevance | {tr.get('relevance', 'N/A')} |\n")
-            report.append(f"\n**Reason for Tier 2**: {v.tier_reason}\n")
+                report.append(f"| 组织相关性 | {tr.get('relevance', 'N/A')} |\n")
+            report.append(f"\n**Tier 2 原因**: {v.tier_reason}\n")
             if v.tier_actions:
-                report.append(f"**Actions**:\n")
+                report.append(f"**建议措施**:\n")
                 for a in v.tier_actions:
                     report.append(f"- {a}\n")
             report.append(f"\n")
@@ -856,28 +991,47 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     if tier3:
         report.append("---\n\n## 🟢 Tier 3: No Concern\n")
         report.append(f"*Variants with no {profile_name} relevance*\n\n")
-        report.append("| # | Gene | Variant | Reason | Relevance |\n")
-        report.append("|---|------|---------|--------|-----------|\n")
-        for i, v in enumerate(tier3, 1):
-            reason = v.tier_reason[:60] + "..." if len(v.tier_reason) > 60 else v.tier_reason
-            rel = v.tissue_relevance.get("relevance", "unknown") if v.tissue_relevance else "unknown"
-            report.append(f"| {i} | {v.gene} | {v.hgvsp or v.hgvsc} | {reason} | {rel} |\n")
+        
+        # Group by gene
+        gene_groups_t3 = {}
+        for v in tier3:
+            gene_groups_t3.setdefault(v.gene, []).append(v)
+        
+        for gene, var_list in gene_groups_t3.items():
+            if len(var_list) <= 3:
+                # Short list: inline table
+                report.append(f"**{gene}** ({len(var_list)} variants):\n")
+                report.append("| 位置 | 变异 | 功能域 | 原因 |\n")
+                report.append("|------|------|--------|------|\n")
+                for v in var_list:
+                    pos = f"{v.chrom}:{v.pos}"
+                    var_name = v.hgvsp or v.hgvsc or "N/A"
+                    di = v.domain_info
+                    domain = f"{di.get('domain', 'N/A')}" if di else "N/A"
+                    reason = v.tier_reason[:50] + "..." if len(v.tier_reason) > 50 else v.tier_reason
+                    reason = reason.replace("|", "/")
+                    report.append(f"| {pos} | {var_name} | {domain} | {reason} |\n")
+                report.append(f"\n")
+            else:
+                # Many variants: just count
+                report.append(f"**{gene}**: {len(var_list)} variants — 详见原始数据\n\n")
+        
         report.append(f"\n")
 
     # Methodology
-    report.append("---\n\n## Methodology Appendix\n")
-    report.append(f"### Tissue Context: {profile_name}\n")
-    report.append(f"- **GTEx Reference Tissue**: {tissue_profile.get('gtex_tissue', 'N/A')}\n")
-    report.append(f"- **Fast Track Rule**: {tissue_profile.get('fast_track_rule', 'N/A')}\n\n")
-    report.append("### Analysis Pipeline\n")
-    report.append("1. **Transcript Priority Correction**: Ensembl REST API → canonical transcript → local fallback\n")
-    report.append("2. **Pseudogene Detection**: VAF deviation analysis for known pseudogene pairs\n")
-    report.append("3. **gnomAD Integration**: AF>1% common; AF<0.1% rare; NOT_CAPTURED explicitly labeled\n")
-    report.append("4. **Protein Domain Mapping**: UniProt REST API → DOMAIN/REGION features → local fallback\n")
-    report.append("5. **Tissue Relevance Assessment**: GTEx API → median RPKM → auto-classify + local fallback\n")
-    report.append("6. **Three-Tier Classification**: Action (Tier 1) → Inform (Tier 2) → No concern (Tier 3)\n")
-    report.append("7. **Patient-Donor Cross-check**: Inheritance of somatic driver mutations\n")
-    report.append("8. **Caching**: All API responses cached 30 days (SQLite); offline mode uses cache only\n")
+    report.append("---\n\n## 方法学附录\n")
+    report.append(f"### 组织背景: {profile_name}\n")
+    report.append(f"- **GTEx 参考组织**: {tissue_profile.get('gtex_tissue', 'N/A')}\n")
+    report.append(f"- **快速排除规则**: {tissue_profile.get('fast_track_rule', 'N/A')}\n\n")
+    report.append("### 分析流程\n")
+    report.append("1. **转录本校正**: Ensembl REST API → canonical transcript → 本地回退\n")
+    report.append("2. **假基因检测**: VAF 偏差分析识别已知假基因对\n")
+    report.append("3. **gnomAD 整合**: AF>1% 常见; AF<0.1% 罕见; NOT_CAPTURED 明确标注\n")
+    report.append("4. **蛋白功能域映射**: UniProt REST API → DOMAIN/REGION 特征 → 本地回退\n")
+    report.append("5. **组织相关性评估**: GTEx API → median TPM → 自动分级 + 本地回退\n")
+    report.append("6. **三级分类**: Action (Tier 1) → Inform (Tier 2) → No concern (Tier 3)\n")
+    report.append("7. **患者-供者交叉核对**: 体细胞驱动突变的遗传检测\n")
+    report.append("8. **缓存**: 所有 API 响应缓存 30 天 (SQLite); 离线模式仅用缓存\n")
 
     return "\n".join(report)
 
@@ -1010,7 +1164,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         v.tissue_relevance = tissue
 
     # Step 6: Multi-hit detection (unchanged)
-    multi_hits = detect_multi_hit_genes(variants)
+    multi_hits = detect_multi_hit_genes(variants, gtex_data)
 
     # Step 7: Three-tier classification (with tissue context)
     for v in variants:
@@ -1040,9 +1194,18 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     hla_multi_hits = {g for g in multi_hit_genes if g in _HLA_GENES}
     multi_hit_genes -= hla_multi_hits  # Exclude from elevation
     
+    # v0.4.4: Only elevate variants that themselves have pathogenic evidence.
+    # A gene may have 6 variants but only 3 pass _variant_has_pathogenic_evidence;
+    # only those 3 should be elevated, not all 6.
     for v in variants:
         if v.gene in multi_hit_genes and v.tier > 1:
-            v.tier = 1
+            if _variant_has_pathogenic_evidence(v, gtex_data):
+                v.tier = 1
+                v.tier_reason += " | ELEVATED: Multi-hit gene, phase unknown. Must confirm cis/trans."
+                actions = v.tier_actions or []
+                actions.append("URGENT: Confirm phase before final assessment")
+                v.tier_actions = actions
+            # Variants without pathogenic evidence remain at their original tier
             v.tier_reason += " | ELEVATED: Multi-hit gene, phase unknown. Must confirm cis/trans."
             v.tier_actions.append("URGENT: Confirm phase before final assessment")
     
