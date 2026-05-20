@@ -129,6 +129,7 @@ class DGRAAPIClient:
                     params=params,
                     json=json_body,
                     headers=headers,
+                    proxy=cfg.proxy,  # Explicit proxy from config; falls back to env via trust_env if None
                     timeout=aiohttp.ClientTimeout(total=cfg.timeout),
                 ) as response:
                     http_status = response.status
