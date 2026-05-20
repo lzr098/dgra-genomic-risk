@@ -52,22 +52,22 @@ class DGRAGlobalConfig:
     apis: Dict[str, APIConfig] = field(default_factory=lambda: {
         "ensembl": APIConfig(
             base_url="https://rest.ensembl.org",
-            timeout=15.0,
+            timeout=30.0,
             max_retries=3,
             retry_delay=1.0,
-            rate_limit_per_sec=15.0,  # Ensembl is generous
+            rate_limit_per_sec=15.0,
         ),
         "uniprot": APIConfig(
             base_url="https://rest.uniprot.org",
-            timeout=20.0,
+            timeout=45.0,
             max_retries=3,
             retry_delay=2.0,
-            rate_limit_per_sec=5.0,  # UniProt is stricter
+            rate_limit_per_sec=5.0,
         ),
         "gtex": APIConfig(
-            base_url="https://gtexportal.org/rest/v1",
+            base_url="https://gtexportal.org/api/v2",
             timeout=30.0,
-            max_retries=2,
+            max_retries=3,
             retry_delay=2.0,
             rate_limit_per_sec=3.0,
         ),

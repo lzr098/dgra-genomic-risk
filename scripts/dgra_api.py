@@ -52,8 +52,8 @@ class DGRAAPIClient:
     
     async def __aenter__(self):
         self._session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=10, limit_per_host=5),
-            timeout=aiohttp.ClientTimeout(total=60),
+            connector=aiohttp.TCPConnector(limit=50, limit_per_host=20),
+            timeout=aiohttp.ClientTimeout(total=120),
         )
         return self
     
@@ -401,7 +401,7 @@ class DGRAAPIClient:
             # Extract domains from features
             domains = []
             for feature in data.get("features", []):
-                if feature.get("type") in ("DOMAIN", "REGION", "REPEAT", "ZN_FING", "DNA_BIND"):
+                if feature.get("type", "").lower() in ("domain", "region", "repeat", "zn_fing", "dna_bind"):
                     loc = feature.get("location", {})
                     start = loc.get("start", {}).get("value")
                     end = loc.get("end", {}).get("value")
@@ -467,46 +467,101 @@ class DGRAAPIClient:
     
     async def query_gtex_expression(self, gene_id: str, tissue: str) -> Dict[str, Any]:
         """
-        Query GTEx for median expression in a specific tissue.
+        Query GTEx v2 API for median gene expression in a specific tissue.
         
-        Note: GTEx API uses Ensembl gene IDs (ENSG...) or gene symbols.
+        GTEx v2 requires versioned gencodeIds (e.g. ENSG00000110799.13).
+        Two-step process:
+          1. Resolve gene symbol -> versioned gencodeId (cached)
+          2. Query medianGeneExpression endpoint
         
         Returns:
         {
-            "gene": "MYH11",
-            "tissue": "Heart - Left Ventricle",
-            "median_rpkm": 45.2,
-            "unit": "RPKM",
+            "gene": "VWF",
+            "tissue": "Whole_Blood",
+            "median_tpm": 268.7,
+            "unit": "TPM",
             "source": "gtex|cache",
             "confidence": "medium",
         }
         """
+        # --- Step 1: Resolve gene symbol -> versioned gencodeId ---
+        gencode_map = self._load_gencode_cache()
+        gencode_id = gencode_map.get(gene_id)
+        
+        if not gencode_id:
+            # Query GTEx get_genes endpoint
+            search_result = await self._request_with_retry(
+                api_name="gtex",
+                endpoint="/reference/gene",
+                params={
+                    "geneId": gene_id,
+                    "page": 0,
+                    "itemsPerPage": 10,
+                },
+            )
+            
+            if search_result["data"] and search_result["http_status"] == 200:
+                data = search_result["data"]
+                items = data.get("data", [])
+                if items:
+                    # Prefer exact symbol match
+                    for item in items:
+                        if item.get("geneSymbol") == gene_id:
+                            gencode_id = item.get("gencodeId")
+                            break
+                    if not gencode_id:
+                        gencode_id = items[0].get("gencodeId")
+                
+                if gencode_id:
+                    gencode_map[gene_id] = gencode_id
+                    self._save_gencode_cache(gencode_map)
+        
+        if not gencode_id:
+            return {
+                "gene": gene_id,
+                "tissue": tissue,
+                "median_tpm": None,
+                "unit": "TPM",
+                "source": "failed",
+                "confidence": "low",
+                "error": f"Could not resolve gencodeId for {gene_id}",
+            }
+        
+        # --- Step 2: Query medianGeneExpression ---
+        # GTEx tissue IDs use underscores: "Whole_Blood", "Heart_Left_Ventricle"
+        gtex_tissue = tissue.replace(" - ", "_").replace(" ", "_")
+        
         result = await self._request_with_retry(
             api_name="gtex",
-            endpoint="/expression/gene",
+            endpoint="/expression/medianGeneExpression",
             params={
-                "geneId": gene_id,
-                "tissue": tissue,
-                "format": "json",
+                "gencodeId": gencode_id,
+                "tissueSiteDetailIds": gtex_tissue,
+                "datasetId": "gtex_v8",
             },
         )
         
         if result["data"] and result["http_status"] == 200:
             data = result["data"]
-            # GTEx returns list of expression records
-            # Parse median RPKM
+            items = data.get("data", [])
+            
+            # Find the tissue-specific record
             median_val = None
-            if isinstance(data, list) and len(data) > 0:
-                first = data[0]
-                median_val = first.get("median")
-            elif isinstance(data, dict):
-                median_val = data.get("median")
+            for item in items:
+                if item.get("tissueSiteDetailId") == gtex_tissue:
+                    median_val = item.get("median")
+                    break
+            
+            # Fallback: if tissue not found but data exists, return first (for debugging)
+            if median_val is None and items:
+                median_val = items[0].get("median")
             
             return {
                 "gene": gene_id,
                 "tissue": tissue,
-                "median_rpkm": median_val,
-                "unit": "RPKM",
+                "median_tpm": median_val,
+                "unit": "TPM",
+                "gencode_id": gencode_id,
                 "source": "cache" if result["from_cache"] else "gtex",
                 "confidence": result["confidence"],
                 "raw": data,
@@ -515,12 +570,33 @@ class DGRAAPIClient:
         return {
             "gene": gene_id,
             "tissue": tissue,
-            "median_rpkm": None,
-            "unit": "RPKM",
+            "median_tpm": None,
+            "unit": "TPM",
+            "gencode_id": gencode_id,
             "source": "failed",
             "confidence": "low",
             "error": result.get("error"),
         }
+    
+    def _load_gencode_cache(self) -> Dict[str, str]:
+        """Load gene symbol -> gencodeId mapping cache."""
+        _script_dir = Path(__file__).resolve().parent
+        cache_path = _script_dir / ".." / "references" / "offline_data" / "gtex_gencode_map.json"
+        if cache_path.exists():
+            try:
+                with open(cache_path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+    
+    def _save_gencode_cache(self, cache: Dict[str, str]) -> None:
+        """Save gene symbol -> gencodeId mapping cache."""
+        _script_dir = Path(__file__).resolve().parent
+        cache_path = _script_dir / ".." / "references" / "offline_data" / "gtex_gencode_map.json"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(cache, f, indent=2, sort_keys=True)
     
     # =====================================================================
     # gnomAD GraphQL API
@@ -735,46 +811,57 @@ class DGRAAPIClient:
     async def batch_query_genes(
         self,
         gene_symbols: List[str],
-        query_type: str = "uniprot",  # ensembl, uniprot, gtex
+        query_type: str = "uniprot",
         **kwargs
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Execute batch queries concurrently with rate limiting.
+        Execute batch queries with controlled concurrency.
         
-        Args:
-            gene_symbols: List of gene symbols
-            query_type: Which API to query
-            **kwargs: Additional params for specific API (e.g., tissue for GTEx)
-        
-        Returns:
-            Dict mapping gene_symbol -> API response dict
+        Strategy: semaphore (max 20 concurrent) + chunked batches (30 per batch)
+        to avoid overwhelming public APIs while maintaining throughput.
         """
-        tasks = {}
-        for gene in gene_symbols:
-            if query_type == "uniprot":
-                task = self.query_uniprot_by_gene(gene)
-            elif query_type == "ensembl":
-                task = self.query_ensembl_gene(gene)
-            elif query_type == "gtex":
-                tissue = kwargs.get("tissue", "Whole Blood")
-                task = self.query_gtex_expression(gene, tissue)
-            else:
-                raise ValueError(f"Unknown query_type: {query_type}")
+        CHUNK_SIZE = 30
+        MAX_CONCURRENT = 20
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+        
+        async def _query_one(gene: str) -> Dict[str, Any]:
+            async with semaphore:
+                if query_type == "uniprot":
+                    return await self.query_uniprot_by_gene(gene)
+                elif query_type == "ensembl":
+                    return await self.query_ensembl_gene(gene)
+                elif query_type == "gtex":
+                    tissue = kwargs.get("tissue", "Whole Blood")
+                    return await self.query_gtex_expression(gene, tissue)
+                else:
+                    raise ValueError(f"Unknown query_type: {query_type}")
+        
+        results = {}
+        total = len(gene_symbols)
+        
+        for i in range(0, total, CHUNK_SIZE):
+            chunk = gene_symbols[i:i + CHUNK_SIZE]
+            # Create tasks for this chunk
+            chunk_tasks = {gene: asyncio.create_task(_query_one(gene)) for gene in chunk}
+            # Wait for all in this chunk
+            chunk_results = await asyncio.gather(*chunk_tasks.values(), return_exceptions=True)
+            # Store results
+            for gene, result in zip(chunk_tasks.keys(), chunk_results):
+                if isinstance(result, Exception):
+                    results[gene] = {
+                        "gene": gene,
+                        "source": "failed",
+                        "confidence": "low",
+                        "error": str(result),
+                    }
+                else:
+                    results[gene] = result
             
-            tasks[gene] = task
+            # Brief pause between chunks to be polite to APIs
+            if i + CHUNK_SIZE < total:
+                await asyncio.sleep(0.5)
         
-        # Execute all concurrently (asyncio will respect per-API rate limits)
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        
-        return {
-            gene: (result if not isinstance(result, Exception) else {
-                "gene": gene,
-                "source": "failed",
-                "confidence": "low",
-                "error": str(result),
-            })
-            for gene, result in zip(tasks.keys(), results)
-        }
+        return results
 
 
 # =============================================================================

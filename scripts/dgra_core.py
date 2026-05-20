@@ -298,9 +298,13 @@ def classify_gnomad_frequency(af: Optional[float], gene: str) -> Dict:
 # as uniprot_data dict to this function.
 
 def parse_protein_position(hgvsp: str) -> Optional[int]:
-    """Extract amino acid position from p. string."""
+    """Extract amino acid position from p. string. Handles NP_ prefix."""
     if not hgvsp or hgvsp == "":
         return None
+    # Strip NP_ prefix if present: NP_000543.3:p.Val1565Leu -> p.Val1565Leu
+    if ':p.' in hgvsp:
+        hgvsp = hgvsp.split(':p.', 1)[1]
+        hgvsp = 'p.' + hgvsp
     # Match p.XXX123 or p.Ala123 or p.123
     match = re.search(r'p\.[A-Za-z]+(\d+)', hgvsp)
     if match:
@@ -402,8 +406,8 @@ def map_variant_to_domain(variant: Variant, uniprot_data: Dict[str, Dict]) -> Di
                 "gene": gene,
                 "source": up.get("source", "unknown"),
                 "confidence": up.get("confidence", "medium"),
-                "interpro_id": up.get("interpro_ids", [None])[0],
-                "interpro_url": f"https://www.ebi.ac.uk/interpro/entry/InterPro/{up.get('interpro_ids', [None])[0]}/" if up.get("interpro_ids") else None,
+                "interpro_id": (up.get("interpro_ids") or [None])[0],
+                "interpro_url": f"https://www.ebi.ac.uk/interpro/entry/InterPro/{(up.get('interpro_ids') or [None])[0]}/" if (up.get("interpro_ids") or [None])[0] else None,
             }
     
     # Position outside all annotated domains
@@ -414,8 +418,8 @@ def map_variant_to_domain(variant: Variant, uniprot_data: Dict[str, Dict]) -> Di
         "gene": gene,
         "source": up.get("source", "unknown"),
         "confidence": up.get("confidence", "medium"),
-        "interpro_id": up.get("interpro_ids", [None])[0],
-        "interpro_url": f"https://www.ebi.ac.uk/interpro/entry/InterPro/{up.get('interpro_ids', [None])[0]}/" if up.get("interpro_ids") else None,
+        "interpro_id": (up.get("interpro_ids") or [None])[0],
+        "interpro_url": f"https://www.ebi.ac.uk/interpro/entry/InterPro/{(up.get('interpro_ids') or [None])[0]}/" if (up.get("interpro_ids") or [None])[0] else None,
     }
 
 # =============================================================================
@@ -428,33 +432,33 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
     Assess if gene is relevant to target tissue/organ context.
     
     Priority:
-    1. GTEx API expression data (if available) — auto-classify by RPKM thresholds
+    1. GTEx API expression data (if available) — auto-classify by TPM thresholds
     2. Local tissue_context.json profile (fallback for API failures)
     3. Unknown if neither available — conservative, do NOT fast-track
     
     Args:
         variant: Variant object
         tissue_profile: Loaded tissue profile (tier_rules + special_gene_lists)
-        gtex_data: Pre-fetched GTEx data {gene: {median_rpkm, ...}}
+        gtex_data: Pre-fetched GTEx data {gene: {median_tpm, ...}}
     """
     gene = variant.gene
     profile_name = tissue_profile.get("display_name", "target tissue")
     
     # --- Priority 1: GTEx API data ---
     gtex = gtex_data.get(gene, {})
-    rpkm = gtex.get("median_rpkm")
+    tpm = gtex.get("median_tpm")
     
-    if rpkm is not None:
+    if tpm is not None:
         # Auto-classify based on expression + ClinVar status
-        if rpkm >= 10.0:
+        if tpm >= 10.0:
             relevance = "primary"
-            rationale = f"High {profile_name} expression (RPKM={rpkm:.1f}) per GTEx."
-        elif rpkm >= 1.0:
+            rationale = f"High {profile_name} expression (TPM={tpm:.1f}) per GTEx."
+        elif tpm >= 1.0:
             relevance = "secondary"
-            rationale = f"Moderate {profile_name} expression (RPKM={rpkm:.1f}) per GTEx."
-        elif rpkm > 0:
+            rationale = f"Moderate {profile_name} expression (TPM={tpm:.1f}) per GTEx."
+        elif tpm > 0:
             relevance = "none"
-            rationale = f"Low {profile_name} expression (RPKM={rpkm:.2f}) per GTEx."
+            rationale = f"Low {profile_name} expression (TPM={tpm:.2f}) per GTEx."
         else:
             relevance = "none"
             rationale = f"No detectable {profile_name} expression per GTEx."
@@ -465,22 +469,22 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
                 return {
                     "tier_suggestion": 2,
                     "relevance": relevance,
-                    "reason": f"{gene} is not {profile_name}-relevant (GTEx RPKM={rpkm:.2f}) but ClinVar pathogenic.",
+                    "reason": f"{gene} is not {profile_name}-relevant (GTEx TPM={tpm:.2f}) but ClinVar pathogenic.",
                     "clinical_note": "Inform donor, record in medical history. Does not affect decision for this context.",
                     "fast_track": False,
                     "rationale": rationale,
-                    "gtex_rpkm": rpkm,
+                    "gtex_tpm": tpm,
                     "source": gtex.get("source", "gtex"),
                 }
             
             return {
                 "tier_suggestion": 3,
                 "relevance": relevance,
-                "reason": f"{gene} has no {profile_name} relevance (GTEx RPKM={rpkm:.2f}).",
+                "reason": f"{gene} has no {profile_name} relevance (GTEx TPM={tpm:.2f}).",
                 "clinical_note": f"No impact on {profile_name} function or safety.",
                 "fast_track": True,
                 "rationale": rationale,
-                "gtex_rpkm": rpkm,
+                "gtex_tpm": tpm,
                 "source": gtex.get("source", "gtex"),
             }
         
@@ -488,10 +492,10 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
         return {
             "tier_suggestion": "assess_via_standard_pipeline",
             "relevance": relevance,
-            "gtex_rpkm": rpkm,
+            "gtex_tpm": tpm,
             "rationale": rationale,
             "fast_track": False,
-            "clinical_note": f"{gene} is {relevance}-relevant to {profile_name} (GTEx RPKM={rpkm:.1f}).",
+            "clinical_note": f"{gene} is {relevance}-relevant to {profile_name} (GTEx TPM={tpm:.1f}).",
             "source": gtex.get("source", "gtex"),
         }
     
