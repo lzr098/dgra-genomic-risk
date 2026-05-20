@@ -54,6 +54,7 @@ class DGRAAPIClient:
         self._session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=50, limit_per_host=20),
             timeout=aiohttp.ClientTimeout(total=120),
+            trust_env=True,  # Auto-read HTTP_PROXY / HTTPS_PROXY from environment
         )
         return self
     

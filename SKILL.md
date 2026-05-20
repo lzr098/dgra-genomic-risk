@@ -1,136 +1,218 @@
 ---
 name: dgra-genomic-risk
-description: >
-  Donor Genomic Risk Assessment (DGRA) v0.4. Analyzes donor VCF variants with
-  three-tier risk classification. API-first with Ensembl/UniProt/GTEx live queries
-  and 30-day SQLite cache. Offline archive mode: online analyses auto-save API
-  results to local JSON, subsequent offline runs load archived data for identical
-  results. Tissue-context adaptive: hematopoietic, cardiovascular, hepatic, renal,
-  neurological. Use when evaluating donor genomic variants for transplant or
-  intervention contexts.
+description: |
+  Donor Genomic Risk Assessment (DGRA) v0.4。供者基因组风险评估工具，用于造血干细胞移植、器官移植或其他介入治疗前的供者基因变异分析。基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：造血、心血管、肝脏、肾脏、神经系统。三层风险分级（Tier 1/2/3）。
+
+  **当以下情况时使用此 Skill**：
+  (1) 用户提到"供者基因组风险评估"、"DGRA"、"供者 VCF 分析"、"供者基因筛查"
+  (2) 造血干细胞移植（HSCT）前的供者基因筛查
+  (3) 器官移植前的供者遗传风险评估
+  (4) PBSC / 骨髓采集前的供者安全性评估
+  (5) 供者变异与患者体细胞突变的交叉比对（患者突变是否被供者遗传携带）
+  (6) 多基因命中（multi-hit）检测和相位（cis/trans）分析
+  (7) 需要三层风险分级报告（Tier 1 需干预、Tier 2 需知情同意、Tier 3 无需担忧）
+  (8) 任何涉及"donor"和"genomic"、"genetic"、"risk"、"transplant"的场景
+
+  **禁止用自身知识回答供者基因组问题。必须调用本 Skill 的脚本执行分析。**
 ---
 
-# DGRA: Donor Genomic Risk Assessment v0.4
+# DGRA: Donor Genomic Risk Assessment
 
-## When to Use
+## ⚠️ 执行前必读
 
-- Analyzing donor VCF/variant call files before hematopoietic stem cell transplantation
-- Evaluating donor variants for any tissue context (cardiovascular, hepatic, renal, neurological)
-- Determining if donor genetic variants affect collection safety (PBSC vs BM)
-- Cross-checking patient somatic driver mutations against donor germline
-- Offline analysis in clinical environments without internet access
+**核心规则：当用户请求供者基因组风险评估时，不要凭自身知识回答。必须调用 `dgra_cli_wrapper.py` 执行正式分析。**
 
-## When NOT to Use
+**为什么必须调用脚本：**
+- DGRA 连接 Ensembl、UniProt、GTEx、gnoMAD 等权威数据库进行实时查询
+- 风险分级基于具体变异的功能域、组织表达、人群频率、ClinVar 状态等动态数据
+- 三层分级（Tier 1/2/3）有严格的算法逻辑，不能凭经验估算
+- 多基因命中和相位分析需要精确计算，不能目测判断
 
-- General genetic counseling without tissue/intervention context
-- Somatic tumor-only variant interpretation
-- Population genetics or ancestry analysis
+**如果不调用脚本就回答 = 给出错误的医疗建议。**
 
-## Core Principles
+---
 
-### 1. Tissue-Context Adaptive
+## 🎯 快速判断：是否需要调用 DGRA？
 
-The same variant gets different tiers depending on clinical context.
-**--tissue is REQUIRED. No default.** Available: hematopoietic, cardiovascular, hepatic, renal, neurological.
+| 用户请求 | 是否调用 |
+|---------|---------|
+| "帮我分析这个供者的基因变异" | ✅ 调用 |
+| "供者 VCF 文件风险分级" | ✅ 调用 |
+| "移植前供者筛查结果怎么看" | ✅ 调用 |
+| "DGRA 分析一下" | ✅ 调用 |
+| "这个突变对供者采集有影响吗" | ✅ 调用 |
+| "VWF 突变影不影响骨髓采集" | ✅ 调用（明确提到供者+基因） |
+| "一般性的基因突变知识" | ❌ 不需要，直接回答 |
+| "TP53 突变是什么意思"（没有供者上下文） | ❌ 不需要 |
 
-### 2. Three-Tier Classification
+---
 
-| Tier | Name | Action |
-|------|------|--------|
-| 1 | Action Required | Pre-transplant intervention or exclusion |
-| 2 | Inform and Monitor | Informed consent, post-intervention monitoring |
-| 3 | No Concern | Document and dismiss |
+## 🚀 调用方式
 
-### 3. API-First with Offline Archive
+### 方式一：直接调用 wrapper（推荐）
 
-Primary sources (live APIs, cached 30 days): Ensembl REST, UniProt REST, GTEx Portal.
+用 `exec` 运行 `dgra_cli_wrapper.py`，传入 variant JSON 数组：
 
-Offline archive (automatic):
-- Every online analysis saves per-gene API results to references/offline_data/{gene}.json
-- Subsequent offline runs load archived data = identical results to online
-- If no archive exists, falls back to special_gene_lists + conservative rules
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --variants '[{"CHROM":"1","POS":12345,"REF":"A","ALT":"G","GENE":"VWF","IMPACT":"HIGH","Consequence":"missense_variant","HGVSp":"p.Arg1234Cys","HGVSc":"c.3700C>T","CLIN_SIG":"Pathogenic","GT":"0/1","DP":30,"GQ":99,"VAF":0.5}]' \
+  --tissue hematopoietic
+```
 
-This means offline mode is NOT a downgrade -- it is "last-known-good state replay".
+### 方式二：已有 TSV 文件
 
-### 4. Confidence Annotation
+如果用户已提供 TSV/CSV 文件路径：
 
-HIGH = all APIs responded. MEDIUM = one API failed. LOW = multiple APIs failed or offline without archive.
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_core.py \
+  --input /path/to/donor_variants.tsv \
+  --tissue hematopoietic \
+  --output /tmp/dgra_report.md \
+  --json /tmp/dgra_results.json
+```
 
-## Input Format
+### 方式三：含患者突变交叉比对
 
-Annotated variant table (CSV/TSV) with columns:
-CHROM, POS, REF, ALT, GENE, Feature, EXON, IMPACT, Consequence, HGVSp, HGVSc, CLIN_SIG, GT, DP, GQ, VAF, gnomAD_AF (optional)
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --variants '[...]' \
+  --tissue hematopoietic \
+  --patient-mutations '[{"gene":"BCOR","hgvsp":"p.Arg1234*","impact":"HIGH"}]'
+```
 
-## CLI Usage
+---
 
-Normal mode (queries live APIs, caches + archives results):
-  python3 scripts/dgra_core.py --input donor_variants.tsv --tissue hematopoietic --output report.md --json results.json
+## 📋 输入数据构造指南
 
-Offline mode (loads archived data if available):
-  python3 scripts/dgra_core.py --input donor_variants.tsv --tissue hematopoietic --offline --output offline_report.md
+### Variant JSON 格式
 
-**--tissue is required.** Available: hematopoietic, cardiovascular, hepatic, renal, neurological.
+每个 variant 是一个 dict，**必填字段**：
 
-## Output
+| 字段 | 含义 | 示例 |
+|-----|------|------|
+| CHROM | 染色体 | "1", "X" |
+| POS | 位置 | 12345 |
+| REF | 参考碱基 | "A" |
+| ALT | 突变碱基 | "G" |
+| GENE | 基因符号 | "VWF" |
 
-1. Markdown report -- clinical decision-oriented with tier sections
-2. Structured JSON -- machine-readable for downstream integration
+**建议填写的字段**（影响分级精度）：
 
-## Offline Archive Mechanism
+| 字段 | 含义 | 示例 |
+|-----|------|------|
+| HGVSp | 蛋白变化 | "p.Arg1234Cys" |
+| HGVSc | cDNA 变化 | "c.3700C>T" |
+| IMPACT | 影响等级 | "HIGH", "MODERATE", "LOW" |
+| Consequence | 突变类型 | "missense_variant", "frameshift_variant" |
+| CLIN_SIG | ClinVar 状态 | "Pathogenic", "Likely_pathogenic", "Benign" |
+| GT | 基因型 | "0/1" (杂合), "1/1" (纯合) |
+| DP | 测序深度 | 30 |
+| GQ | 基因质量 | 99 |
+| VAF | 变异丰度 | 0.5 |
+| gnomAD_AF | gnomAD 频率 | 0.0001 |
 
-Location: references/offline_data/{gene}.json
+**如果用户提供了 VCF 或表格数据，先提取这些字段构造 JSON 数组，再传给 wrapper。**
 
-Saved automatically after every online analysis:
-- ensembl: canonical transcript, biotype, description, coordinates
-- uniprot: domains, GO terms, sequence length
-- gtex: tissue-specific expression (RPKM)
-- tissue_profile: which profile was used
-- saved_at: ISO timestamp
+---
 
-Loaded automatically in offline mode:
-- If archive exists for a gene, uses it (same as online result)
-- If archive missing, falls back to special_gene_lists only
-- Archive survives server restarts (file-based, not in-memory)
+## 📊 输出解析
 
-## Limitations
+Wrapper 返回 JSON 结构：
 
-1. gnomAD coverage gaps: KIR cluster, X-linked genes, highly polymorphic regions
-2. Protein domains: UniProt annotation coverage varies by gene
-3. Phase confirmation: Multi-hit cis/trans requires family/trio or long-read sequencing
-4. GTEx proxy: Tissue-level RPKM may not reflect cell-type-specific expression
-5. Population bias: gnomAD primarily European ancestry
+```json
+{
+  "success": true,
+  "results": {
+    "meta": {...},
+    "summary": {
+      "tier1_count": 0,
+      "tier2_count": 1,
+      "tier3_count": 2,
+      "multi_hit_genes": ["VWF"],
+      "patient_inherited_mutations": []
+    },
+    "tier1_variants": [],
+    "tier2_variants": [...],
+    "tier3_variants": [...],
+    "multi_hit_details": [...],
+    "patient_donor_cross_check": [...],
+    "report_markdown": "# DGRA 报告..."
+  },
+  "report_md": "# DGRA Report...",
+  "stdout": "DGRA Report Generated..."
+}
+```
 
-## File Structure
+### 给用户呈现的关键信息
 
+1. **风险分级统计**：Tier 1 / Tier 2 / Tier 3 各多少个
+2. **高风险变异详情**（Tier 1 和 Tier 2）：基因、突变、影响、建议行动
+3. **多基因命中**：是否有同一基因多个变异，相位状态（cis/trans/unknown）
+4. **患者-供者交叉比对**：患者突变是否被供者遗传携带
+5. **Markdown 报告**：完整报告文本可直接呈现给用户
+
+### 组织类型选择
+
+| 场景 | 组织类型 |
+|------|---------|
+| 造血干细胞移植 / PBSC / 骨髓采集 | `hematopoietic` |
+| 心脏移植 / 供心评估 | `cardiovascular` |
+| 肝脏移植 | `hepatic` |
+| 肾脏移植 | `renal` |
+| 神经系统移植 / 神经介入 | `neurological` |
+
+---
+
+## 🔧 离线模式
+
+当网络不可用或 API 超时频繁时，添加 `--offline` 参数：
+
+```bash
+python3 .../dgra_cli_wrapper.py --variants '[...]' --tissue hematopoietic --offline
+```
+
+离线模式使用本地缓存（`references/offline_data/` 下的基因 JSON），对于已有归档的基因结果与在线模式一致。未归档的基因 fallback 到保守规则。
+
+---
+
+## ❌ 常见错误
+
+| 错误 | 原因 | 解决 |
+|-----|------|------|
+| `Invalid tissue 'xxx'` | 组织类型不对 | 用 hematopoietic / cardiovascular / hepatic / renal / neurological |
+| `variants list is empty` | 输入为空 | 检查 JSON 是否解析正确 |
+| `Failed to write TSV` | 输入字段缺失 | 确保必填字段 CHROM/POS/REF/ALT/GENE 存在 |
+| `dgra_core.py exited with code 1` | 核心脚本执行失败 | 看 stderr 输出排查 |
+| `Offline mode: no cached data` | 离线模式但基因未归档 | 先在线运行一次建立归档，或换在线模式 |
+
+---
+
+## 📁 文件结构
+
+```
 dgra-genomic-risk/
-  SKILL.md              -- this file
-  DESIGN_v0.4.md        -- architecture documentation
-  config.json           -- skill metadata
-  requirements.txt      -- aiohttp dependency
+  SKILL.md                  # 本文件
   scripts/
-    dgra_core.py        -- main pipeline (async, v0.4)
-    dgra_config.py      -- configuration
-    dgra_cache.py       -- SQLite cache with TTL
-    dgra_api.py         -- async API clients
+    dgra_cli_wrapper.py     # ⭐ 推荐入口：agent 调用此 wrapper
+    dgra_core.py            # 核心分析引擎（async API-first）
+    dgra_api.py             # API 查询层
+    dgra_cache.py           # SQLite 缓存
+    dgra_config.py          # 配置管理
   references/
-    tissue_context.json -- tissue profiles
-    offline_data/       -- per-gene API archive (auto-created)
+    tissue_context.json     # 组织上下文配置
+    offline_data/           # 离线归档（自动创建）
   cache/
-    dgra_cache.db       -- SQLite API response cache (auto-created)
+    dgra_cache.db           # API 响应缓存
+```
 
-## Version
+---
 
-DGRA v0.4.1 -- 2026-05-20
+## 🩺 临床使用注意
 
-Key updates from v0.3:
-- API-first architecture with live Ensembl/UniProt/GTEx queries and 30-day SQLite cache
-- Offline archive: online analyses auto-save per-gene JSON, offline loads identical data
-- Async batch queries with rate limiting and retry
-- special_gene_lists as irreplaceable clinical rules
-- Confidence annotation per result (HIGH/MEDIUM/LOW)
+- **Tier 1** = 必须干预或排除供者（如凝血功能障碍影响采集安全）
+- **Tier 2** = 需知情同意并术后监测（如携带者状态）
+- **Tier 3** = 记录归档，不影响决策
+- **多基因命中**需确认相位：cis（同一条染色体）风险更高，trans（两条染色体）通常为复合杂合
+- **患者-供者交叉比对**：检查患者体细胞驱动突变是否被供者遗传携带，影响移植后复发风险评估
 
-Bug fixes in v0.4.1:
-- **tissue_profile no longer has default** — must be explicitly specified via --tissue or config
-- **UniProt search now prioritizes reviewed/canonical entries** — fixes fragment isoform bug that caused 0% protein domain mapping
-- **Cache JSON corruption handling** — non-JSON API responses no longer poison cache
-- **Hardcoded date removed** — analysis date is now dynamic
+**DGRA 是辅助决策工具，最终临床决策需结合完整临床评估。**

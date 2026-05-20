@@ -1206,11 +1206,11 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                 if v.domain_info:
                     di = v.domain_info
                     report.append(f"   - 功能域: {di.get('domain', 'N/A')} {di.get('domain_range', 'N/A')}\n")
-                rp = di.get('relative_position')
-                if isinstance(rp, (int, float)):
-                    report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp:.2f})\n")
-                else:
-                    report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp})\n")
+                    rp = di.get('relative_position')
+                    if isinstance(rp, (int, float)):
+                        report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp:.2f})\n")
+                    else:
+                        report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp})\n")
                     report.append(f"   - 损伤评估: {di.get('damage_type', 'N/A')}\n")
                 if v.tissue_relevance:
                     tr = v.tissue_relevance
@@ -1494,8 +1494,6 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
                 actions.append("URGENT: Confirm phase before final assessment")
                 v.tier_actions = actions
             # Variants without pathogenic evidence remain at their original tier
-            v.tier_reason += " | ELEVATED: Multi-hit gene, phase unknown. Must confirm cis/trans."
-            v.tier_actions.append("URGENT: Confirm phase before final assessment")
     
     # Note: HLA multi-hits are logged but NOT elevated — they are normal polymorphism
     # The hla_multi_hits set can be used for reporting if needed

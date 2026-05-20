@@ -22,6 +22,7 @@ class APIConfig:
     retry_delay: float = 1.0  # initial backoff (exponential)
     rate_limit_per_sec: float = 10.0  # requests per second
     api_key: Optional[str] = None
+    proxy: Optional[str] = None  # HTTP/HTTPS proxy URL
     
 
 @dataclass
@@ -52,43 +53,43 @@ class DGRAGlobalConfig:
     apis: Dict[str, APIConfig] = field(default_factory=lambda: {
         "ensembl": APIConfig(
             base_url="https://rest.ensembl.org",
-            timeout=30.0,
-            max_retries=3,
+            timeout=20.0,
+            max_retries=2,
             retry_delay=1.0,
-            rate_limit_per_sec=15.0,
+            rate_limit_per_sec=10.0,
         ),
         "uniprot": APIConfig(
             base_url="https://rest.uniprot.org",
-            timeout=45.0,
-            max_retries=3,
+            timeout=25.0,
+            max_retries=2,
             retry_delay=2.0,
             rate_limit_per_sec=5.0,
         ),
         "gtex": APIConfig(
             base_url="https://gtexportal.org/api/v2",
-            timeout=30.0,
-            max_retries=3,
+            timeout=20.0,
+            max_retries=2,
             retry_delay=2.0,
             rate_limit_per_sec=3.0,
         ),
         "gnomad": APIConfig(
             base_url="https://gnomad.broadinstitute.org/api",
-            timeout=30.0,
+            timeout=15.0,
             max_retries=2,
             retry_delay=2.0,
             rate_limit_per_sec=2.0,
         ),
         "ncbi_eutils": APIConfig(
             base_url="https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
-            timeout=20.0,
-            max_retries=3,
+            timeout=15.0,
+            max_retries=2,
             retry_delay=1.0,
             rate_limit_per_sec=3.0,  # NCBI: 3/sec without API key
         ),
         "clinvar_eutils": APIConfig(
             base_url="https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
-            timeout=20.0,
-            max_retries=3,
+            timeout=15.0,
+            max_retries=2,
             retry_delay=1.0,
             rate_limit_per_sec=3.0,
         ),
@@ -117,6 +118,12 @@ class DGRAGlobalConfig:
         # Override tissue profile
         if tissue := os.environ.get("DGRA_TISSUE"):
             config.tissue_profile = tissue
+        
+        # HTTP/HTTPS proxy support
+        for api_name in config.apis:
+            proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+            if proxy:
+                config.apis[api_name].proxy = proxy
         
         # NCBI API key (increases rate limit from 3/sec to 10/sec)
         if ncbi_key := os.environ.get("NCBI_API_KEY"):
