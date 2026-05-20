@@ -32,6 +32,9 @@ class DGRAGlobalConfig:
     # Offline mode: skip all API calls, use cache + local overrides only
     offline_mode: bool = False
     
+    # v0.4.5: Somatic mode for tumor driver analysis (not germline donor screening)
+    somatic_mode: bool = False
+    
     # Cache settings
     cache_db_path: Path = field(default_factory=lambda: Path(__file__).parent.parent / "cache" / "dgra_cache.db")
     cache_ttl_days: int = 30  # Time-to-live for cached API responses

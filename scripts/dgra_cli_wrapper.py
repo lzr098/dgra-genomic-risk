@@ -78,6 +78,7 @@ def run_dgra(
     tissue: str = "hematopoietic",
     patient_mutations: Optional[List[Dict[str, Any]]] = None,
     offline: bool = False,
+    somatic: bool = False,
 ) -> Dict[str, Any]:
     """
     运行 DGRA 分析管道。
@@ -127,6 +128,8 @@ def run_dgra(
         ]
         if offline:
             cmd.append("--offline")
+        if somatic:
+            cmd.append("--somatic")
 
         # 患者突变（可选）
         patient_json = None
@@ -194,6 +197,9 @@ def main():
     parser.add_argument("--tissue", default="hematopoietic", help="Tissue profile")
     parser.add_argument("--patient-mutations", help="JSON array of patient mutations")
     parser.add_argument("--offline", action="store_true", help="Offline mode")
+    parser.add_argument("--somatic", action="store_true",
+                        help="Somatic mode: tumor driver mutation analysis (not germline donor screening). "
+                             "TSG truncating + oncogene hotspots = Tier 1")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()

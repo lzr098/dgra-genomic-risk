@@ -65,6 +65,23 @@ def _load_offline_archive(gene: str) -> Optional[Dict]:
 # Data Structures
 # =============================================================================
 
+# v0.4.5: Common cancer gene lists for somatic mode
+_COMMON_TS_GENES = {
+    "TP53", "RB1", "CDKN2A", "CDKN2B", "PTEN", "NF1", "NF2", "APC", "BRCA1", "BRCA2",
+    "ATM", "CHEK2", "MLH1", "MSH2", "MSH6", "PMS2", "VHL", "WT1", "TSC1", "TSC2",
+    "PHF6", "BCOR", "BCORL1", "ASXL1", "RUNX1", "CEBPA", "GATA2", "ETV6", "DDX41",
+    "SAMD9", "SAMD9L", "TP53BP1", "BRCC3", "RAD51", "RAD51C", "RAD51D", "PALB2",
+    "BARD1", "NBN", "ATM", "CHEK2",
+}
+
+_KNOWN_AML_DRIVERS = {
+    "FLT3", "NPM1", "IDH1", "IDH2", "DNMT3A", "TET2", "ASXL1", "RUNX1", "CEBPA",
+    "TP53", "KIT", "NRAS", "KRAS", "PTPN11", "CBL", "JAK2", "JAK3", "SH2B3",
+    "BCOR", "BCORL1", "PHF6", "GATA2", "ETV6", "DDX41", "SAMD9", "SAMD9L",
+    "KDM6A", "KDM5C", "KMT2A", "KMT2D", "EZH2", "STAG2", "RAD21", "SMC1A",
+    "SMC3", "ZRSR2", "SRSF2", "SF3B1", "U2AF1", "U2AF2",
+}
+
 @dataclass
 class Variant:
     chrom: str
@@ -84,6 +101,11 @@ class Variant:
     gq: float = 0.0
     gt: str = ""  # 0/1, 1/1, etc.
     vaf: Optional[float] = None
+    
+    # v0.4.5: Somatic annotation fields
+    classification: str = ""  # OncoKB: Oncogenic, Likely Oncogenic, VUS, etc.
+    is_tsg: bool = False
+    is_oncogene: bool = False
     
     # Computed fields
     tier: Optional[int] = None
@@ -107,11 +129,13 @@ class DGRAConfig:
     vaf_deviation_threshold: float = 0.20
     tissue_profile: Optional[str] = None  # NO default — caller must specify
     offline_mode: bool = False
+    somatic_mode: bool = False  # v0.4.5: tumor/somatic driver analysis mode
 
     def to_global(self) -> DGRAGlobalConfig:
         gc = DGRAGlobalConfig()
         gc.tissue_profile = self.tissue_profile or ""
         gc.offline_mode = self.offline_mode
+        gc.somatic_mode = self.somatic_mode
         gc.min_dp = self.min_dp
         gc.min_gq = self.min_gq
         gc.common_af_threshold = self.common_af_threshold
@@ -609,9 +633,11 @@ TIER1_ACTION_GENES = {
 
 def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment: Dict,
                           gnomad_info: Dict, transcript_warning: Optional[Dict],
-                          pseudogene_warning: Optional[Dict], tissue_profile: Dict) -> Tuple[int, str, List[str]]:
+                          pseudogene_warning: Optional[Dict], tissue_profile: Dict,
+                          config: Optional[DGRAConfig] = None) -> Tuple[int, str, List[str]]:
     """
     Three-tier classification with dynamic tissue context.
+    v0.4.5: Added somatic_mode support for tumor driver analysis.
     Returns: (tier, reason, actions)
     """
     gene = variant.gene
@@ -625,7 +651,47 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         if not (variant.clinvar and "Pathogenic" in variant.clinvar):
             return 3, tissue_assessment["reason"], []
 
-    # Priority 1: Tier 1 checks
+    # v0.4.5: Somatic mode overrides for tumor driver analysis
+    # In somatic mode, tier classification prioritizes driver mutation evidence
+    # over germline carrier-state logic
+    if hasattr(variant, 'vaf') and variant.vaf is not None and variant.vaf > 0.5:
+        # Likely germline polymorphism contamination in somatic sample
+        actions.append("VAF > 0.5 suggests germline contamination — verify if intended somatic analysis")
+        return 3, f"VAF={variant.vaf:.3f} > 0.5 — likely germline polymorphism, not somatic driver", actions
+    
+    # Somatic mode Tier 1: Core driver mutations
+    if getattr(config, 'somatic_mode', False):
+        # 1a. TSG loss-of-function in tissue-relevant gene = Tier 1 (core driver)
+        if tissue_assessment.get("relevance") in ["primary", "secondary"] and variant.impact == "HIGH":
+            # Check if gene is known TSG (from OncoKB annotation or common TSG list)
+            is_tsg = getattr(variant, 'is_tsg', False) or gene in _COMMON_TS_GENES
+            if is_tsg:
+                reason = f"Somatic TSG loss-of-function: {variant.consequence} in {gene}"
+                if domain_info and domain_info.get("domain_integrity") in ["completely_destroyed", "partially_destroyed"]:
+                    reason += f", {domain_info['domain']} domain disrupted"
+                actions.append("Confirm somatic origin (VAF < 0.5, tumor-normal pair)")
+                actions.append("Assess as core leukemic driver — target for MRD monitoring")
+                return 1, reason, actions
+        
+        # 1b. Oncogene hotspot / functional domain mutation = Tier 1
+        is_oncogene = getattr(variant, 'is_oncogene', False)
+        oncokb_class = getattr(variant, 'classification', '')
+        if is_oncogene or oncokb_class in ("Oncogenic", "Likely Oncogenic"):
+            if tissue_assessment.get("relevance") in ["primary", "secondary"]:
+                reason = f"Somatic oncogene driver: {gene} {variant.hgvsp or variant.hgvsc}"
+                if oncokb_class:
+                    reason += f" (OncoKB: {oncokb_class})"
+                actions.append("Confirm somatic origin")
+                actions.append("Assess as core leukemic driver — potential therapeutic target")
+                return 1, reason, actions
+        
+        # 1c. Known AML driver genes with HIGH impact = Tier 1
+        if gene in _KNOWN_AML_DRIVERS and variant.impact == "HIGH":
+            actions.append("Known AML driver gene with truncating mutation")
+            actions.append("Assess for therapeutic targeting or MRD monitoring")
+            return 1, f"Known AML driver {gene} with {variant.consequence} — core somatic driver", actions
+
+    # Priority 1: Tier 1 checks (germline / donor safety logic)
     # 1a. Known high-risk special gene lists with pathogenic variant
     for list_name, gene_list in special_lists.items():
         if gene in gene_list:
@@ -1372,6 +1438,10 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
             gt=vd.get("GT", ""),
             vaf=float(vd.get("VAF", 0)) if vd.get("VAF") else None,
             gnomad_af=float(vd.get("gnomAD_AF", 0)) if vd.get("gnomAD_AF") else None,
+            # v0.4.5: somatic annotation fields
+            classification=vd.get("classification", ""),
+            is_tsg=vd.get("is_tsg", "") == "Yes" or vd.get("is_tsg", False) == True,
+            is_oncogene=vd.get("is_oncogene", "") == "Yes" or vd.get("is_oncogene", False) == True,
         )
         variants.append(v)
 
@@ -1462,7 +1532,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         pw = json.loads(v.pseudogene_warning) if v.pseudogene_warning else None
 
         tier, reason, actions = classify_variant_tier(
-            v, v.domain_info, tissue, gnomad_info, tw, pw, tissue_profile
+            v, v.domain_info, tissue, gnomad_info, tw, pw, tissue_profile, config
         )
         v.tier = tier
         v.tier_reason = reason
@@ -1561,6 +1631,9 @@ def main():
                              "Available: hematopoietic, cardiovascular, hepatic, renal, neurological")
     parser.add_argument("--offline", action="store_true",
                         help="Offline mode: skip all API calls, use cache + local references only")
+    parser.add_argument("--somatic", action="store_true",
+                        help="Somatic mode: tumor driver mutation analysis (not germline donor screening). "
+                             "TSG truncating + oncogene hotspots = Tier 1")
 
     args = parser.parse_args()
 
@@ -1578,7 +1651,7 @@ def main():
             patient_mutations = json.load(f)
 
     # Run async pipeline with tissue context
-    config = DGRAConfig(tissue_profile=args.tissue, offline_mode=args.offline)
+    config = DGRAConfig(tissue_profile=args.tissue, offline_mode=args.offline, somatic_mode=args.somatic)
     results = asyncio.run(run_dgra_pipeline(variants_data, patient_mutations, config))
 
     # Write report

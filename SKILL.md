@@ -1,32 +1,34 @@
 ---
 name: dgra-genomic-risk
 description: |
-  Donor Genomic Risk Assessment (DGRA) v0.4。供者基因组风险评估工具，用于造血干细胞移植、器官移植或其他介入治疗前的供者基因变异分析。基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：造血、心血管、肝脏、肾脏、神经系统。三层风险分级（Tier 1/2/3）。
+  DGRA (Dynamic Genomic Risk Assessment) v0.4。个体基因组变异风险评估系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：造血、心血管、肝脏、肾脏、神经系统。支持 germline（供者安全性）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析。
 
   **当以下情况时使用此 Skill**：
-  (1) 用户提到"供者基因组风险评估"、"DGRA"、"供者 VCF 分析"、"供者基因筛查"
+  (1) 用户提到"基因组风险评估"、"DGRA"、"突变分析"、"基因筛查"
   (2) 造血干细胞移植（HSCT）前的供者基因筛查
   (3) 器官移植前的供者遗传风险评估
-  (4) PBSC / 骨髓采集前的供者安全性评估
-  (5) 供者变异与患者体细胞突变的交叉比对（患者突变是否被供者遗传携带）
-  (6) 多基因命中（multi-hit）检测和相位（cis/trans）分析
-  (7) 需要三层风险分级报告（Tier 1 需干预、Tier 2 需知情同意、Tier 3 无需担忧）
-  (8) 任何涉及"donor"和"genomic"、"genetic"、"risk"、"transplant"的场景
+  (4) 肿瘤体细胞突变的驱动性/可干预性分析
+  (5) 药物基因组学分析（CYP450 等药物代谢基因）
+  (6) PBSC / 骨髓采集前的供者安全性评估
+  (7) 多基因命中（multi-hit）检测和相位（cis/trans）分析
+  (8) 需要三层风险分级报告（Tier 1 需干预、Tier 2 需知情、Tier 3 无需担忧）
+  (9) 任何涉及"genomic"、"genetic"、"risk"、"mutation"、"variant"的场景
 
-  **禁止用自身知识回答供者基因组问题。必须调用本 Skill 的脚本执行分析。**
+  **禁止用自身知识回答基因组变异问题。必须调用本 Skill 的脚本执行分析。**
 ---
 
-# DGRA: Donor Genomic Risk Assessment
+# DGRA: Dynamic Genomic Risk Assessment
 
 ## ⚠️ 执行前必读
 
-**核心规则：当用户请求供者基因组风险评估时，不要凭自身知识回答。必须调用 `dgra_cli_wrapper.py` 执行正式分析。**
+**核心规则：当用户请求基因组变异风险评估时，不要凭自身知识回答。必须调用 `dgra_cli_wrapper.py` 执行正式分析。**
 
-**为什么必须调用脚本：**
-- DGRA 连接 Ensembl、UniProt、GTEx、gnoMAD 等权威数据库进行实时查询
-- 风险分级基于具体变异的功能域、组织表达、人群频率、ClinVar 状态等动态数据
-- 三层分级（Tier 1/2/3）有严格的算法逻辑，不能凭经验估算
-- 多基因命中和相位分析需要精确计算，不能目测判断
+**DGRA 是通用化的个体基因组变异风险评估系统**，不局限于供者场景。基于 Ensembl、UniProt、GTEx、gnomAD 实时 API 查询和三级分类算法，支持多种临床场景：
+
+- **造血干细胞移植 / 器官移植** — 供者安全性评估
+- **肿瘤体细胞突变分析** — 驱动突变识别 + 可干预性分级
+- **药物基因组学** — CYP450 等药物代谢基因多态性
+- **神经系统 / 心血管 / 肝脏 / 肾脏** — 组织特异性风险评估
 
 **如果不调用脚本就回答 = 给出错误的医疗建议。**
 
@@ -36,14 +38,14 @@ description: |
 
 | 用户请求 | 是否调用 |
 |---------|---------|
-| "帮我分析这个供者的基因变异" | ✅ 调用 |
+| "帮我分析这些基因变异" | ✅ 调用 |
+| "这个突变有什么风险" | ✅ 调用 |
+| "DGRA 分析一下" | ✅ 调用 |
 | "供者 VCF 文件风险分级" | ✅ 调用 |
 | "移植前供者筛查结果怎么看" | ✅ 调用 |
-| "DGRA 分析一下" | ✅ 调用 |
-| "这个突变对供者采集有影响吗" | ✅ 调用 |
-| "VWF 突变影不影响骨髓采集" | ✅ 调用（明确提到供者+基因） |
+| "肿瘤突变驱动性分析" | ✅ 调用 |
 | "一般性的基因突变知识" | ❌ 不需要，直接回答 |
-| "TP53 突变是什么意思"（没有供者上下文） | ❌ 不需要 |
+| "TP53 突变是什么意思"（无具体样本） | ❌ 不需要 |
 
 ---
 
@@ -59,19 +61,33 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --tissue hematopoietic
 ```
 
-### 方式二：已有 TSV 文件
+**Somatic / 肿瘤模式**：添加 `--somatic` 标志，DGRA 会按肿瘤驱动逻辑分级：
 
-如果用户已提供 TSV/CSV 文件路径：
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --variants '[...]' \
+  --tissue hematopoietic \
+  --somatic
+```
+
+Somatic 模式下：
+- TSG 截断突变 + 造血相关 = **Tier 1**（核心驱动）
+- 癌基因热点突变（如 IDH1 R132） = **Tier 1**
+- OncoKB Oncogenic / Likely Oncogenic = **Tier 1**
+- VAF > 0.5 的变异会被标记为可能的 germline 混入
+
+### 方式二：已有 TSV 文件
 
 ```bash
 python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_core.py \
-  --input /path/to/donor_variants.tsv \
+  --input /path/to/variants.tsv \
   --tissue hematopoietic \
   --output /tmp/dgra_report.md \
-  --json /tmp/dgra_results.json
+  --json /tmp/dgra_results.json \
+  --somatic
 ```
 
-### 方式三：含患者突变交叉比对
+### 方式三：含患者突变交叉比对（仅移植场景）
 
 ```bash
 python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
@@ -110,8 +126,11 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 | GQ | 基因质量 | 99 |
 | VAF | 变异丰度 | 0.5 |
 | gnomAD_AF | gnomAD 频率 | 0.0001 |
+| **classification** | **OncoKB 致癌性** | **"Oncogenic", "Likely Oncogenic", "VUS"** |
+| **is_tsg** | **是否为抑癌基因** | **"Yes" / "No"** |
+| **is_oncogene** | **是否为癌基因** | **"Yes" / "No"** |
 
-**如果用户提供了 VCF 或表格数据，先提取这些字段构造 JSON 数组，再传给 wrapper。**
+**如果用户提供了 OncoKB 标注的 CSV/表格数据，务必提取 `classification`、`is_tsg`、`is_oncogene` 字段传入 DGRA，这对 somatic 模式分级至关重要。**
 
 ---
 
@@ -148,14 +167,14 @@ Wrapper 返回 JSON 结构：
 1. **风险分级统计**：Tier 1 / Tier 2 / Tier 3 各多少个
 2. **高风险变异详情**（Tier 1 和 Tier 2）：基因、突变、影响、建议行动
 3. **多基因命中**：是否有同一基因多个变异，相位状态（cis/trans/unknown）
-4. **患者-供者交叉比对**：患者突变是否被供者遗传携带
+4. **患者-供者交叉比对**：患者突变是否被供者遗传携带（仅移植场景）
 5. **Markdown 报告**：完整报告文本可直接呈现给用户
 
 ### 组织类型选择
 
 | 场景 | 组织类型 |
 |------|---------|
-| 造血干细胞移植 / PBSC / 骨髓采集 | `hematopoietic` |
+| 造血干细胞移植 / PBSC / 骨髓采集 / 肿瘤血液 | `hematopoietic` |
 | 心脏移植 / 供心评估 | `cardiovascular` |
 | 肝脏移植 | `hepatic` |
 | 肾脏移植 | `renal` |
@@ -209,10 +228,19 @@ dgra-genomic-risk/
 
 ## 🩺 临床使用注意
 
-- **Tier 1** = 必须干预或排除供者（如凝血功能障碍影响采集安全）
-- **Tier 2** = 需知情同意并术后监测（如携带者状态）
+### Tier 分级含义（按场景动态调整）
+
+**Germline / 供者安全性场景：**
+- **Tier 1** = 必须干预或排除供者（如纯合截断、凝血功能障碍、FA 通路致病突变）
+- **Tier 2** = 需知情同意并术后监测（如杂合携带者、药物代谢多态性）
 - **Tier 3** = 记录归档，不影响决策
-- **多基因命中**需确认相位：cis（同一条染色体）风险更高，trans（两条染色体）通常为复合杂合
-- **患者-供者交叉比对**：检查患者体细胞驱动突变是否被供者遗传携带，影响移植后复发风险评估
+
+**Somatic / 肿瘤驱动场景：**
+- **Tier 1** = 核心驱动突变（TSG 功能丧失、癌基因热点突变、OncoKB Oncogenic）
+- **Tier 2** = 可能驱动突变（Likely Oncogenic、亚克隆突变、药物代谢相关）
+- **Tier 3** = 乘客突变 / 无功能影响 / 胚系多态混入
+
+**多基因命中**需确认相位：cis（同一条染色体）风险更高，trans（两条染色体）通常为复合杂合
+**患者-供者交叉比对**：体细胞驱动突变的遗传检测（仅移植场景）
 
 **DGRA 是辅助决策工具，最终临床决策需结合完整临床评估。**
