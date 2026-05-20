@@ -960,32 +960,55 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
         report.append("---\n\n## 🟡 Tier 2: Inform & Monitor\n")
         report.append(f"*Variants donors should be informed of for {profile_name} context*\n\n")
         
-        for i, v in enumerate(tier2, 1):
-            report.append(f"### {i}. {v.gene}\n")
-            report.append(f"| 属性 | 值 |\n")
-            report.append(f"|------|-----|\n")
-            report.append(f"| 染色体位置 | {v.chrom}:{v.pos} |\n")
-            report.append(f"| 转录本 | {v.transcript or 'N/A'} |\n")
-            report.append(f"| 变异 | {v.hgvsp or v.hgvsc or 'N/A'} |\n")
-            report.append(f"| 合子型 | {v.gt or 'N/A'} |\n")
-            report.append(f"| 影响程度 | {v.impact} |\n")
-            report.append(f"| 后果 | {v.consequence} |\n")
-            report.append(f"| ClinVar | {v.clinvar or 'Not provided'} |\n")
-            report.append(f"| gnomAD | {v.gnomad_status or 'Not queried'} |\n")
-            if v.domain_info:
+        # Group by gene
+        from collections import OrderedDict
+        gene_groups_t2 = OrderedDict()
+        for v in tier2:
+            gene_groups_t2.setdefault(v.gene, []).append(v)
+        
+        for gene, var_list in gene_groups_t2.items():
+            report.append(f"### {gene}\n")
+            report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
+            
+            # Variant table
+            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 说明 |\n")
+            report.append("|---|-----------|--------|---------|--------|--------|---------|------|\n")
+            
+            for i, v in enumerate(var_list, 1):
+                pos = f"{v.chrom}:{v.pos}"
+                tx = v.transcript or "N/A"
+                var_name = v.hgvsp or v.hgvsc or "N/A"
                 di = v.domain_info
-                report.append(f"| 功能域 | {di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')}) |\n")
-                report.append(f"| 域内位置 | {di.get('position_in_domain', 'N/A')} |\n")
-                report.append(f"| 损伤评估 | {di.get('damage_type', 'N/A')} |\n")
-            if v.tissue_relevance:
-                tr = v.tissue_relevance
-                report.append(f"| 组织相关性 | {tr.get('relevance', 'N/A')} |\n")
-            report.append(f"\n**Tier 2 原因**: {v.tier_reason}\n")
-            if v.tier_actions:
-                report.append(f"**建议措施**:\n")
-                for a in v.tier_actions:
-                    report.append(f"- {a}\n")
-            report.append(f"\n")
+                if di:
+                    domain = f"{di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')})"
+                else:
+                    domain = "N/A"
+                zyg = v.gt or "N/A"
+                clin = v.clinvar or "N/A"
+                reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
+                reason = reason.replace("|", "/")
+                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {reason} |\n")
+            
+            report.append(f"\n**详细说明**:\n")
+            for i, v in enumerate(var_list, 1):
+                report.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}):\n")
+                report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
+                if v.domain_info:
+                    di = v.domain_info
+                    report.append(f"   - 功能域: {di.get('domain', 'N/A')} {di.get('domain_range', 'N/A')}\n")
+                    rp = di.get('relative_position')
+                    if isinstance(rp, (int, float)):
+                        report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp:.2f})\n")
+                    else:
+                        report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp})\n")
+                    report.append(f"   - 损伤评估: {di.get('damage_type', 'N/A')}\n")
+                if v.tissue_relevance:
+                    tr = v.tissue_relevance
+                    report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
+                report.append(f"   - 分级原因: {v.tier_reason}\n")
+                if v.tier_actions:
+                    report.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
+                report.append(f"\n")
 
     # Tier 3
     if tier3:
