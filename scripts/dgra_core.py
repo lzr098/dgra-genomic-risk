@@ -1027,12 +1027,27 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         v.tier_actions = actions
 
     # Handle multi-hit elevation
+    # Phase 1 v0.4.3: Exclude HLA genes from elevation — high polymorphism is normal
+    _HLA_GENES = {
+        "HLA-A", "HLA-B", "HLA-C", "HLA-DRB1", "HLA-DQA1", "HLA-DQB1",
+        "HLA-DPA1", "HLA-DPB1", "HLA-E", "HLA-F", "HLA-G", "HLA-H",
+        "HLA-J", "HLA-K", "HLA-L", "HLA-N", "HLA-P", "HLA-S",
+        "HLA-DMA", "HLA-DMB", "HLA-DOA", "HLA-DOB",
+        "MICA", "MICB", "TAP1", "TAP2",
+    }
     multi_hit_genes = {mh["gene"] for mh in multi_hits}
+    # Filter out HLA genes: natural polymorphism, not pathogenic multi-hit
+    hla_multi_hits = {g for g in multi_hit_genes if g in _HLA_GENES}
+    multi_hit_genes -= hla_multi_hits  # Exclude from elevation
+    
     for v in variants:
         if v.gene in multi_hit_genes and v.tier > 1:
             v.tier = 1
             v.tier_reason += " | ELEVATED: Multi-hit gene, phase unknown. Must confirm cis/trans."
             v.tier_actions.append("URGENT: Confirm phase before final assessment")
+    
+    # Note: HLA multi-hits are logged but NOT elevated — they are normal polymorphism
+    # The hla_multi_hits set can be used for reporting if needed
 
     # Step 8: Patient-donor cross-check (unchanged)
     cross_check = []
