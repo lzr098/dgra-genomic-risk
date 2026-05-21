@@ -1599,9 +1599,31 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 and "conflicting" not in clinvar_lower)
     
     def _impact_high(impact):
-        """Impact HIGH check — UNKNOWN is treated as HIGH (conservative, no downgrade)."""
+        """Impact HIGH check — UNKNOWN is treated as HIGH (conservative, no downgrade).
+        v0.5.2: TRANSCRIPT_DISCREPANCY with non-coding annotator transcript (NR_/XM_/XR_)
+        but canonical protein-coding (ENST/ENSG) → downgrade HIGH to prevent false Tier 1.
+        """
         if _is_unknown(impact):
             return True  # Missing impact data → assume worst case
+        
+        # v0.5.2: Transcript discrepancy check
+        if (transcript_warning and 
+            transcript_warning.get("type") == "TRANSCRIPT_DISCREPANCY"):
+            annotator_tx = transcript_warning.get("annotator_selected", "")
+            canonical_tx = transcript_warning.get("canonical", "")
+            is_annotator_noncoding = annotator_tx.startswith(("NR_", "XM_", "XR_"))
+            is_canonical_protein = canonical_tx.startswith(("ENST", "ENSG"))
+            if (is_annotator_noncoding and is_canonical_protein and 
+                impact == "HIGH"):
+                actions.append(f"WARNING: Annotator used non-coding transcript {annotator_tx} "
+                              f"but canonical {canonical_tx} is protein-coding. "
+                              f"HIGH impact downgraded to MODERATE for tier classification.")
+                _add_evidence("TranscriptWarning", 
+                    f"Non-coding annotator tx {annotator_tx} vs canonical {canonical_tx} → impact downgraded",
+                    weight=0.5, confidence="medium",
+                    raw_data={"annotator_tx": annotator_tx, "canonical_tx": canonical_tx})
+                return False  # Treat as non-HIGH for tier classification
+        
         return impact == "HIGH"
     
     # Report missing fields in actions

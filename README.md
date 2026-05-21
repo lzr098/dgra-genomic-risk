@@ -380,7 +380,7 @@ dgra-genomic-risk/
 
 | 版本 | 日期 | 主题 |
 |------|------|------|
-| **v0.5.2** | 2026-05-21 | **核心逻辑修正**：Multi-hit 不再升级变异（只标记基因）、ClinVar 中文注释支持（致病/良性）、统计格式改为"基因数/突变数"、新增 Priority 1c（ClinVar 致病+HIGH+造血相关→Tier 1） |
+| **v0.5.2** | 2026-05-21 | **核心逻辑修正**：Multi-hit 不再升级变异（只标记基因）、ClinVar 中文注释支持（致病/良性）、统计格式改为"基因数/突变数"、新增 Priority 1c（ClinVar 致病+HIGH+造血相关→Tier 1）、**Transcript discrepancy 降级**（NR_/XM_非编码转录本→HIGH 降级为 MODERATE） |
 | **v0.5.1** | 2026-05-21 | **假阳性大幅优化**：ClinVar 良性排除、X 连锁女性修正、同义排除、C 末端截短修正、基因家族冗余、HLA 排除（Tier-1 假阳性 ↓91%） |
 | **v0.5.0** | 2026-05-21 | **P0 统一输入层**（VCF/Excel/TSV/自由文本 + VEP/ANNOVAR/SnpEff 自动适配）+ **P1 核心引擎重构**（ACMG 评分、NMD 调制、Missense 分层、加权评分、置信度量化、结构化证据链、JSON 输出、多器官联合、增强 QC、基因名校验、分析版本化） |
 | v0.4.5 | 2026-05-20 | 相位分析系统（Phase Analysis） |
