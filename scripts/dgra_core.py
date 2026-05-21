@@ -1579,16 +1579,24 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         return val == _UNKNOWN or val == "" or val is None
     
     def _clinvar_pathogenic(clinvar):
-        """ClinVar pathogenic check — UNKNOWN does NOT trigger this."""
+        """ClinVar pathogenic check — UNKNOWN does NOT trigger this.
+        v0.5.2: Support both English 'Pathogenic' and Chinese '致病'."""
         if _is_unknown(clinvar):
             return False
-        return "Pathogenic" in clinvar
+        clinvar_lower = clinvar.lower()
+        return ("pathogenic" in clinvar_lower or 
+                "致病" in clinvar or 
+                "likely_pathogenic" in clinvar_lower or
+                "可能致病" in clinvar)
     
     def _clinvar_benign(clinvar):
-        """ClinVar benign check — UNKNOWN does NOT trigger this."""
+        """ClinVar benign check — UNKNOWN does NOT trigger this.
+        v0.5.2: Support both English 'Benign' and Chinese '良性'."""
         if _is_unknown(clinvar):
             return False
-        return "Benign" in clinvar and "conflicting" not in clinvar.lower()
+        clinvar_lower = clinvar.lower()
+        return (("benign" in clinvar_lower or "良性" in clinvar)
+                and "conflicting" not in clinvar_lower)
     
     def _impact_high(impact):
         """Impact HIGH check — UNKNOWN is treated as HIGH (conservative, no downgrade)."""
@@ -1715,6 +1723,21 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             upgrade_conditions = []  # Tier 1: no upgrade possible
 
             return 1, f"Homozygous truncating variant in primary tissue gene {gene}", actions
+
+    # Priority 1c: ClinVar Pathogenic + HIGH impact + primary/secondary tissue
+    # v0.5.2 FIX: Heterozygous pathogenic truncating variants in tissue-relevant genes
+    # were incorrectly falling to Tier 2. ClinVar Pathogenic + HIGH + relevant tissue
+    # should be Tier 1 regardless of zygosity (heterozygous pathogenic = actionable).
+    if _clinvar_pathogenic(variant.clinvar) and _impact_high(variant.impact):
+        if tissue_assessment.get("relevance") in ["primary", "secondary"]:
+            _add_evidence("ClinVar", f"Pathogenic + HIGH + tissue-relevant → Tier 1 for {gene}", weight=1.0, confidence="high", raw_data={"clinvar": variant.clinvar, "impact": variant.impact, "relevance": tissue_assessment.get("relevance")})
+            actions.append("Confirm variant via secondary method")
+            actions.append("Assess phenotypic severity and clinical relevance")
+            variant.evidence_chain = evidence_chain
+            upgrade_conditions = []
+            variant.upgrade_conditions = upgrade_conditions
+            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+            return 1, f"ClinVar pathogenic {variant.consequence} in tissue-relevant gene {gene}", actions
 
     # v0.5 P1-4 + P1-5: Gene constraint tier adjustment with NMD refinement
     # Only applies to LOF variants in strongly constrained genes
