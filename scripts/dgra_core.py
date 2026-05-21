@@ -92,6 +92,33 @@ _KNOWN_AML_DRIVERS = {
     "SMC3", "ZRSR2", "SRSF2", "SF3B1", "U2AF1", "U2AF2",
 }
 
+# v0.5.1 OPT-P2-2: Gene family redundancy — reduce multi-hit false positives
+# Genes with functional paralogs/isoforms that can compensate for LOF
+_GENE_FAMILY_REDUNDANCY = {
+    # Mitochondrial ADP/ATP translocases — 4 paralogs with overlapping function
+    "SLC25A5": {
+        "paralogs": ["SLC25A4", "SLC25A6", "SLC25A31"],  # ANT1, ANT3, ANT4
+        "compensation_level": "partial",  # Not complete, but significant
+        "reason": "ANT family has 4 paralogs; SLC25A5 (ANT2) loss partially compensated",
+    },
+    # CYP family — extensive redundancy for drug metabolism
+    "CYP2D6": {
+        "paralogs": ["CYP2C19", "CYP3A4", "CYP1A2", "CYP2C9"],
+        "compensation_level": "partial",
+        "reason": "CYP450 family redundancy; other isoforms handle most substrates",
+    },
+    # SLC drug transporters
+    "SLC22A1": {
+        "paralogs": ["SLC22A2", "SLC22A3"],  # OCT2, OCT3
+        "compensation_level": "partial",
+        "reason": "OCT family redundancy for cation transport",
+    },
+    # HLA class I — extensive polymorphism is normal, null alleles common
+    "HLA-A": {"paralogs": [], "compensation_level": "complete", "reason": "HLA null alleles are normal polymorphism"},
+    "HLA-B": {"paralogs": [], "compensation_level": "complete", "reason": "HLA null alleles are normal polymorphism"},
+    "HLA-C": {"paralogs": [], "compensation_level": "complete", "reason": "HLA null alleles are normal polymorphism"},
+}
+
 @dataclass
 class Evidence:
     """Structured evidence entry for variant tier classification.
@@ -1373,6 +1400,45 @@ TIER1_ACTION_GENES = {
     "VWF": {"reason": "Coagulation disorder affects collection safety", "condition": "ClinVar_Pathogenic"},
 }
 
+# v0.5.1 OPT-P0-2: X-linked gene female heterozygous risk adjustment
+def _x_linked_female_adjustment(tier: int, chrom: str, gt: str,
+                                gene_constraint: Optional[Dict] = None) -> Tuple[int, str]:
+    """
+    Adjust tier for X-linked genes in female heterozygous carriers.
+    
+    Biological basis:
+    - Female XX: random X-inactivation (lyonization) ~50% cells express wild-type X
+    - If gene is haplosufficient (pLI < 0.5 or LOEUF > 0.35): 50% wild-type sufficient
+    - If gene is haploinsufficient (pLI > 0.9): maintain tier
+    
+    Returns: (adjusted_tier, reason)
+    """
+    if chrom not in ('X', 'chrX'):
+        return tier, ""
+    if gt not in ('0/1', '0|1'):
+        return tier, ""
+    
+    pLI = 0.0
+    loeuf = 1.0
+    if gene_constraint:
+        pLI = gene_constraint.get("pLI", 0.0) or 0.0
+        loeuf = gene_constraint.get("loeuf", 1.0) or 1.0
+    
+    is_haplosufficient = (pLI < 0.5) or (loeuf > 0.35)
+    is_haploinsufficient = (pLI > 0.9) and (loeuf < 0.35)
+    
+    if is_haplosufficient and tier == 1:
+        return 2, (f"X-linked female het + haplosufficient "
+                   f"(pLI={pLI:.2f}, LOEUF={loeuf:.2f}) — "
+                   f"50% wild-type via X-inactivation sufficient")
+    elif is_haplosufficient and tier == 2:
+        return 3, (f"X-linked female het + haplosufficient — no concern")
+    elif is_haploinsufficient:
+        return tier, (f"X-linked female het but haploinsufficient "
+                      f"(pLI={pLI:.2f}, LOEUF={loeuf:.2f}) — maintaining tier {tier}")
+    return tier, ""
+
+
 def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment: Dict,
                           gnomad_info: Dict, transcript_warning: Optional[Dict],
                           pseudogene_warning: Optional[Dict], tissue_profile: Dict,
@@ -1453,6 +1519,11 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         consequence = variant.consequence
         gnomad_status = gnomad_info.get("status", "")
         gnomad_af = gnomad_info.get("af")
+        if gnomad_af is not None:
+            try:
+                gnomad_af = float(gnomad_af)
+            except (ValueError, TypeError):
+                gnomad_af = None
         
         if tier == 2:
             # Tier 2 → Tier 1 upgrade paths
@@ -1833,8 +1904,41 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
     return 3, reason, []
 
+# v0.5.1 OPT-P1-3: C-terminal truncation severity assessment
+def _is_minimal_c_terminal_truncation(hgvsp: Optional[str]) -> bool:
+    """
+    Assess if a HIGH-impact variant involves minimal C-terminal truncation.
+    Such truncations (<5% of protein from C-terminus) are often benign
+    due to NMD escape or non-critical tail domains.
+    
+    Returns True if the variant appears to be a minimal C-terminal truncation.
+    """
+    if not hgvsp:
+        return False
+    hgvsp_str = str(hgvsp)
+    import re
+    # Match nonsense: p.Glu293Ter
+    ter_match = re.search(r'p\.[A-Za-z]+(\d+)Ter', hgvsp_str)
+    if ter_match:
+        stop_pos = int(ter_match.group(1))
+        # Conservative heuristic: stop position >=280 aa is likely near C-terminus
+        # for most proteins (median ~400 aa). Combined with ClinVar benign in caller.
+        if stop_pos >= 280:
+            return True
+    # Match frameshift: p.Ile249LeufsTer3
+    fs_match = re.search(r'p\.[A-Za-z]+(\d+)[A-Za-z]*fsTer(\d+)', hgvsp_str)
+    if fs_match:
+        original_pos = int(fs_match.group(1))
+        fs_stop_count = int(fs_match.group(2))
+        # If frameshift occurs late in protein AND early termination
+        # e.g., position >=250 with fsTer within 10 aa -> minimal impact
+        if original_pos >= 250 and fs_stop_count <= 10:
+            return True
+    return False
+
+
 # =============================================================================
-# Multi-hit Gene Detection
+# Multi-hit Gene Detection (v0.5.1 OPT: ClinVar benign + synonymous exclusion)
 # =============================================================================
 
 def _variant_has_pathogenic_evidence(v: Variant, gtex_data: Optional[Dict] = None) -> bool:
@@ -1849,48 +1953,55 @@ def _variant_has_pathogenic_evidence(v: Variant, gtex_data: Optional[Dict] = Non
       2. ClinVar pathogenic/likely pathogenic or HIGH impact or rare gnomAD (<0.001)
       3. Splice site change (consequence contains 'splice')
     """
+    # === OPT-P1-4: Synonymous (LOW) variants NEVER have pathogenic evidence ===
+    if v.impact == "LOW":
+        cons = str(v.consequence or "").lower()
+        if "synonymous" in cons or "同义" in cons:
+            return False
+    
+    # === OPT-P0-1: ClinVar benign exclusion for LOW/MODERATE impact ===
+    clinvar_lower = str(v.clinvar or "").lower()
+    is_benign_cv = (("benign" in clinvar_lower and "conflicting" not in clinvar_lower)
+                    or "likely_benign" in clinvar_lower)
+    if is_benign_cv and v.impact in ("LOW", "MODERATE"):
+        return False
+    
+    # === OPT-P1-3: Minimal C-terminal truncation + ClinVar benign -> not pathogenic ===
+    if v.impact == "HIGH" and is_benign_cv:
+        if _is_minimal_c_terminal_truncation(v.hgvsp):
+            return False
+    
     # Quick check: splice site changes are always considered
-    consequence = str(v.consequence or "").lower()
-    if "splice" in consequence:
+    consequence_lower = str(v.consequence or "").lower()
+    if "splice" in consequence_lower:
         return True
     
     # Check tissue expression for domain relevance
-    # If gene is not expressed in target tissue (TPM < 1.0), domain mapping
-    # does not constitute pathogenic evidence for this context
     tissue_tpm = None
     if gtex_data and v.gene in gtex_data:
         tissue_tpm = gtex_data[v.gene].get("median_tpm")
     
-    # Check ClinVar status for benign exclusion
-    # P0-7: UNKNOWN clinvar does NOT trigger benign exclusion (conservative)
-    clinvar = str(v.clinvar or "").lower()
-    is_benign = ("benign" in clinvar and "conflicting" not in clinvar) if (v.clinvar and v.clinvar != _UNKNOWN) else False
-    
     # 1. Domain impact — only counts if gene is expressed in target tissue
-    # AND variant is not already classified as benign
     di = v.domain_info
-    if di and not is_benign:
+    if di:
         domain = di.get("domain", "")
         if domain and domain not in ("unknown", "N/A", "inter-domain / unannotated"):
-            # Domain impact is only relevant if tissue-expressed
             if tissue_tpm is not None and tissue_tpm < 1.0:
                 pass  # Low expression: domain not relevant for this tissue
             else:
                 return True
     
-    # 2. Pathogenic evidence — always counts regardless of tissue expression
-    # P0-7: UNKNOWN clinvar does NOT trigger pathogenic evidence (not enough data)
-    if v.clinvar and v.clinvar != _UNKNOWN and "pathogenic" in clinvar and "conflicting" not in clinvar:
+    # 2. Pathogenic evidence
+    if v.clinvar and v.clinvar != _UNKNOWN and "pathogenic" in clinvar_lower and "conflicting" not in clinvar_lower:
         return True
-    # P0-7: UNKNOWN impact is treated as HIGH (conservative, no downgrade)
+    # HIGH impact — but C-terminal truncation + ClinVar benign already filtered above
     if v.impact == "HIGH" or v.impact == _UNKNOWN:
         return True
     if v.gnomad_af is not None and v.gnomad_af < 0.001:
         return True
     
     # 3. Splice site changes — always considered
-    consequence = str(v.consequence or "").lower()
-    if "splice" in consequence:
+    if "splice" in consequence_lower:
         return True
     
     return False
@@ -3248,6 +3359,28 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     
     # Note: HLA multi-hits are logged but NOT elevated — they are normal polymorphism
     # The hla_multi_hits set can be used for reporting if needed
+
+    # v0.5.1 OPT-P0-2: X-linked female heterozygous adjustment after all tier assignments
+    # Female XX donors with X-linked genes: random X-inactivation provides ~50% wild-type
+    # If gene is haplosufficient, tier 1 -> tier 2, tier 2 -> tier 3
+    for v in variants:
+        adj_tier, adj_reason = _x_linked_female_adjustment(
+            v.tier, v.chrom, v.gt, v.gene_constraint
+        )
+        if adj_reason:
+            v.tier = adj_tier
+            v.tier_reason += f" | {adj_reason}"
+
+    # v0.5.1 OPT-P2-2: Gene family redundancy — reduce multi-hit false positives
+    for v in variants:
+        if v.gene in _GENE_FAMILY_REDUNDANCY and v.tier == 1:
+            redundancy = _GENE_FAMILY_REDUNDANCY[v.gene]
+            if redundancy.get("compensation_level") == "complete":
+                v.tier = 2
+                v.tier_reason += f" | REDUCED: {redundancy['reason']} — complete paralog compensation"
+            elif redundancy.get("compensation_level") == "partial":
+                # Keep tier but add annotation
+                v.tier_reason += f" | NOTE: {redundancy['reason']} — partial compensation may mitigate risk"
 
     # Step 8: Patient-donor cross-check (unchanged)
     cross_check = []
