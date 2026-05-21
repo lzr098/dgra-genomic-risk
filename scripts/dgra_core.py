@@ -2535,9 +2535,9 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
         report.append(f"**Database Version**: {version_info['database_version']}\n")
     report.append("\n")
     
-    report.append(f"**Tier 1 (Action Required)**: {len(tier1)}\n")
-    report.append(f"**Tier 2 (Inform & Monitor)**: {len(tier2)}\n")
-    report.append(f"**Tier 3 (No Concern)**: {len(tier3)}\n\n")
+    report.append(f"**Tier 1 基因**: {len(set(v.gene for v in tier1))} 个 | **Tier 1 突变**: {len(tier1)} 个\n")
+    report.append(f"**Tier 2 基因**: {len(set(v.gene for v in tier2))} 个 | **Tier 2 突变**: {len(tier2)} 个\n")
+    report.append(f"**Tier 3 基因**: {len(set(v.gene for v in tier3))} 个 | **Tier 3 突变**: {len(tier3)} 个\n\n")
 
     # v0.5 P1-13: QC summary table
     # Collect QC flags from all variants
@@ -2640,6 +2640,17 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
         report.append("---\n\n## 🔴 Tier 1: Action Required\n")
         report.append(f"*Variants requiring intervention for {profile_name} context*\n\n")
         
+        # v0.5.2: Show gene-level summary first
+        tier1_genes = set(v.gene for v in tier1)
+        report.append(f"**Tier 1 基因总数**: {len(tier1_genes)} 个\n")
+        report.append(f"**Tier 1 突变总数**: {len(tier1)} 个\n\n")
+        
+        # List multi-hit genes among Tier 1
+        multi_hit_tier1_genes = tier1_genes.intersection(set(mh['gene'] for mh in multi_hits))
+        if multi_hit_tier1_genes:
+            report.append(f"**其中 Multi-hit 基因** ({len(multi_hit_tier1_genes)} 个): {', '.join(sorted(multi_hit_tier1_genes))}\n")
+            report.append(f"*注: Multi-hit 基因因检测到多个变异被标记关注，但各变异保持独立分级*\n\n")
+        
         # Group by gene
         from collections import OrderedDict
         gene_groups = OrderedDict()
@@ -2647,9 +2658,14 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             gene_groups.setdefault(v.gene, []).append(v)
         
         for gene, var_list in gene_groups.items():
-            report.append(f"### {gene}\n")
+            report.append(f"### {gene}")
             
-            # Gene summary
+            # v0.5.2: Gene-level summary with multi-hit indicator
+            is_multi_hit = gene in [mh['gene'] for mh in multi_hits]
+            if is_multi_hit:
+                report.append(f" **[Multi-hit 基因]**")
+            report.append(f"\n")
+            
             report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
             
             # Variant table
@@ -2934,12 +2950,18 @@ def generate_json_report(variants: List[Variant], config: DGRAConfig,
     # Merge version/provenance info (P1-15)
     meta.update(_get_version_info(config))
     
-    # Summary section
+    # Summary section — v0.5.2: gene-level and variant-level counts
+    tier1_genes = set(v.gene for v in variants if v.tier == 1)
+    tier2_genes = set(v.gene for v in variants if v.tier == 2)
+    tier3_genes = set(v.gene for v in variants if v.tier == 3)
     summary = {
         "total_variants": len(variants),
-        "tier1_count": len([v for v in variants if v.tier == 1]),
-        "tier2_count": len([v for v in variants if v.tier == 2]),
-        "tier3_count": len([v for v in variants if v.tier == 3]),
+        "tier1_gene_count": len(tier1_genes),
+        "tier1_variant_count": len([v for v in variants if v.tier == 1]),
+        "tier2_gene_count": len(tier2_genes),
+        "tier2_variant_count": len([v for v in variants if v.tier == 2]),
+        "tier3_gene_count": len(tier3_genes),
+        "tier3_variant_count": len([v for v in variants if v.tier == 3]),
         "multi_hit_genes": [mh["gene"] for mh in multi_hits],
         "patient_inherited_drivers": [
             cc["patient_mutation"]["gene"]
@@ -3331,7 +3353,12 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         v.tier_actions = actions
 
     # Handle multi-hit elevation
-    # Phase 1 v0.4.3: Exclude HLA genes from elevation — high polymorphism is normal
+    # v0.5.2 CHANGE: Do NOT elevate individual variants due to multi-hit status.
+    # Multi-hit genes are flagged in the report for attention, but each variant
+    # keeps its independently-assessed tier. Only variants with their own
+    # pathogenic evidence (HIGH impact, ClinVar pathogenic, etc.) remain Tier 1.
+    # This prevents false-positive inflation where benign/low-impact variants
+    # in a multi-hit gene are incorrectly upgraded.
     _HLA_GENES = {
         "HLA-A", "HLA-B", "HLA-C", "HLA-DRB1", "HLA-DQA1", "HLA-DQB1",
         "HLA-DPA1", "HLA-DPB1", "HLA-E", "HLA-F", "HLA-G", "HLA-H",
@@ -3342,22 +3369,10 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     multi_hit_genes = {mh["gene"] for mh in multi_hits}
     # Filter out HLA genes: natural polymorphism, not pathogenic multi-hit
     hla_multi_hits = {g for g in multi_hit_genes if g in _HLA_GENES}
-    multi_hit_genes -= hla_multi_hits  # Exclude from elevation
+    multi_hit_genes -= hla_multi_hits  # Exclude from reporting
     
-    # v0.4.4: Only elevate variants that themselves have pathogenic evidence.
-    # A gene may have 6 variants but only 3 pass _variant_has_pathogenic_evidence;
-    # only those 3 should be elevated, not all 6.
-    for v in variants:
-        if v.gene in multi_hit_genes and v.tier > 1:
-            if _variant_has_pathogenic_evidence(v, gtex_data):
-                v.tier = 1
-                v.tier_reason += " | ELEVATED: Multi-hit gene, phase unknown. Must confirm cis/trans."
-                actions = v.tier_actions or []
-                actions.append("URGENT: Confirm phase before final assessment")
-                v.tier_actions = actions
-            # Variants without pathogenic evidence remain at their original tier
-    
-    # Note: HLA multi-hits are logged but NOT elevated — they are normal polymorphism
+    # v0.5.2: Multi-hit genes are tracked but their variants are NOT elevated.
+    # The multi_hit_genes set is used for reporting only.
     # The hla_multi_hits set can be used for reporting if needed
 
     # v0.5.1 OPT-P0-2: X-linked female heterozygous adjustment after all tier assignments
@@ -3412,9 +3427,12 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
             }
         },
         "summary": {
-            "tier1_count": len([v for v in variants if v.tier == 1]),
-            "tier2_count": len([v for v in variants if v.tier == 2]),
-            "tier3_count": len([v for v in variants if v.tier == 3]),
+            "tier1_gene_count": len(set(v.gene for v in variants if v.tier == 1)),
+            "tier1_variant_count": len([v for v in variants if v.tier == 1]),
+            "tier2_gene_count": len(set(v.gene for v in variants if v.tier == 2)),
+            "tier2_variant_count": len([v for v in variants if v.tier == 2]),
+            "tier3_gene_count": len(set(v.gene for v in variants if v.tier == 3)),
+            "tier3_variant_count": len([v for v in variants if v.tier == 3]),
             "multi_hit_genes": [mh["gene"] for mh in multi_hits],
             "patient_inherited_mutations": [cc["patient_mutation"]["gene"] for cc in cross_check if cc["donor_status"] == "PRESENT"]
         },
@@ -3748,9 +3766,9 @@ def main():
         
         print(f"DGRA Multi-Organ Report Generated: {args.output}")
         print(f"Profiles assessed: {', '.join(multi_organ)}")
-        print(f"Joint Summary: Tier 1={results['joint_summary']['tier1_count']}, "
-              f"Tier 2={results['joint_summary']['tier2_count']}, "
-              f"Tier 3={results['joint_summary']['tier3_count']}")
+        print(f"Joint Summary: Tier 1={results['joint_summary']['tier1_gene_count']} genes / {results['joint_summary']['tier1_variant_count']} variants, "
+              f"Tier 2={results['joint_summary']['tier2_gene_count']} genes / {results['joint_summary']['tier2_variant_count']} variants, "
+              f"Tier 3={results['joint_summary']['tier3_gene_count']} genes / {results['joint_summary']['tier3_variant_count']} variants")
         
         if results['joint_summary']['high_concern_variants']:
             genes = [v['gene'] for v in results['joint_summary']['high_concern_variants']]
@@ -3780,9 +3798,9 @@ def main():
     profile_name = results["meta"]["profile_display_name"]
     print(f"DGRA Report Generated: {args.output}")
     print(f"Tissue Context: {profile_name} ({args.tissue})")
-    print(f"Summary: Tier 1={results['summary']['tier1_count']}, "
-          f"Tier 2={results['summary']['tier2_count']}, "
-          f"Tier 3={results['summary']['tier3_count']}")
+    print(f"Summary: Tier 1={results['summary']['tier1_gene_count']} genes / {results['summary']['tier1_variant_count']} variants, "
+          f"Tier 2={results['summary']['tier2_gene_count']} genes / {results['summary']['tier2_variant_count']} variants, "
+          f"Tier 3={results['summary']['tier3_gene_count']} genes / {results['summary']['tier3_variant_count']} variants")
 
     if results['summary']['multi_hit_genes']:
         print(f"Multi-hit genes: {', '.join(results['summary']['multi_hit_genes'])}")
