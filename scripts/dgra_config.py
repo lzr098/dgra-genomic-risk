@@ -9,7 +9,7 @@ Handles API keys, timeouts, retry policies, and offline mode.
 import os
 import json
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from pathlib import Path
 
 
@@ -32,6 +32,10 @@ class DGRAGlobalConfig:
     # Offline mode: skip all API calls, use cache + local overrides only
     offline_mode: bool = False
     
+    # v0.5 P1-8: Gene list sync settings
+    gene_sync_enabled: bool = True
+    gene_sync_ttl_days: int = 7
+    
     # v0.4.5: Somatic mode for tumor driver analysis (not germline donor screening)
     somatic_mode: bool = False
     
@@ -48,6 +52,10 @@ class DGRAGlobalConfig:
     
     # Tissue context profile name
     tissue_profile: str = "hematopoietic"
+    
+    # v0.5 P1-7: Multi-organ assessment — evaluate multiple profiles simultaneously
+    # Each profile runs independently; joint report takes max tier across profiles
+    multi_organ_profiles: Optional[List[str]] = None
     
     # Confidence thresholds for manual review flagging
     high_confidence_min_apis: int = 3  # Need at least N APIs responding for HIGH
@@ -95,6 +103,13 @@ class DGRAGlobalConfig:
             max_retries=2,
             retry_delay=1.0,
             rate_limit_per_sec=3.0,
+        ),
+        "hgnc": APIConfig(
+            base_url="https://rest.genenames.org",
+            timeout=15.0,
+            max_retries=2,
+            retry_delay=1.0,
+            rate_limit_per_sec=5.0,
         ),
     })
     

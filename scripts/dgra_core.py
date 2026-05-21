@@ -20,7 +20,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import argparse
 
 # v0.4 API layer imports
@@ -35,8 +35,10 @@ from dgra_api import DGRAAPIClient
 OFFLINE_ARCHIVE_DIR = Path(__file__).parent.parent / "references" / "offline_data"
 
 def _save_offline_archive(gene: str, ensembl_data: dict, uniprot_data: dict,
-                          gtex_data: dict, tissue_profile: str):
-    """Persist API results for future offline use."""
+                          gtex_data: dict, tissue_profile: str,
+                          gnomad_constraint_data: dict = None):
+    """Persist API results for future offline use.
+    v0.5 P1-4: Now also saves gnomAD gene constraint data."""
     OFFLINE_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     archive = {
         "gene": gene,
@@ -46,12 +48,15 @@ def _save_offline_archive(gene: str, ensembl_data: dict, uniprot_data: dict,
         "uniprot": uniprot_data.get(gene, {}),
         "gtex": gtex_data.get(gene, {}),
     }
+    if gnomad_constraint_data is not None:
+        archive["gnomad_constraint"] = gnomad_constraint_data.get(gene, {})
     path = OFFLINE_ARCHIVE_DIR / f"{gene}.json"
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(archive, f, indent=2, ensure_ascii=False, default=str)
 
 def _load_offline_archive(gene: str) -> Optional[Dict]:
-    """Load previously saved API results for offline mode."""
+    """Load previously saved API results for offline mode.
+    v0.5 P1-4: Returns gnomad_constraint field if present."""
     path = OFFLINE_ARCHIVE_DIR / f"{gene}.json"
     if not path.exists():
         return None
@@ -64,6 +69,11 @@ def _load_offline_archive(gene: str) -> Optional[Dict]:
 # =============================================================================
 # Data Structures
 # =============================================================================
+
+# v0.5 P0-7: Sentinel for missing/unknown field values. Used instead of injecting
+# false defaults like IMPACT="MODERATE" or VAF=0.5, which systematically
+# underestimate risk.
+_UNKNOWN = "UNKNOWN"
 
 # v0.4.5: Common cancer gene lists for somatic mode
 _COMMON_TS_GENES = {
@@ -83,6 +93,18 @@ _KNOWN_AML_DRIVERS = {
 }
 
 @dataclass
+class Evidence:
+    """Structured evidence entry for variant tier classification.
+    v0.5 P1-9: Replaces free-text tier_reason with traceable evidence chain.
+    """
+    source: str           # "ClinVar", "gnomAD", "GTEx", "ACMG", "GeneConstraint", "NMD", "DomainMapping", "Somatic", "SpecialList", "MultiHit", "Phase", "FastTrack"
+    rule: str             # Human-readable rule/condition, e.g. "PM2: gnomAD_AF=0.0001 < 0.001"
+    weight: float = 1.0   # Contribution weight to final tier (default 1.0)
+    confidence: str = "high"  # "high" | "moderate" | "low"
+    raw_data: Optional[Dict] = None  # Key API response fields for audit
+
+
+@dataclass
 class Variant:
     chrom: str
     pos: int
@@ -97,6 +119,7 @@ class Variant:
     hgvsc: str  # cDNA change
     clinvar: str  # Pathogenic, Benign, etc.
     gnomad_af: Optional[float] = None
+    gnomad_populations: Optional[Dict[str, Dict]] = None  # v0.5 P1-1: per-pop AFs
     dp: int = 0
     gq: float = 0.0
     gt: str = ""  # 0/1, 1/1, etc.
@@ -117,6 +140,28 @@ class Variant:
     gnomad_status: Optional[str] = None
     tissue_relevance: Optional[Dict] = None
 
+    # v0.5 P0-7: Quality confidence when key fields are missing.
+    quality_confidence: str = "high"  # "high" | "medium" | "low" | "unknown"
+    missing_fields: List[str] = field(default_factory=list)
+    
+    # v0.5 P1-2: Original gene symbol before HGNC normalization
+    gene_original: str = ""
+    
+    # v0.5 P1-9: Structured evidence chain for traceable tier classification
+    evidence_chain: List[Evidence] = field(default_factory=list)
+
+    # v0.5 P1-13: Quality control flags for input validation
+    qc_flags: List[str] = field(default_factory=list)
+    
+    # v0.5 P1-11: Upgrade conditions — forward-looking evidence gap descriptions
+    upgrade_conditions: List[str] = field(default_factory=list)
+
+    # v0.5 P1-4: Gene constraint metrics (pLI, LOEUF, lof_z, mis_z)
+    gene_constraint: Optional[Dict] = None
+
+    # v0.5 P1-10: Tier confidence classification
+    tier_confidence: str = "LOW"  # "HIGH" | "MEDIUM" | "LOW"
+
 @dataclass
 class DGRAConfig:
     """User-facing config (kept simple). Maps to DGRAGlobalConfig internally.
@@ -128,14 +173,24 @@ class DGRAConfig:
     low_af_threshold: float = 0.001
     vaf_deviation_threshold: float = 0.20
     tissue_profile: Optional[str] = None  # NO default — caller must specify
+    target_population: Optional[str] = None  # v0.5 P1-1: EAS, AMR, AFR, NFE, SAS, etc.
     offline_mode: bool = False
     somatic_mode: bool = False  # v0.4.5: tumor/somatic driver analysis mode
+    multi_organ_profiles: Optional[List[str]] = None  # v0.5 P1-7: multi-organ assessment
+    gene_sync_enabled: bool = True  # v0.5 P1-8: auto-sync special_gene_lists
+    gene_sync_ttl_days: int = 7  # v0.5 P1-8: sync cache TTL
+    force_sync: bool = False  # v0.5 P1-8: force sync gene lists (bypass cache)
+    evidence_detail: str = "brief"  # v0.5 P1-9: "brief" | "full" — evidence chain detail level in report
+    database_version: Optional[str] = None  # v0.5 P1-15: freeze analysis DB version for reproducibility
 
     def to_global(self) -> DGRAGlobalConfig:
         gc = DGRAGlobalConfig()
         gc.tissue_profile = self.tissue_profile or ""
+        gc.target_population = self.target_population or ""
         gc.offline_mode = self.offline_mode
         gc.somatic_mode = self.somatic_mode
+        gc.gene_sync_enabled = self.gene_sync_enabled
+        gc.gene_sync_ttl_days = self.gene_sync_ttl_days
         gc.min_dp = self.min_dp
         gc.min_gq = self.min_gq
         gc.common_af_threshold = self.common_af_threshold
@@ -143,13 +198,23 @@ class DGRAConfig:
         gc.vaf_deviation_threshold = self.vaf_deviation_threshold
         return gc
 
-    def get_tissue_profile(self) -> Dict:
+    def get_tissue_profile(self, force_sync: bool = False) -> Dict:
         """Load tissue profile from references/tissue_context.json.
+        v0.5 P1-8: Merged with external sync + user extensions for special_gene_lists.
+        
+        Priority of special_gene_lists:
+          1. Hardcoded CORE (safety-critical, immutable)
+          2. User add/remove extensions (user_gene_lists.json)
+          3. Auto-synced from Orphanet / OMIM
+          4. Static JSON from tissue_context.json
+        
         Raises if tissue_profile is not set.
+        Args:
+            force_sync: Force a fresh sync even if cache is not expired.
         """
         if not self.tissue_profile:
             raise ValueError(
-                "tissue_profile is required. Available profiles: hematopoietic, cardiovascular, "
+                "tissue_profile is required. Available profiles: general, hematopoietic, cardiovascular, "
                 "hepatic, renal, neurological. Specify via --tissue or config.tissue_profile."
             )
         ref_path = Path(__file__).parent.parent / "references" / "tissue_context.json"
@@ -159,7 +224,26 @@ class DGRAConfig:
         if self.tissue_profile not in profiles:
             available = ", ".join(profiles.keys())
             raise ValueError(f"Unknown tissue profile '{self.tissue_profile}'. Available: {available}")
-        return profiles[self.tissue_profile]
+        
+        profile = dict(profiles[self.tissue_profile])
+        
+        # v0.5 P1-8: Merge special_gene_lists with sync + user extensions
+        try:
+            from dgra_gene_sync import get_merged_gene_lists_sync
+            merged_lists = get_merged_gene_lists_sync(
+                tissue_profile=self.tissue_profile,
+                offline_mode=self.offline_mode,
+                sync_enabled=self.gene_sync_enabled,
+                ttl_days=self.gene_sync_ttl_days,
+                force_sync=force_sync,
+            )
+            if merged_lists:
+                profile["special_gene_lists"] = merged_lists
+        except Exception as e:
+            # Non-blocking: if merge fails, keep static lists
+            print(f"[DGRA] Gene list sync warning: {e} — using static lists")
+        
+        return profile
 
 # =============================================================================
 # Module A: Transcript Priority Correction  (v0.4: Ensembl API)
@@ -260,54 +344,211 @@ def detect_pseudogene_artifact(variant: Variant) -> Optional[Dict]:
 # Module C: gnomAD Frequency Handler
 # =============================================================================
 
-def classify_gnomad_frequency(af: Optional[float], gene: str) -> Dict:
+def classify_gnomad_frequency(af: Optional[float], gene: str,
+                               af_by_population: Optional[Dict[str, Dict]] = None,
+                               target_population: Optional[str] = None) -> Dict:
     """
     Classify gnomAD allele frequency with zero-frequency handling.
+    v0.5 P1-1: Population subgroup frequencies (EAS, AMR, AFR, NFE, SAS, etc.)
+    
+    If target_population is specified and available in af_by_population,
+    uses that population's AF for classification instead of overall AF.
     """
     # Genes with germline warnings (clonal hematopoiesis filtering)
     GERMLINE_WARNING_GENES = {"ASXL1", "DNMT3A", "TET2", "TP53", "PPM1D", "JAK2", "CBL", "IDH1", "IDH2"}
 
-    if af is None:
-        return {
+    # Determine effective AF for classification
+    effective_af = af
+    pop_note = ""
+    
+    if target_population and af_by_population and target_population in af_by_population:
+        pop_data = af_by_population[target_population]
+        pop_af = pop_data.get("af")
+        if pop_af is not None:
+            effective_af = pop_af
+            pop_note = f" Using {target_population} AF={pop_af:.6f} (overall AF={af})."
+    
+    # If overall AF is available but target population is missing, note it
+    if target_population and (not af_by_population or target_population not in (af_by_population or {})):
+        if af is not None:
+            pop_note = f" {target_population} data unavailable; using overall AF={af}."
+        else:
+            pop_note = f" {target_population} data unavailable."
+    
+    if effective_af is None:
+        result = {
             "af": "NOT_CAPTURED",
             "status": "gnomAD database does not capture this locus",
-            "interpretation": "Population frequency data unavailable. Cannot judge benign based on gnomAD.",
+            "interpretation": "Population frequency data unavailable. Cannot judge benign based on gnomAD." + pop_note,
             "action": "Continue with other modules (domain, ClinVar, zygosity).",
             "risk_adjustment": "Do NOT downgrade risk due to gnomAD absence."
         }
+        if af_by_population:
+            result["af_populations"] = af_by_population
+        return result
 
     if gene in GERMLINE_WARNING_GENES:
-        return {
-            "af": af,
+        result = {
+            "af": effective_af,
             "status": "GERMLINE_WARNING",
-            "interpretation": f"{gene} is filtered in gnomAD germline due to clonal hematopoiesis.",
+            "interpretation": f"{gene} is filtered in gnomAD germline due to clonal hematopoiesis." + pop_note,
             "action": "Use alternative databases (ExAC pre-filtered, ClinVar, LOVD).",
             "risk_adjustment": "Evaluate independently of gnomAD."
         }
+        if af_by_population:
+            result["af_populations"] = af_by_population
+        return result
 
-    if af > 0.01:
-        return {
-            "af": af,
+    if effective_af > 0.01:
+        result = {
+            "af": effective_af,
             "status": "common_polymorphism",
-            "interpretation": "High population frequency (>1%), likely benign.",
+            "interpretation": "High population frequency (>1%), likely benign." + pop_note,
             "action": "Require strong evidence to upgrade risk.",
             "risk_adjustment": "Default Tier 3 unless other evidence is strong."
         }
-    elif af > 0.001:
-        return {
-            "af": af,
+    elif effective_af > 0.001:
+        result = {
+            "af": effective_af,
             "status": "low_frequency",
-            "interpretation": "Moderate frequency (0.1-1%), needs functional assessment.",
+            "interpretation": "Moderate frequency (0.1-1%), needs functional assessment." + pop_note,
             "action": "Include in comprehensive evaluation."
         }
     else:
-        return {
-            "af": af if af else "extremely_rare",
+        result = {
+            "af": effective_af if effective_af else "extremely_rare",
             "status": "rare_variant",
-            "interpretation": "Very rare in population (<0.1%), likely under negative selection.",
+            "interpretation": "Very rare in population (<0.1%), likely under negative selection." + pop_note,
             "action": "Focus attention, requires literature search.",
             "risk_adjustment": "Do NOT downgrade risk by default."
         }
+    
+    if af_by_population:
+        result["af_populations"] = af_by_population
+    return result
+
+# =============================================================================
+# Module C.5: HGNC Gene Symbol Normalization (v0.5 P1-2)
+# =============================================================================
+
+def normalize_gene_symbols(
+    variants: List[Variant],
+    hgnc_results: Dict[str, Dict[str, Any]],
+    offline_mode: bool = False,
+) -> List[str]:
+    """
+    Normalize gene symbols using HGNC API results.
+    
+    Mutates Variant objects in-place:
+    - Sets gene_original to the original symbol
+    - Updates gene to the approved HGNC symbol
+    - Sets transcript_warning for outdated/withdrawn/unknown symbols
+    
+    Returns list of WARNING strings for the report.
+    
+    Args:
+        variants: Variant objects to normalize
+        hgnc_results: Dict mapping original symbol -> HGNC query result
+        offline_mode: If True, skip validation for known symbols; warn on unknown
+    """
+    warnings = []
+    
+    for v in variants:
+        original = v.gene
+        v.gene_original = original
+        
+        hgnc = hgnc_results.get(original, {})
+        status = hgnc.get("status", "query_failed")
+        approved = hgnc.get("approved_symbol", original)
+        
+        if status == "approved":
+            # Symbol is valid, may need case correction
+            if original != approved:
+                v.gene = approved
+                warnings.append(
+                    f"HGNC: Gene symbol corrected \"{original}\" → \"{approved}\" (approved)"
+                )
+            # else: exact match, no change needed
+            
+        elif status in ("previous", "alias"):
+            # Outdated symbol — auto-replace with approved
+            v.gene = approved
+            prev_syms = ", ".join(hgnc.get("previous_symbols", [])) or "N/A"
+            alias_syms = ", ".join(hgnc.get("alias_symbols", [])) or "N/A"
+            warnings.append(
+                f"HGNC WARNING: Outdated symbol \"{original}\" → \"{approved}\" "
+                f"(status={status}, previous={prev_syms}, alias={alias_syms})"
+            )
+            # Set transcript_warning for visibility
+            tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
+            tw["hgnc_warning"] = {
+                "original": original,
+                "approved": approved,
+                "status": status,
+                "action": "Symbol auto-corrected. Verify variant coordinates match approved symbol.",
+            }
+            v.transcript_warning = json.dumps(tw)
+            
+        elif status == "withdrawn":
+            # Symbol withdrawn — cannot map, keep original, mark warning
+            warnings.append(
+                f"HGNC WARNING: Symbol \"{original}\" is WITHDRAWN. "
+                f"Approved symbol: \"{approved}\". Cannot auto-correct — manual review required."
+            )
+            tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
+            tw["hgnc_warning"] = {
+                "original": original,
+                "approved": approved,
+                "status": "withdrawn",
+                "action": "Symbol withdrawn. Manual mapping required. Verify coordinates independently.",
+            }
+            v.transcript_warning = json.dumps(tw)
+            
+        elif status in ("not_found", "query_failed"):
+            # Unknown symbol — keep original, mark warning
+            if offline_mode:
+                # In offline mode, we can't validate. Only warn if symbol looks suspicious.
+                # Known symbols from our common lists are accepted without warning.
+                known_symbols = {
+                    "VWF", "F8", "F9", "F7", "F10", "F11", "F12", "F13A1", "F13B",
+                    "PROC", "PROS1", "SERPINC1", "SERPIND1", "PLG", "THBD",
+                    "BRCA1", "BRCA2", "TP53", "PTEN", "APC", "MLH1", "MSH2", "MSH6", "PMS2",
+                    "ATM", "CHEK2", "PALB2", "CDH1", "STK11",
+                    "RUNX1", "CEBPA", "GATA2", "ETV6", "DDX41", "SAMD9", "SAMD9L",
+                    "ASXL1", "BCOR", "BCORL1", "PHF6", "IDH1", "IDH2", "DNMT3A", "TET2",
+                    "FLT3", "NPM1", "NRAS", "KRAS", "KIT",
+                    "CYP2D6", "CYP2C19", "CYP3A4", "CYP3A5", "ABCB1", "TPMT", "DPYD", "UGT1A1",
+                    "SCN5A", "KCNQ1", "KCNH2", "RYR2", "DSP", "PKP2", "LMNA", "TTN",
+                }
+                if original not in known_symbols:
+                    warnings.append(
+                        f"HGNC WARNING: Symbol \"{original}\" could not be validated (offline mode). "
+                        f"Not in known gene lists — may be outdated or misspelled."
+                    )
+                    tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
+                    tw["hgnc_warning"] = {
+                        "original": original,
+                        "status": "unvalidated_offline",
+                        "action": "Offline mode: symbol not in known lists. Manual verification recommended.",
+                    }
+                    v.transcript_warning = json.dumps(tw)
+                # else: known symbol, silently accept in offline mode
+            else:
+                # Online mode: API returned not_found — definitely warn
+                warnings.append(
+                    f"HGNC WARNING: Symbol \"{original}\" not found in HGNC database. "
+                    f"May be misspelled, outdated, or non-standard. Keeping original symbol."
+                )
+                tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
+                tw["hgnc_warning"] = {
+                    "original": original,
+                    "status": status,
+                    "action": "Symbol not found in HGNC. Verify spelling or check if gene has been renamed.",
+                }
+                v.transcript_warning = json.dumps(tw)
+    
+    return warnings
+
 
 # =============================================================================
 # Module D: Protein Domain Mapping
@@ -447,8 +688,448 @@ def map_variant_to_domain(variant: Variant, uniprot_data: Dict[str, Dict]) -> Di
     }
 
 # =============================================================================
+# Module D.5: Gene Constraint Evaluation (v0.5 P1-4: pLI/LOEUF)
+# =============================================================================
+
+def evaluate_gene_constraint(variant: Variant) -> Dict[str, Any]:
+    """
+    Evaluate gnomAD gene constraint for variant tier modulation.
+    
+    Only applies to LOF variants (frameshift, nonsense, splice, start_lost, stop_gained).
+    Non-LOF variants get constraint info for report but no tier upgrade.
+    
+    Returns:
+    {
+        "constraint_level": "strong" | "moderate" | "tolerant" | "unknown",
+        "pLI": 0.99,
+        "loeuf": 0.12,
+        "lof_z": 5.2,
+        "mis_z": 3.1,
+        "is_lof": True,
+        "tier_adjustment": 1,  # -1, 0, or +1 (only +1 for strong LOF constraint)
+        "reason": "LOF-intolerant gene (pLI=0.99, LOEUF=0.12)",
+    }
+    """
+    gc = variant.gene_constraint
+    if not gc or gc.get("status") in ("NO_CONSTRAINT_DATA", "QUERY_FAILED"):
+        return {
+            "constraint_level": "unknown",
+            "pLI": None,
+            "loeuf": None,
+            "lof_z": None,
+            "mis_z": None,
+            "is_lof": False,
+            "tier_adjustment": 0,
+            "reason": "No constraint data available",
+        }
+    
+    pLI = gc.get("pLI")
+    loeuf = gc.get("loeuf")
+    lof_z = gc.get("lof_z")
+    mis_z = gc.get("mis_z")
+    
+    # Determine if variant is LOF
+    lof_consequences = {
+        "frameshift", "nonsense", "stop_gained", "start_lost",
+        "splice_donor", "splice_acceptor", "splice_site",
+    }
+    is_lof = any(lof_term in variant.consequence.lower() for lof_term in lof_consequences)
+    
+    # Determine constraint level
+    constraint_level = "unknown"
+    tier_adjustment = 0
+    reason = ""
+    
+    if pLI is not None and loeuf is not None:
+        if pLI >= 0.9 or loeuf <= 0.35:
+            constraint_level = "strong"
+            if is_lof:
+                tier_adjustment = 1
+                reason = f"LOF-intolerant gene (pLI={pLI:.2f}, LOEUF={loeuf:.2f}) — heterozygous LOF likely pathogenic"
+            else:
+                reason = f"LOF-intolerant gene (pLI={pLI:.2f}, LOEUF={loeuf:.2f}) — but variant is non-LOF, no tier upgrade"
+        elif (pLI >= 0.5 and pLI < 0.9) or (loeuf >= 0.35 and loeuf <= 0.8):
+            constraint_level = "moderate"
+            reason = f"Moderate LOF constraint (pLI={pLI:.2f}, LOEUF={loeuf:.2f})"
+        elif pLI < 0.5 and loeuf > 0.8:
+            constraint_level = "tolerant"
+            reason = f"LOF-tolerant gene (pLI={pLI:.2f}, LOEUF={loeuf:.2f}) — background LOF tolerated"
+    elif pLI is not None:
+        # Only pLI available
+        if pLI >= 0.9:
+            constraint_level = "strong"
+            if is_lof:
+                tier_adjustment = 1
+                reason = f"LOF-intolerant gene (pLI={pLI:.2f}) — heterozygous LOF likely pathogenic"
+            else:
+                reason = f"LOF-intolerant gene (pLI={pLI:.2f}) — but variant is non-LOF"
+        elif pLI >= 0.5:
+            constraint_level = "moderate"
+            reason = f"Moderate LOF constraint (pLI={pLI:.2f})"
+        else:
+            constraint_level = "tolerant"
+            reason = f"LOF-tolerant gene (pLI={pLI:.2f})"
+    elif loeuf is not None:
+        # Only LOEUF available
+        if loeuf <= 0.35:
+            constraint_level = "strong"
+            if is_lof:
+                tier_adjustment = 1
+                reason = f"LOF-intolerant gene (LOEUF={loeuf:.2f}) — heterozygous LOF likely pathogenic"
+            else:
+                reason = f"LOF-intolerant gene (LOEUF={loeuf:.2f}) — but variant is non-LOF"
+        elif loeuf <= 0.8:
+            constraint_level = "moderate"
+            reason = f"Moderate LOF constraint (LOEUF={loeuf:.2f})"
+        else:
+            constraint_level = "tolerant"
+            reason = f"LOF-tolerant gene (LOEUF={loeuf:.2f})"
+    else:
+        reason = "Constraint metrics incomplete"
+    
+    return {
+        "constraint_level": constraint_level,
+        "pLI": pLI,
+        "loeuf": loeuf,
+        "lof_z": lof_z,
+        "mis_z": mis_z,
+        "is_lof": is_lof,
+        "tier_adjustment": tier_adjustment,
+        "reason": reason,
+    }
+
+
+# =============================================================================
+# Module D.6: NMD Prediction (v0.5 P1-5: PVS1 refinement)
+# =============================================================================
+
+def predict_nmd(variant: Variant, ensembl_data: Optional[Dict] = None) -> Dict[str, Any]:
+    """
+    Predict nonsense-mediated decay (NMD) sensitivity based on truncation position.
+    
+    ClinGen PVS1 guidance:
+    - Internal exons (up to penultimate exon, excluding last 50-55bp) → NMD sensitive → PVS1 applies
+    - Last 50-55bp of penultimate exon → possible NMD escape → PVS1 downgraded to PM/PP
+    - Last exon → NMD escape → PVS1 does NOT apply
+    - UTR regions → NMD does NOT apply
+    
+    Returns:
+    {
+        "status": "sensitive" | "escape" | "possible_escape" | "not_applicable" | "unknown",
+        "reason": "Truncation in internal exon → classic NMD",
+        "confidence": "high" | "moderate" | "low",
+        "pvs1_applicable": True/False,
+        "pvs1_strength": "strong" | "moderate" | "weak" | "not_applicable",
+    }
+    """
+    consequence = str(variant.consequence or "").lower()
+    
+    # Check if variant is a truncating variant (LOF)
+    lof_terms = {"frameshift", "nonsense", "stop_gained", "start_lost"}
+    is_truncating = any(term in consequence for term in lof_terms)
+    
+    # Splice variants are not handled by simple exon position rules
+    if "splice" in consequence:
+        return {
+            "status": "unknown",
+            "reason": "Splice variant — NMD prediction requires transcript-level analysis",
+            "confidence": "low",
+            "pvs1_applicable": True,  # Conservative: assume PVS1 applies for splice
+            "pvs1_strength": "strong",
+        }
+    
+    if not is_truncating:
+        return {
+            "status": "not_applicable",
+            "reason": "Not a truncating variant — NMD prediction not applicable",
+            "confidence": "high",
+            "pvs1_applicable": False,
+            "pvs1_strength": "not_applicable",
+        }
+    
+    # Parse exon field (e.g., "2/15" or "15/15")
+    exon_str = str(variant.exon or "").strip()
+    if not exon_str or exon_str == _UNKNOWN:
+        # No exon info — conservative assumption: NMD sensitive
+        return {
+            "status": "unknown",
+            "reason": "NMD status unknown, assuming sensitive (conservative)",
+            "confidence": "low",
+            "pvs1_applicable": True,
+            "pvs1_strength": "strong",
+        }
+    
+    # Parse exon position
+    try:
+        if "/" in exon_str:
+            current_exon, total_exons = exon_str.split("/", 1)
+            current = int(current_exon.strip())
+            total = int(total_exons.strip())
+        elif " of " in exon_str.lower():
+            # Format: "2 of 15"
+            parts = exon_str.lower().split(" of ")
+            current = int(parts[0].strip())
+            total = int(parts[1].strip())
+        else:
+            # Single number — can't determine position
+            return {
+                "status": "unknown",
+                "reason": f"Cannot determine exon position from '{exon_str}' — assuming sensitive",
+                "confidence": "low",
+                "pvs1_applicable": True,
+                "pvs1_strength": "strong",
+            }
+    except (ValueError, IndexError):
+        return {
+            "status": "unknown",
+            "reason": f"Cannot parse exon '{exon_str}' — assuming sensitive",
+            "confidence": "low",
+            "pvs1_applicable": True,
+            "pvs1_strength": "strong",
+        }
+    
+    if total <= 0:
+        return {
+            "status": "unknown",
+            "reason": "Invalid total exon count — assuming sensitive",
+            "confidence": "low",
+            "pvs1_applicable": True,
+            "pvs1_strength": "strong",
+        }
+    
+    # Determine NMD status based on exon position
+    if current == total:
+        # Last exon — NMD escape
+        return {
+            "status": "escape",
+            "reason": f"Truncation in last exon ({current}/{total}) — NMD escape",
+            "confidence": "high",
+            "pvs1_applicable": False,
+            "pvs1_strength": "not_applicable",
+        }
+    elif current == total - 1:
+        # Penultimate exon — possible escape if within last 50-55bp of CDS
+        # Without exact CDS position, we use a conservative estimate:
+        # If we have transcript length info from Ensembl, we could be more precise
+        return {
+            "status": "possible_escape",
+            "reason": f"Truncation in penultimate exon ({current}/{total}) — possible NMD escape if within last 50-55bp",
+            "confidence": "moderate",
+            "pvs1_applicable": False,  # Conservative: don't apply PVS1 if uncertain
+            "pvs1_strength": "moderate",  # Downgraded to PM/PP level
+        }
+    else:
+        # Internal exon — classic NMD
+        return {
+            "status": "sensitive",
+            "reason": f"Truncation in internal exon ({current}/{total}) — classic NMD",
+            "confidence": "high",
+            "pvs1_applicable": True,
+            "pvs1_strength": "strong",
+        }
+
+
+# =============================================================================
+# Module D.7: Missense Stratification (v0.5 P1-5)
+# =============================================================================
+
+def evaluate_missense_tier(variant: Variant, domain_info: Optional[Dict],
+                           gene_constraint: Optional[Dict]) -> Dict[str, Any]:
+    """
+    Stratify missense variants by domain impact and conservation.
+    
+    Returns a score (0-1) and tier recommendation for missense variants.
+    
+    Scoring:
+    - Domain-critical: completely_destroyed + mis_z > 3.09 → score=0.9
+    - Likely damaging: partially_destroyed + mis_z 2-3.09 → score=0.6
+    - Tolerated: tolerated/inter-domain + mis_z < 2 → score=0.1
+    - Unknown: no domain info → score=0.3 (conservative)
+    
+    Returns:
+    {
+        "score": 0.9,
+        "tier_recommendation": 2,  # or 3
+        "category": "domain_critical" | "likely_damaging" | "tolerated" | "unknown",
+        "reason": "Missense in critical domain residue (mis_z=4.2)",
+    }
+    """
+    consequence = str(variant.consequence or "").lower()
+    
+    # Only applies to missense variants
+    if "missense" not in consequence:
+        return {
+            "score": 0.0,
+            "tier_recommendation": None,
+            "category": "not_missense",
+            "reason": "Not a missense variant",
+        }
+    
+    # Get mis_z score
+    mis_z = None
+    if gene_constraint and gene_constraint.get("mis_z") is not None:
+        mis_z = float(gene_constraint["mis_z"])
+    
+    # Get domain integrity
+    domain_integrity = None
+    if domain_info:
+        domain_integrity = domain_info.get("domain_integrity")
+    
+    # Stratify
+    if domain_integrity == "completely_destroyed":
+        if mis_z is not None and mis_z > 3.09:
+            return {
+                "score": 0.9,
+                "tier_recommendation": 2,
+                "category": "domain_critical",
+                "reason": f"Missense in critical domain residue (mis_z={mis_z:.2f}) — high pathogenic potential",
+            }
+        else:
+            return {
+                "score": 0.7,
+                "tier_recommendation": 2,
+                "category": "likely_damaging",
+                "reason": f"Missense destroys domain structure (mis_z={mis_z:.2f if mis_z else 'N/A'})",
+            }
+    elif domain_integrity == "partially_destroyed":
+        if mis_z is not None and mis_z >= 2.0:
+            return {
+                "score": 0.6,
+                "tier_recommendation": 2,
+                "category": "likely_damaging",
+                "reason": f"Missense in conserved domain (mis_z={mis_z:.2f}) — likely damaging",
+            }
+        else:
+            return {
+                "score": 0.4,
+                "tier_recommendation": 2,
+                "category": "possibly_damaging",
+                "reason": f"Missense partially disrupts domain (mis_z={mis_z:.2f if mis_z else 'N/A'})",
+            }
+    elif domain_integrity == "tolerated":
+        if mis_z is not None and mis_z < 2.0:
+            return {
+                "score": 0.1,
+                "tier_recommendation": 3,
+                "category": "tolerated",
+                "reason": f"Missense in non-critical region (mis_z={mis_z:.2f}) — likely tolerated",
+            }
+        else:
+            return {
+                "score": 0.3,
+                "tier_recommendation": 2,
+                "category": "uncertain",
+                "reason": f"Missense tolerated by structure but in conserved region (mis_z={mis_z:.2f})",
+            }
+    else:
+        # No domain info or unknown
+        if mis_z is not None and mis_z > 3.09:
+            return {
+                "score": 0.5,
+                "tier_recommendation": 2,
+                "category": "conservation_concern",
+                "reason": f"Missense in highly constrained gene (mis_z={mis_z:.2f}) — domain info unavailable",
+            }
+        else:
+            return {
+                "score": 0.3,
+                "tier_recommendation": 2,
+                "category": "unknown",
+                "reason": "Missense with unknown domain impact — conservative Tier 2",
+            }
+
+
+# =============================================================================
 # Module E: Tissue Relevance Assessment  (v0.4: GTEx API + fallback)
 # =============================================================================
+
+def aggregate_gtex_expression(results: List[Dict[str, Any]],
+                               strategy: str = "max") -> Dict[str, Any]:
+    """
+    Aggregate multi-tissue GTEx expression results.
+    
+    v0.5 P1-6: Multi-tissue GTEx aggregation. Takes a list of per-tissue
+    GTEx results and returns a single aggregated result dict compatible
+    with the single-tissue format.
+    
+    Args:
+        results: List of GTEx result dicts (from query_gtex_expression_multi)
+        strategy: Aggregation strategy — "max" (default, conservative),
+                  "mean", or "median"
+    
+    Returns:
+        Aggregated result dict with:
+        - median_tpm: aggregated TPM value
+        - max_tpm: maximum TPM across tissues
+        - mean_tpm: mean TPM across tissues
+        - expressing_tissues: count of tissues with TPM >= 1.0
+        - primary_tissues: list of tissues with TPM >= 10.0
+        - all_tissues: list of (tissue, tpm) tuples
+        - source: "gtex_multi"
+    """
+    if not results:
+        return {
+            "median_tpm": None,
+            "max_tpm": None,
+            "mean_tpm": None,
+            "expressing_tissues": 0,
+            "primary_tissues": [],
+            "all_tissues": [],
+            "source": "gtex_multi",
+            "unit": "TPM",
+        }
+    
+    # Extract valid TPM values
+    valid = []
+    all_tissues = []
+    for r in results:
+        tpm = r.get("median_tpm")
+        tissue = r.get("tissue", "unknown")
+        if tpm is not None and tpm >= 0:
+            valid.append(tpm)
+            all_tissues.append((tissue, tpm))
+    
+    if not valid:
+        return {
+            "median_tpm": None,
+            "max_tpm": None,
+            "mean_tpm": None,
+            "expressing_tissues": 0,
+            "primary_tissues": [],
+            "all_tissues": all_tissues,
+            "source": "gtex_multi",
+            "unit": "TPM",
+        }
+    
+    max_tpm = max(valid)
+    mean_tpm = sum(valid) / len(valid)
+    
+    # Determine aggregated TPM based on strategy
+    if strategy == "max":
+        aggregated_tpm = max_tpm
+    elif strategy == "mean":
+        aggregated_tpm = mean_tpm
+    elif strategy == "median":
+        sorted_tpms = sorted(valid)
+        mid = len(sorted_tpms) // 2
+        aggregated_tpm = sorted_tpms[mid] if len(sorted_tpms) % 2 == 1 else (sorted_tpms[mid - 1] + sorted_tpms[mid]) / 2
+    else:
+        aggregated_tpm = max_tpm
+    
+    expressing_tissues = sum(1 for t in valid if t >= 1.0)
+    primary_tissues = [tissue for tissue, tpm in all_tissues if tpm >= 10.0]
+    
+    return {
+        "median_tpm": aggregated_tpm,  # Named "median_tpm" for backward compatibility
+        "max_tpm": max_tpm,
+        "mean_tpm": mean_tpm,
+        "expressing_tissues": expressing_tissues,
+        "primary_tissues": primary_tissues,
+        "all_tissues": all_tissues,
+        "source": "gtex_multi",
+        "unit": "TPM",
+    }
+
 
 def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
                             gtex_data: Dict[str, Dict]) -> Dict:
@@ -472,20 +1153,47 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
     gtex = gtex_data.get(gene, {})
     tpm = gtex.get("median_tpm")
     
-    if tpm is not None:
-        # Auto-classify based on expression + ClinVar status
-        if tpm >= 10.0:
-            relevance = "primary"
-            rationale = f"High {profile_name} expression (TPM={tpm:.1f}) per GTEx."
-        elif tpm >= 1.0:
-            relevance = "secondary"
-            rationale = f"Moderate {profile_name} expression (TPM={tpm:.1f}) per GTEx."
-        elif tpm > 0:
-            relevance = "none"
-            rationale = f"Low {profile_name} expression (TPM={tpm:.2f}) per GTEx."
+    # v0.5 P1-6: Check if this is multi-tissue aggregated data
+    is_multi_tissue = gtex.get("source") == "gtex_multi"
+    all_tissues = gtex.get("all_tissues", [])
+    max_tpm = gtex.get("max_tpm")
+    mean_tpm = gtex.get("mean_tpm")
+    primary_tissues = gtex.get("primary_tissues", [])
+    expressing_tissues = gtex.get("expressing_tissues", 0)
+    
+    # v0.5 P0-6: General profile — skip GTEx tissue-specific fast-track.
+    # When gtex_tissue is null, expression-based fast-track is disabled;
+    # assessment relies on special gene lists and ClinVar/gnomAD instead.
+    if tpm is not None and tissue_profile.get("gtex_tissue") is not None:
+        # v0.5 P1-6: Multi-tissue rationale
+        if is_multi_tissue and all_tissues:
+            tissue_count = len(all_tissues)
+            if tpm >= 10.0:
+                relevance = "primary"
+                rationale = f"High {profile_name} expression (max TPM={max_tpm:.1f} across {tissue_count} tissues) per GTEx."
+            elif tpm >= 1.0:
+                relevance = "secondary"
+                rationale = f"Moderate {profile_name} expression (max TPM={max_tpm:.1f} across {tissue_count} tissues) per GTEx."
+            elif tpm > 0:
+                relevance = "none"
+                rationale = f"Low {profile_name} expression (max TPM={max_tpm:.2f} across {tissue_count} tissues) per GTEx."
+            else:
+                relevance = "none"
+                rationale = f"No detectable {profile_name} expression across {tissue_count} tissues per GTEx."
         else:
-            relevance = "none"
-            rationale = f"No detectable {profile_name} expression per GTEx."
+            # Single tissue (backward compatible)
+            if tpm >= 10.0:
+                relevance = "primary"
+                rationale = f"High {profile_name} expression (TPM={tpm:.1f}) per GTEx."
+            elif tpm >= 1.0:
+                relevance = "secondary"
+                rationale = f"Moderate {profile_name} expression (TPM={tpm:.1f}) per GTEx."
+            elif tpm > 0:
+                relevance = "none"
+                rationale = f"Low {profile_name} expression (TPM={tpm:.2f}) per GTEx."
+            else:
+                relevance = "none"
+                rationale = f"No detectable {profile_name} expression per GTEx."
         
         # Fast track for none + benign
         if relevance == "none":
@@ -513,13 +1221,44 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
             }
         
         # Primary or secondary: standard pipeline
+        # v0.5 P1-6: Enhanced clinical note for multi-tissue
+        if is_multi_tissue and all_tissues:
+            tissue_detail = "; ".join([f"{t}:{v:.1f}" for t, v in all_tissues])
+            clinical_note = f"{gene} is {relevance}-relevant to {profile_name} (max TPM={max_tpm:.1f} across {len(all_tissues)} tissues: {tissue_detail})."
+        else:
+            clinical_note = f"{gene} is {relevance}-relevant to {profile_name} (GTEx TPM={tpm:.1f})."
+        
         return {
             "tier_suggestion": "assess_via_standard_pipeline",
             "relevance": relevance,
             "gtex_tpm": tpm,
             "rationale": rationale,
             "fast_track": False,
-            "clinical_note": f"{gene} is {relevance}-relevant to {profile_name} (GTEx TPM={tpm:.1f}).",
+            "clinical_note": clinical_note,
+            "source": gtex.get("source", "gtex"),
+        }
+    
+    # --- Priority 1b: GTEx data available but tissue is null (general profile) ---
+    if tpm is not None and tissue_profile.get("gtex_tissue") is None:
+        # For general profile, use max TPM across all queried tissues as a proxy
+        # for "expressed somewhere important". Still don't fast-track based on
+        # expression alone; rely on special lists.
+        if tpm >= 10.0:
+            relevance = "primary"
+            rationale = f"High expression (TPM={tpm:.1f}) in at least one tissue. Relevant to general health."
+        elif tpm >= 1.0:
+            relevance = "secondary"
+            rationale = f"Moderate expression (TPM={tpm:.1f}) in at least one tissue."
+        else:
+            relevance = "none"
+            rationale = f"Low expression (TPM={tpm:.2f}) — not prominently expressed."
+        return {
+            "tier_suggestion": "assess_via_standard_pipeline",
+            "relevance": relevance,
+            "gtex_tpm": tpm,
+            "rationale": rationale,
+            "fast_track": False,
+            "clinical_note": f"{gene} general relevance: {relevance} (TPM={tpm:.1f}). No tissue-specific fast-track.",
             "source": gtex.get("source", "gtex"),
         }
     
@@ -569,11 +1308,14 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
     # --- Priority 3: Special gene lists (irreplaceable clinical rules) ---
     special_lists = tissue_profile.get("special_gene_lists", {})
     _SPECIAL_LIST_RELEVANCE = {
-        # hematopoietic
+        # general + hematopoietic (overlapping keys share same values)
+        "cancer_predisposition": "primary",
+        "cardiac_safety": "primary",
         "coagulation": "primary",
         "fa_dna_repair": "primary",
         "drug_metabolism": "secondary",
         "kir_cluster": "secondary",
+        "immunodeficiency": "primary",
         # cardiovascular
         "cardiomyopathy": "primary",
         "ion_channel": "primary",
@@ -642,14 +1384,162 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     """
     gene = variant.gene
     actions = []
+    # v0.5 P1-9: Initialize evidence chain for structured traceability
+    # If variant already has evidence (e.g., from previous analysis or testing), preserve it
+    evidence_chain = list(variant.evidence_chain)
+    def _add_evidence(source, rule, weight=1.0, confidence="high", raw_data=None):
+        evidence_chain.append(Evidence(source=source, rule=rule, weight=weight, confidence=confidence, raw_data=raw_data))
+    
+    def _confidence_from_data():
+        """Determine confidence based on data quality."""
+        if variant.missing_fields:
+            return "low" if len(variant.missing_fields) >= 3 else "moderate"
+        if getattr(config, 'offline_mode', False):
+            return "low"
+        return "high"
+    
+    def _calculate_tier_confidence(chain):
+        """v0.5 P1-10: Calculate tier confidence based on evidence chain.
+        
+        HIGH: >=3 independent high-confidence sources, no conflict.
+        MEDIUM: 2 independent sources, or mixed quality, or minor conflict.
+        LOW: <=1 source, or conflicting evidence, or many UNKNOWN fields.
+        """
+        if not chain:
+            return "LOW"
+        
+        # Count unique high-confidence sources
+        unique_sources = set()
+        high_conf_count = 0
+        has_conflict = False
+        
+        for ev in chain:
+            if ev.confidence in ("high", "HIGH"):
+                unique_sources.add(ev.source)
+                high_conf_count += 1
+        
+        # Check for conflicting evidence
+        clinvar_path = any("ClinVar" in ev.source and "Pathogenic" in ev.rule for ev in chain)
+        gnomad_common = any(("gnomAD" in ev.source or "Frequency" in ev.source) and "common" in ev.rule.lower() for ev in chain)
+        clinvar_benign = any("ClinVar" in ev.source and "Benign" in ev.rule for ev in chain)
+        
+        if (clinvar_path and gnomad_common) or (clinvar_path and clinvar_benign):
+            has_conflict = True
+        
+        # Check for many UNKNOWN fields
+        many_unknown = len(variant.missing_fields) >= 3 if variant.missing_fields else False
+        
+        if has_conflict or many_unknown:
+            return "LOW"
+        
+        if len(unique_sources) >= 3 and high_conf_count >= 3:
+            return "HIGH"
+        elif len(unique_sources) >= 2:
+            return "MEDIUM"
+        else:
+            return "LOW"
+    
+    def _generate_upgrade_conditions(variant, tier, tissue_assessment, gnomad_info):
+        """v0.5 P1-11: Generate forward-looking upgrade conditions based on evidence gaps.
+        
+        Tier 2 → Tier 1: What would make this variant actionable?
+        Tier 3 → Tier 2: What would make this variant worth monitoring?
+        Tier 1: No upgrade conditions (already highest tier).
+        """
+        conditions = []
+        gene = variant.gene
+        clinvar = variant.clinvar
+        impact = variant.impact
+        consequence = variant.consequence
+        gnomad_status = gnomad_info.get("status", "")
+        gnomad_af = gnomad_info.get("af")
+        
+        if tier == 2:
+            # Tier 2 → Tier 1 upgrade paths
+            # Condition 1: ClinVar upgrade
+            if clinvar and "Pathogenic" not in clinvar and "pathogenic" not in clinvar.lower():
+                conditions.append(f"若 ClinVar 收录为 Pathogenic/Likely_pathogenic 则升级为 Tier 1")
+            
+            # Condition 2: Functional evidence
+            if impact not in ("HIGH", ""):
+                conditions.append(f"若功能实验证实 {consequence} 有害（如蛋白稳定性下降）则升级为 Tier 1")
+            
+            # Condition 3: Zygosity upgrade
+            if variant.gt == "0/1":
+                conditions.append(f"若后续验证为纯合变异 (1/1) 且基因对 {tissue_assessment.get('relevance', 'target')} 组织关键则升级为 Tier 1")
+            
+            # Condition 4: gnomAD AF near threshold
+            if gnomad_af and gnomad_af > 0.001:
+                conditions.append(f"若东亚人群 AF < 0.001% 或该位点在患者中富集则升级为 Tier 1")
+            
+            # Condition 5: Domain info upgrade
+            if not variant.domain_info:
+                conditions.append(f"若位于关键功能域或保守残基（如 ATP结合位点）则升级为 Tier 1")
+        
+        elif tier == 3:
+            # Tier 3 → Tier 2 upgrade paths
+            # Condition 1: de novo validation
+            conditions.append(f"若后续家系验证为 de novo（非遗传）或患者表型与该基因高度匹配则升级为 Tier 2")
+            
+            # Condition 2: ClinVar upgrade from benign
+            if clinvar and ("Benign" in clinvar or "benign" in clinvar.lower()):
+                conditions.append(f"若 ClinVar 重新评级为 VUS 或以上，或新功能证据出现则升级为 Tier 2")
+            
+            # Condition 3: Common polymorphism but in special domain
+            if gnomad_status == "common_polymorphism":
+                conditions.append(f"若功能域分析显示该位点位于关键结构域或影响剪接则升级为 Tier 2")
+            
+            # Condition 4: Missing tissue relevance
+            if tissue_assessment.get("relevance") == "none":
+                conditions.append(f"若 GTEx 或其他数据显示该基因在 {tissue_assessment.get('relevance', 'target')} 组织中高表达则升级为 Tier 2")
+            
+            # Condition 5: Domain info gap
+            if not variant.domain_info:
+                conditions.append(f"若后续实验证实该变异影响蛋白功能或相互作用则升级为 Tier 2")
+        
+        return conditions
+    
     profile_name = tissue_profile.get("display_name", "target tissue")
     tier_rules = tissue_profile.get("tier_rules", {})
     special_lists = tissue_profile.get("special_gene_lists", {})
 
+    # v0.5 P0-7: Helpers for conservative UNKNOWN handling
+    def _is_unknown(val):
+        return val == _UNKNOWN or val == "" or val is None
+    
+    def _clinvar_pathogenic(clinvar):
+        """ClinVar pathogenic check — UNKNOWN does NOT trigger this."""
+        if _is_unknown(clinvar):
+            return False
+        return "Pathogenic" in clinvar
+    
+    def _clinvar_benign(clinvar):
+        """ClinVar benign check — UNKNOWN does NOT trigger this."""
+        if _is_unknown(clinvar):
+            return False
+        return "Benign" in clinvar and "conflicting" not in clinvar.lower()
+    
+    def _impact_high(impact):
+        """Impact HIGH check — UNKNOWN is treated as HIGH (conservative, no downgrade)."""
+        if _is_unknown(impact):
+            return True  # Missing impact data → assume worst case
+        return impact == "HIGH"
+    
+    # Report missing fields in actions
+    if variant.missing_fields:
+        actions.append(f"Missing fields: {', '.join(variant.missing_fields)} — conservative assessment applied")
+
     # Priority 0: Fast track for non-relevant tissue genes
     if tissue_assessment.get("fast_track") and tissue_assessment.get("tier_suggestion") == 3:
-        if not (variant.clinvar and "Pathogenic" in variant.clinvar):
-            return 3, tissue_assessment["reason"], []
+        if not _clinvar_pathogenic(variant.clinvar):
+            _add_evidence("TissueContext", f"FastTrack: GTEx≈0 + non-pathogenic → Tier 3 for {profile_name}", weight=0.3, confidence=_confidence_from_data(), raw_data={"relevance": tissue_assessment.get("relevance"), "gtex_tpm": tissue_assessment.get("gtex_tpm")})
+            variant.evidence_chain = evidence_chain
+            upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
+            variant.upgrade_conditions = upgrade_conditions
+            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+            upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
+
+            return 3, tissue_assessment["reason"], actions
 
     # v0.4.5: Somatic mode overrides for tumor driver analysis
     # In somatic mode, tier classification prioritizes driver mutation evidence
@@ -657,12 +1547,18 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     if hasattr(variant, 'vaf') and variant.vaf is not None and variant.vaf > 0.5:
         # Likely germline polymorphism contamination in somatic sample
         actions.append("VAF > 0.5 suggests germline contamination — verify if intended somatic analysis")
+        variant.evidence_chain = evidence_chain
+        upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
+        variant.upgrade_conditions = upgrade_conditions
+        variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+        upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
+
         return 3, f"VAF={variant.vaf:.3f} > 0.5 — likely germline polymorphism, not somatic driver", actions
     
     # Somatic mode Tier 1: Core driver mutations
     if getattr(config, 'somatic_mode', False):
         # 1a. TSG loss-of-function in tissue-relevant gene = Tier 1 (core driver)
-        if tissue_assessment.get("relevance") in ["primary", "secondary"] and variant.impact == "HIGH":
+        if tissue_assessment.get("relevance") in ["primary", "secondary"] and _impact_high(variant.impact):
             # Check if gene is known TSG (from OncoKB annotation or common TSG list)
             is_tsg = getattr(variant, 'is_tsg', False) or gene in _COMMON_TS_GENES
             if is_tsg:
@@ -671,6 +1567,12 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     reason += f", {domain_info['domain']} domain disrupted"
                 actions.append("Confirm somatic origin (VAF < 0.5, tumor-normal pair)")
                 actions.append("Assess as core leukemic driver — target for MRD monitoring")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = []  # Tier 1: no upgrade
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                upgrade_conditions = []  # Tier 1: no upgrade possible
+
                 return 1, reason, actions
         
         # 1b. Oncogene hotspot / functional domain mutation = Tier 1
@@ -683,67 +1585,252 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     reason += f" (OncoKB: {oncokb_class})"
                 actions.append("Confirm somatic origin")
                 actions.append("Assess as core leukemic driver — potential therapeutic target")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = []  # Tier 1: no upgrade
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                upgrade_conditions = []  # Tier 1: no upgrade possible
+
                 return 1, reason, actions
         
         # 1c. Known AML driver genes with HIGH impact = Tier 1
-        if gene in _KNOWN_AML_DRIVERS and variant.impact == "HIGH":
+        if gene in _KNOWN_AML_DRIVERS and _impact_high(variant.impact):
             actions.append("Known AML driver gene with truncating mutation")
             actions.append("Assess for therapeutic targeting or MRD monitoring")
+            variant.evidence_chain = evidence_chain
+            upgrade_conditions = []  # Tier 1: no upgrade
+            variant.upgrade_conditions = upgrade_conditions
+            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+            upgrade_conditions = []  # Tier 1: no upgrade possible
+
             return 1, f"Known AML driver {gene} with {variant.consequence} — core somatic driver", actions
 
     # Priority 1: Tier 1 checks (germline / donor safety logic)
     # 1a. Known high-risk special gene lists with pathogenic variant
     for list_name, gene_list in special_lists.items():
         if gene in gene_list:
-            if "coagulation" in list_name.lower() and variant.clinvar and "Pathogenic" in variant.clinvar:
+            if "coagulation" in list_name.lower() and _clinvar_pathogenic(variant.clinvar):
+                _add_evidence("ClinVar", f"Pathogenic in coagulation gene {gene} → Tier 1", weight=1.0, confidence="high", raw_data={"clinvar": variant.clinvar, "gene_list": list_name})
                 actions.append("Assess bleeding history and coagulation function before collection")
                 actions.append("Consider PBSC over BM to minimize bleeding risk")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = []  # Tier 1: no upgrade
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                upgrade_conditions = []  # Tier 1: no upgrade possible
+
                 return 1, f"{gene} pathogenic variant affects collection safety (coagulation gene)", actions
-            if "fa_dna_repair" in list_name.lower() and variant.clinvar and "Pathogenic" in variant.clinvar:
+            if "fa_dna_repair" in list_name.lower() and _clinvar_pathogenic(variant.clinvar):
                 actions.append("Assess if donor has Fanconi anemia phenotype")
                 actions.append("Biallelic = ineligible donor; heterozygous = acceptable but monitor engraftment")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = []  # Tier 1: no upgrade
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                upgrade_conditions = []  # Tier 1: no upgrade possible
+
                 return 1, f"{gene} pathogenic variant in FA pathway - marrow failure risk", actions
 
     # 1b. Homozygous truncating in primary tissue gene
-    if variant.gt in ["1/1", "1|1"] and variant.impact == "HIGH":
+    if variant.gt in ["1/1", "1|1"] and _impact_high(variant.impact):
         if tissue_assessment.get("relevance") == "primary":
+            _add_evidence("Zygosity", f"Homozygous LOF in primary tissue gene {gene} → Tier 1", weight=1.0, confidence="high", raw_data={"gt": variant.gt, "impact": variant.impact, "relevance": "primary"})
             actions.append("Confirm homozygosity via secondary method")
             actions.append("Assess if phenotype is consistent with expected tissue function")
+            variant.evidence_chain = evidence_chain
+            upgrade_conditions = []  # Tier 1: no upgrade
+            variant.upgrade_conditions = upgrade_conditions
+            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+            upgrade_conditions = []  # Tier 1: no upgrade possible
+
             return 1, f"Homozygous truncating variant in primary tissue gene {gene}", actions
+
+    # v0.5 P1-4 + P1-5: Gene constraint tier adjustment with NMD refinement
+    # Only applies to LOF variants in strongly constrained genes
+    # Placed BEFORE Priority 2 so that NMD-sensitive LOF-intolerant variants
+    # go directly to Tier 1, while NMD-escape variants fall through to Priority 2/3
+    constraint_eval = evaluate_gene_constraint(variant)
+    if constraint_eval.get("tier_adjustment") == 1:
+        # P1-5: Check NMD prediction before applying PVS1
+        nmd = variant.nmd_prediction or predict_nmd(variant)
+        nmd_status = nmd.get("status", "unknown")
+        
+        if nmd_status == "escape":
+            # Last exon — NMD escape, PVS1 does NOT apply
+            # Do NOT upgrade to Tier 1, continue to Priority 2/3
+            pass  # Fall through to Priority 2
+        elif nmd_status == "possible_escape":
+            # Penultimate exon — possible escape, PVS1 downgraded to PM/PP
+            if variant.gt in ["0/1", "0|1"] and _impact_high(variant.impact):
+                if tissue_assessment.get("relevance") in ["primary", "secondary"]:
+                    reason = f"Heterozygous {variant.consequence} in LOF-intolerant gene {gene}"
+                    reason += f" ({constraint_eval['reason']})"
+                    reason += " — PVS1_Strong→PM: possible NMD escape in penultimate exon"
+                    actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
+                    actions.append("Possible NMD escape — PVS1 downgraded to moderate evidence")
+                    actions.append("Haploinsufficiency possible but uncertain — consider functional validation")
+                    variant.evidence_chain = evidence_chain
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                    variant.upgrade_conditions = upgrade_conditions
+                    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
+                    return 2, reason, actions  # Tier 2, not Tier 1
+                else:
+                    reason = f"ClinVar pathogenic variant in LOF-intolerant gene {gene}"
+                    reason += f" ({constraint_eval['reason']})"
+                    reason += " — possible NMD escape, PVS1_Strong→PM"
+                    actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
+                    actions.append("Possible NMD escape — functional assessment needed")
+                    variant.evidence_chain = evidence_chain
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                    variant.upgrade_conditions = upgrade_conditions
+                    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
+                    return 2, reason, actions
+        elif nmd_status == "unknown":
+            # NMD uncertain — conservative: apply PVS1 but annotate uncertainty
+            if variant.gt in ["0/1", "0|1"] and _impact_high(variant.impact):
+                if tissue_assessment.get("relevance") in ["primary", "secondary"]:
+                    reason = f"Heterozygous {variant.consequence} in LOF-intolerant gene {gene}"
+                    reason += f" ({constraint_eval['reason']})"
+                    reason += f" — NMD status unknown ({nmd.get('reason', 'assuming sensitive')}), PVS1 applied conservatively"
+                    actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
+                    actions.append("NMD prediction uncertain — assumed sensitive, functional validation recommended")
+                    variant.evidence_chain = evidence_chain
+                    upgrade_conditions = []  # Tier 1: no upgrade
+                    variant.upgrade_conditions = upgrade_conditions
+                    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                    upgrade_conditions = []  # Tier 1: no upgrade possible
+
+                    return 1, reason, actions
+                else:
+                    reason = f"ClinVar pathogenic variant in LOF-intolerant gene {gene}"
+                    reason += f" ({constraint_eval['reason']})"
+                    reason += " — NMD uncertain, assumed sensitive"
+                    actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
+                    actions.append("Non-tissue-relevant but LOF-intolerant — donor's own health risk")
+                    variant.evidence_chain = evidence_chain
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                    variant.upgrade_conditions = upgrade_conditions
+                    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
+                    return 2, reason, actions
+        else:
+            # NMD sensitive — classic PVS1 applies
+            if variant.gt in ["0/1", "0|1"] and _impact_high(variant.impact):
+                if tissue_assessment.get("relevance") in ["primary", "secondary"]:
+                    _add_evidence("GeneConstraint", f"LOF-intolerant + NMD-sensitive → Tier 1 (PVS1) for {gene}", weight=0.8, confidence="high", raw_data={"pLI": constraint_eval.get('pLI'), "loeuf": constraint_eval.get('loeuf'), "nmd_status": "sensitive"})
+                    reason = f"Heterozygous {variant.consequence} in LOF-intolerant gene {gene}"
+                    reason += f" ({constraint_eval['reason']})"
+                    reason += " — NMD sensitive, PVS1 fully applicable"
+                    actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
+                    actions.append("Haploinsufficiency likely — consider functional validation")
+                    variant.evidence_chain = evidence_chain
+                    upgrade_conditions = []  # Tier 1: no upgrade
+                    variant.upgrade_conditions = upgrade_conditions
+                    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                    upgrade_conditions = []  # Tier 1: no upgrade possible
+
+                    return 1, reason, actions
+                else:
+                    reason = f"ClinVar pathogenic variant in LOF-intolerant gene {gene}"
+                    reason += f" ({constraint_eval['reason']})"
+                    reason += " — NMD sensitive, donor's own health risk"
+                    actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
+                    actions.append("Non-tissue-relevant but LOF-intolerant — assess phenotypic impact")
+                    variant.evidence_chain = evidence_chain
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                    variant.upgrade_conditions = upgrade_conditions
+                    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
+                    return 2, reason, actions
 
     # Priority 2: Tier 2 checks
     # 2a. Primary tissue gene, heterozygous, function affected
     if tissue_assessment.get("relevance") in ["primary", "secondary"] and variant.gt in ["0/1", "0|1"]:
-        if variant.impact == "HIGH":
+        if _impact_high(variant.impact):
+            _add_evidence("TissueRelevance", f"Heterozygous LOF in tissue-relevant {gene} → Tier 2", weight=0.6, confidence=_confidence_from_data(), raw_data={"relevance": tissue_assessment.get("relevance"), "gt": variant.gt, "impact": variant.impact, "domain": domain_info.get("domain") if domain_info else None})
             reason = f"Heterozygous {variant.consequence} in tissue-relevant gene {gene}"
             if domain_info and domain_info.get("domain_integrity") in ["completely_destroyed", "partially_destroyed"]:
                 reason += f", {domain_info['domain']} domain disrupted"
             actions.append("Inform donor of carrier status")
             actions.append("Monitor post-intervention recovery/function")
+            variant.evidence_chain = evidence_chain
+            upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+            variant.upgrade_conditions = upgrade_conditions
+            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+            upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
             return 2, reason, actions
+        
+        # v0.5 P1-5: Missense stratification (impact is MODERATE, not HIGH)
+        if "missense" in variant.consequence.lower():
+            missense_eval = evaluate_missense_tier(variant, domain_info, variant.gene_constraint)
+            if missense_eval.get("tier_recommendation") == 2:
+                reason = f"Heterozygous missense in tissue-relevant gene {gene}"
+                reason += f" — {missense_eval['reason']}"
+                actions.append("Inform donor of carrier status")
+                actions.append("Monitor post-intervention recovery/function")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
+                return 2, reason, actions
+            elif missense_eval.get("tier_recommendation") == 3:
+                # Missense is tolerated — continue to Priority 3
+                pass  # Fall through to Tier 3 logic
 
     # 2b. Non-primary but ClinVar pathogenic
-    if variant.clinvar and "Pathogenic" in variant.clinvar and tissue_assessment.get("relevance") == "none":
+    if _clinvar_pathogenic(variant.clinvar) and tissue_assessment.get("relevance") == "none":
+        _add_evidence("ClinVar", f"Pathogenic but non-tissue-relevant {gene} → Tier 2", weight=0.7, confidence="high", raw_data={"clinvar": variant.clinvar, "relevance": "none"})
         actions.append("Inform donor of genetic finding")
         actions.append("Refer for relevant specialist evaluation if indicated")
+        variant.evidence_chain = evidence_chain
+        upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+        variant.upgrade_conditions = upgrade_conditions
+        variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+        upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
         return 2, f"ClinVar pathogenic variant in {gene} - donor's own health may be affected", actions
 
     # 2c. Drug metabolism genes (if applicable to this tissue context)
     drug_genes = special_lists.get("drug_metabolism", [])
     if gene in drug_genes:
         actions.append(f"Monitor post-intervention drug levels if relevant medications used")
+        variant.evidence_chain = evidence_chain
+        upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+        variant.upgrade_conditions = upgrade_conditions
+        variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+        upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+
         return 2, f"Drug metabolism variant may affect pharmacokinetics", actions
 
     # Priority 3: Tier 3 - everything else
     reason_parts = []
     if gnomad_info.get("status") == "common_polymorphism":
         reason_parts.append(f"Common polymorphism (AF={gnomad_info.get('af')})")
-    if variant.clinvar and "Benign" in variant.clinvar:
+    if _clinvar_benign(variant.clinvar):
         reason_parts.append("ClinVar benign")
     if tissue_assessment.get("relevance") == "none":
         reason_parts.append("No tissue relevance")
 
     reason = "; ".join(reason_parts) if reason_parts else "Low risk based on combined assessment"
+    _add_evidence("Frequency", f"Common polymorphism / benign / no tissue relevance → Tier 3", weight=0.2, confidence="high", raw_data={"gnomad_status": gnomad_info.get("status"), "clinvar": variant.clinvar, "relevance": tissue_assessment.get("relevance")})
+    
+    # v0.5 P1-11: Generate upgrade conditions before final tier assignment
+    upgrade_conditions = _generate_upgrade_conditions(variant, tier=3, tissue_assessment=tissue_assessment, gnomad_info=gnomad_info)
+    variant.upgrade_conditions = upgrade_conditions
+    
+    variant.evidence_chain = evidence_chain
+    upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
+    variant.upgrade_conditions = upgrade_conditions
+    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
     return 3, reason, []
 
 # =============================================================================
@@ -753,15 +1840,14 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
 def _variant_has_pathogenic_evidence(v: Variant, gtex_data: Optional[Dict] = None) -> bool:
     """
     Check if a variant has evidence suggesting pathogenicity.
+    v0.5 P0-7: UNKNOWN fields treated conservatively — UNKNOWN impact is treated as HIGH,
+    UNKNOWN clinvar does not trigger benign exclusion.
     
     Criteria (OR):
       1. Affects protein domain (has specific domain mapping, not unknown/inter-domain)
          AND gene is expressed in target tissue (GTEx TPM >= 1.0)
       2. ClinVar pathogenic/likely pathogenic or HIGH impact or rare gnomAD (<0.001)
       3. Splice site change (consequence contains 'splice')
-    
-    Note: Domain impact in non-expressed genes (TPM < 1.0) is irrelevant for
-    the target tissue context.
     """
     # Quick check: splice site changes are always considered
     consequence = str(v.consequence or "").lower()
@@ -776,8 +1862,9 @@ def _variant_has_pathogenic_evidence(v: Variant, gtex_data: Optional[Dict] = Non
         tissue_tpm = gtex_data[v.gene].get("median_tpm")
     
     # Check ClinVar status for benign exclusion
+    # P0-7: UNKNOWN clinvar does NOT trigger benign exclusion (conservative)
     clinvar = str(v.clinvar or "").lower()
-    is_benign = "benign" in clinvar and "conflicting" not in clinvar
+    is_benign = ("benign" in clinvar and "conflicting" not in clinvar) if (v.clinvar and v.clinvar != _UNKNOWN) else False
     
     # 1. Domain impact — only counts if gene is expressed in target tissue
     # AND variant is not already classified as benign
@@ -792,9 +1879,11 @@ def _variant_has_pathogenic_evidence(v: Variant, gtex_data: Optional[Dict] = Non
                 return True
     
     # 2. Pathogenic evidence — always counts regardless of tissue expression
-    if "pathogenic" in clinvar and "conflicting" not in clinvar:
+    # P0-7: UNKNOWN clinvar does NOT trigger pathogenic evidence (not enough data)
+    if v.clinvar and v.clinvar != _UNKNOWN and "pathogenic" in clinvar and "conflicting" not in clinvar:
         return True
-    if v.impact == "HIGH":
+    # P0-7: UNKNOWN impact is treated as HIGH (conservative, no downgrade)
+    if v.impact == "HIGH" or v.impact == _UNKNOWN:
         return True
     if v.gnomad_af is not None and v.gnomad_af < 0.001:
         return True
@@ -1135,6 +2224,169 @@ def cross_check_patient_donor(patient_mutations: List[Dict], donor_variants: Lis
     return results
 
 # =============================================================================
+# Version & Provenance (v0.5 P1-15)
+# =============================================================================
+
+def _get_version_info(config: DGRAConfig) -> Dict:
+    """
+    Gather analysis version and provenance metadata.
+    v0.5 P1-15: Full version tracking for reproducibility.
+    """
+    import hashlib
+    import subprocess
+    
+    version_info = {
+        "dgra_version": "0.5.0",
+        "analysis_date": datetime.now().isoformat(),
+    }
+    
+    # Cache version: hash of SQLite cache file
+    cache_path = getattr(config, 'cache_db_path', None)
+    if cache_path and Path(cache_path).exists():
+        try:
+            with open(cache_path, 'rb') as f:
+                cache_hash = hashlib.sha256(f.read()).hexdigest()[:16]
+            version_info["cache_version"] = cache_hash
+        except Exception:
+            version_info["cache_version"] = "unknown"
+    else:
+        version_info["cache_version"] = "no_cache"
+    
+    # Offline archive: latest file modification time
+    if OFFLINE_ARCHIVE_DIR.exists():
+        try:
+            mtimes = [p.stat().st_mtime for p in OFFLINE_ARCHIVE_DIR.iterdir() if p.is_file()]
+            if mtimes:
+                latest_mtime = max(mtimes)
+                version_info["offline_archive_date"] = datetime.fromtimestamp(latest_mtime).isoformat()
+            else:
+                version_info["offline_archive_date"] = "empty"
+        except Exception:
+            version_info["offline_archive_date"] = "unknown"
+    else:
+        version_info["offline_archive_date"] = "no_archive"
+    
+    # Git commit hash of dgra_core.py
+    try:
+        script_dir = Path(__file__).resolve().parent
+        result = subprocess.run(
+            ["git", "-C", str(script_dir), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            version_info["dgra_core_commit"] = result.stdout.strip()[:12]
+        else:
+            version_info["dgra_core_commit"] = "unknown"
+    except Exception:
+        version_info["dgra_core_commit"] = "unknown"
+    
+    # Database version override (CLI --database-version)
+    db_version = getattr(config, 'database_version', None)
+    if db_version:
+        version_info["database_version"] = db_version
+    
+    return version_info
+
+# =============================================================================
+# Quality Control Checks (v0.5 P1-13)
+# =============================================================================
+
+_REPEATMASKER_DATA = None  # Lazy-loaded cache
+
+def _load_repeatmasker():
+    """Load repeatmasker regions from references."""
+    global _REPEATMASKER_DATA
+    if _REPEATMASKER_DATA is not None:
+        return _REPEATMASKER_DATA
+    rm_path = Path(__file__).resolve().parent.parent / "references" / "repeatmasker_regions.json"
+    if rm_path.exists():
+        with open(rm_path, 'r') as f:
+            _REPEATMASKER_DATA = json.load(f)
+    else:
+        _REPEATMASKER_DATA = []
+    return _REPEATMASKER_DATA
+
+def _is_in_repeat_region(chrom, pos):
+    """Check if position falls within any repeatmasker region."""
+    regions = _load_repeatmasker()
+    for region in regions:
+        if str(region.get("chrom", "")) == str(chrom) and region.get("start", 0) <= pos <= region.get("end", 0):
+            return True
+    return False
+
+def _run_qc_checks(variants: List[Variant]) -> Dict:
+    """
+    v0.5 P1-13: Input quality control checks.
+    
+    Flags anomalies but does NOT reject analysis — conservative approach.
+    Returns QC summary dict for report rendering.
+    """
+    qc_summary = {
+        "total": len(variants),
+        "flagged": 0,
+        "by_flag": {},
+        "flagged_variants": [],
+    }
+    
+    for v in variants:
+        flags = []
+        
+        # 1. VAF range check
+        if v.vaf is not None and (v.vaf < 0 or v.vaf > 1):
+            flags.append("INVALID_VAF")
+        
+        # 2. DP depth check
+        if v.dp < 10:
+            flags.append("LOW_DEPTH")
+        elif v.dp >= 10:
+            # Check allele support (AD/DP ratio) if AD is available
+            # AD not in standard Variant dataclass, skip if unavailable
+            pass  # AD field not in core Variant; could be extended later
+        
+        # 3. Low complexity / repeat region check
+        if _is_in_repeat_region(v.chrom, v.pos):
+            flags.append("LOW_COMPLEXITY_REGION")
+        
+        # 4. Gene symbol format check (P1-2 HGNC rules)
+        gene = v.gene
+        if gene:
+            # Invalid if starts with digit, too long, or contains illegal chars
+            if gene[0].isdigit():
+                flags.append("INVALID_GENE_SYMBOL")
+            elif len(gene) > 50:
+                flags.append("INVALID_GENE_SYMBOL")
+            elif not re.match(r'^[A-Za-z][A-Za-z0-9\-]*$', gene):
+                flags.append("INVALID_GENE_SYMBOL")
+        
+        # v0.5 P1-14: HGNC validation — check transcript_warning for HGNC status
+        if v.transcript_warning:
+            try:
+                tw = json.loads(v.transcript_warning)
+                hgnc_warn = tw.get("hgnc_warning", {})
+                hgnc_status = hgnc_warn.get("status", "")
+                # Withdrawn, not_found, query_failed, or unvalidated_offline = invalid
+                if hgnc_status in ("withdrawn", "not_found", "query_failed", "unvalidated_offline"):
+                    if "INVALID_GENE_SYMBOL" not in flags:
+                        flags.append("INVALID_GENE_SYMBOL")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        
+        v.qc_flags = flags
+        
+        if flags:
+            qc_summary["flagged"] += 1
+            qc_summary["flagged_variants"].append({
+                "gene": v.gene,
+                "chrom": v.chrom,
+                "pos": v.pos,
+                "flags": flags,
+            })
+            for f in flags:
+                qc_summary["by_flag"][f] = qc_summary["by_flag"].get(f, 0) + 1
+    
+    return qc_summary
+
+# =============================================================================
 # Report Generation
 # =============================================================================
 
@@ -1152,15 +2404,72 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 
     report = []
-    report.append("# DGRA Report - Donor Genomic Risk Assessment v0.4\n")
+    report.append("# DGRA Report - Donor Genomic Risk Assessment v0.5\n")
     report.append(f"**Analysis Context**: {profile_name}\n")
     report.append(f"**Tissue Profile**: `{config.tissue_profile}`\n")
     report.append(f"**Offline Mode**: {'Yes' if config.offline_mode else 'No'}\n")
     report.append(f"**Analysis Date**: {datetime.now().isoformat()}\n")
     report.append(f"**Total Variants Assessed**: {len(variants)}\n")
+    
+    # v0.5 P1-15: Version and provenance metadata
+    version_info = _get_version_info(config)
+    report.append(f"**DGRA Version**: {version_info.get('dgra_version', '0.5.0')}\n")
+    if version_info.get('cache_version'):
+        report.append(f"**Cache Version**: {version_info['cache_version']}\n")
+    if version_info.get('offline_archive_date') and version_info['offline_archive_date'] not in ('no_archive', 'empty', 'unknown'):
+        report.append(f"**Offline Archive Date**: {version_info['offline_archive_date']}\n")
+    if version_info.get('dgra_core_commit') and version_info['dgra_core_commit'] != 'unknown':
+        report.append(f"**Code Commit**: `{version_info['dgra_core_commit']}`\n")
+    if version_info.get('database_version'):
+        report.append(f"**Database Version**: {version_info['database_version']}\n")
+    report.append("\n")
+    
     report.append(f"**Tier 1 (Action Required)**: {len(tier1)}\n")
     report.append(f"**Tier 2 (Inform & Monitor)**: {len(tier2)}\n")
     report.append(f"**Tier 3 (No Concern)**: {len(tier3)}\n\n")
+
+    # v0.5 P1-13: QC summary table
+    # Collect QC flags from all variants
+    all_qc_flags = []
+    for v in variants:
+        all_qc_flags.extend(v.qc_flags)
+    
+    if all_qc_flags:
+        from collections import Counter
+        flag_counts = Counter(all_qc_flags)
+        report.append("## ⚠️ 输入 QC 异常汇总\n")
+        report.append(f"**总异常数**: {len(all_qc_flags)} 条（涉及 {len(set((v.chrom, v.pos) for v in variants if v.qc_flags))} 个变异）\n\n")
+        report.append("| QC 标志 | 计数 | 说明 |\n")
+        report.append("|---------|------|------|\n")
+        
+        flag_descriptions = {
+            "INVALID_VAF": "VAF 超出 [0,1] 范围",
+            "LOW_DEPTH": "测序深度 < 10x",
+            "LOW_COMPLEXITY_REGION": "位于低复杂度/重复区域",
+            "INVALID_GENE_SYMBOL": "基因名格式不符合 HGNC 规范",
+        }
+        
+        # Show top 5 most frequent flags
+        for flag, count in flag_counts.most_common(5):
+            desc = flag_descriptions.get(flag, "未知标志")
+            report.append(f"| {flag} | {count} | {desc} |\n")
+        
+        if len(flag_counts) > 5:
+            report.append(f"| ... | ... | 共 {len(flag_counts)} 种异常 |\n")
+        
+        # Show first 5 flagged variant details
+        flagged = [v for v in variants if v.qc_flags][:5]
+        if flagged:
+            report.append(f"\n**前 5 条异常变异**:\n")
+            report.append("| 位置 | 基因 | 异常标志 |\n")
+            report.append("|------|------|----------|\n")
+            for v in flagged:
+                report.append(f"| {v.chrom}:{v.pos} | {v.gene} | {', '.join(v.qc_flags)} |\n")
+        
+        if len([v for v in variants if v.qc_flags]) > 5:
+            report.append(f"\n*... 共 {len([v for v in variants if v.qc_flags])} 个变异有异常，详见 JSON 输出*\n")
+        
+        report.append("\n")
 
     # Multi-hit warnings
     if multi_hits:
@@ -1233,8 +2542,8 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
             
             # Variant table
-            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 说明 |\n")
-            report.append("|---|-----------|--------|---------|--------|--------|---------|------|\n")
+            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 基因约束 | 置信度 | 说明 |\n")
+            report.append("|---|-----------|--------|---------|--------|--------|---------|----------|--------|------|\n")
             
             for i, v in enumerate(var_list, 1):
                 # Position
@@ -1259,11 +2568,28 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                 # ClinVar
                 clin = v.clinvar or "N/A"
                 
+                # v0.5 P1-4: Gene constraint
+                gc_info = ""
+                if v.gene_constraint:
+                    pLI = v.gene_constraint.get("pLI")
+                    loeuf = v.gene_constraint.get("loeuf")
+                    parts = []
+                    if pLI is not None:
+                        parts.append(f"pLI={pLI:.2f}")
+                    if loeuf is not None:
+                        parts.append(f"LOEUF={loeuf:.2f}")
+                    if parts:
+                        gc_info = " | ".join(parts)
+                
                 # Reason (shortened)
                 reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
                 reason = reason.replace("|", "/")  # avoid markdown table break
                 
-                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {reason} |\n")
+                # v0.5 P1-10: Confidence indicator
+                conf = v.tier_confidence or "UNKNOWN"
+                conf_icon = "⚠️" if conf == "LOW" else ""
+                
+                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {gc_info} | {conf_icon} {conf} | {reason} |\n")
             
             report.append(f"\n**详细说明**:\n")
             for i, v in enumerate(var_list, 1):
@@ -1281,9 +2607,42 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                 if v.tissue_relevance:
                     tr = v.tissue_relevance
                     report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
+                # v0.5 P1-4: Gene constraint
+                if v.gene_constraint:
+                    gc = v.gene_constraint
+                    parts = []
+                    if gc.get("pLI") is not None:
+                        parts.append(f"pLI={gc['pLI']:.2f}")
+                    if gc.get("loeuf") is not None:
+                        parts.append(f"LOEUF={gc['loeuf']:.2f}")
+                    if gc.get("lof_z") is not None:
+                        parts.append(f"lof_z={gc['lof_z']:.2f}")
+                    if gc.get("mis_z") is not None:
+                        parts.append(f"mis_z={gc['mis_z']:.2f}")
+                    if parts:
+                        report.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
                 report.append(f"   - 分级原因: {v.tier_reason}\n")
+                # v0.5 P1-9: Structured evidence chain
+                if v.evidence_chain:
+                    report.append(f"   - **证据链** ({len(v.evidence_chain)} 条):\n")
+                    chain = v.evidence_chain
+                    evidence_detail = getattr(config, 'evidence_detail', 'brief')
+                    if evidence_detail == 'brief' and len(chain) > 3:
+                        chain = chain[:3]
+                        report.append(f"     *(brief mode: 显示前 3 条关键证据)*\n")
+                    for ev in chain:
+                        report.append(f"     - **{ev.source}**: {ev.rule} (权重={ev.weight:.2f}, 置信度={ev.confidence})\n")
+                        if evidence_detail == 'full' and ev.raw_data:
+                            raw_summary = {k: v for k, v in ev.raw_data.items() if k in ('af', 'tpm', 'pLI', 'loeuf', 'status', 'domain')}
+                            if raw_summary:
+                                report.append(f"       原始数据: {raw_summary}\n")
                 if v.tier_actions:
                     report.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
+                # v0.5 P1-11: Upgrade conditions for forward-looking assessment
+                if v.upgrade_conditions:
+                    report.append(f"   - **升级条件**:\n")
+                    for uc in v.upgrade_conditions:
+                        report.append(f"     → {uc}\n")
                 report.append(f"\n")
 
     # Tier 2
@@ -1302,8 +2661,8 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
             
             # Variant table
-            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 说明 |\n")
-            report.append("|---|-----------|--------|---------|--------|--------|---------|------|\n")
+            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 基因约束 | 置信度 | 说明 |\n")
+            report.append("|---|-----------|--------|---------|--------|--------|---------|----------|--------|------|\n")
             
             for i, v in enumerate(var_list, 1):
                 pos = f"{v.chrom}:{v.pos}"
@@ -1318,7 +2677,25 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                 clin = v.clinvar or "N/A"
                 reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
                 reason = reason.replace("|", "/")
-                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {reason} |\n")
+                
+                # v0.5 P1-4: Gene constraint
+                gc_info = ""
+                if v.gene_constraint:
+                    pLI = v.gene_constraint.get("pLI")
+                    loeuf = v.gene_constraint.get("loeuf")
+                    parts = []
+                    if pLI is not None:
+                        parts.append(f"pLI={pLI:.2f}")
+                    if loeuf is not None:
+                        parts.append(f"LOEUF={loeuf:.2f}")
+                    if parts:
+                        gc_info = " | ".join(parts)
+                
+                # v0.5 P1-10: Confidence indicator
+                conf = v.tier_confidence or "UNKNOWN"
+                conf_icon = "⚠️" if conf == "LOW" else ""
+                
+                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {gc_info} | {conf_icon} {conf} | {reason} |\n")
             
             report.append(f"\n**详细说明**:\n")
             for i, v in enumerate(var_list, 1):
@@ -1336,9 +2713,28 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                 if v.tissue_relevance:
                     tr = v.tissue_relevance
                     report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
+                # v0.5 P1-4: Gene constraint
+                if v.gene_constraint:
+                    gc = v.gene_constraint
+                    parts = []
+                    if gc.get("pLI") is not None:
+                        parts.append(f"pLI={gc['pLI']:.2f}")
+                    if gc.get("loeuf") is not None:
+                        parts.append(f"LOEUF={gc['loeuf']:.2f}")
+                    if gc.get("lof_z") is not None:
+                        parts.append(f"lof_z={gc['lof_z']:.2f}")
+                    if gc.get("mis_z") is not None:
+                        parts.append(f"mis_z={gc['mis_z']:.2f}")
+                    if parts:
+                        report.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
                 report.append(f"   - 分级原因: {v.tier_reason}\n")
                 if v.tier_actions:
                     report.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
+                # v0.5 P1-11: Upgrade conditions for forward-looking assessment
+                if v.upgrade_conditions:
+                    report.append(f"   - **升级条件**:\n")
+                    for uc in v.upgrade_conditions:
+                        report.append(f"     → {uc}\n")
                 report.append(f"\n")
 
     # Tier 3
@@ -1355,22 +2751,30 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             if len(var_list) <= 3:
                 # Short list: inline table
                 report.append(f"**{gene}** ({len(var_list)} variants):\n")
-                report.append("| 位置 | 变异 | 功能域 | 原因 |\n")
-                report.append("|------|------|--------|------|\n")
+                report.append("| 位置 | 变异 | 功能域 | 置信度 | 原因 |\n")
+                report.append("|------|------|--------|--------|------|\n")
                 for v in var_list:
                     pos = f"{v.chrom}:{v.pos}"
                     var_name = v.hgvsp or v.hgvsc or "N/A"
                     di = v.domain_info
                     domain = f"{di.get('domain', 'N/A')}" if di else "N/A"
+                    # v0.5 P1-10: Confidence
+                    conf = v.tier_confidence or "UNKNOWN"
+                    conf_icon = "⚠️" if conf == "LOW" else ""
                     reason = v.tier_reason[:50] + "..." if len(v.tier_reason) > 50 else v.tier_reason
                     reason = reason.replace("|", "/")
-                    report.append(f"| {pos} | {var_name} | {domain} | {reason} |\n")
+                    report.append(f"| {pos} | {var_name} | {domain} | {conf_icon} {conf} | {reason} |\n")
                 report.append(f"\n")
             else:
                 # Many variants: just count
                 report.append(f"**{gene}**: {len(var_list)} variants — 详见原始数据\n\n")
-        
-        report.append(f"\n")
+            
+            # v0.5 P1-11: Show upgrade conditions for Tier 3 short-list genes
+            if len(var_list) <= 3:
+                for v in var_list:
+                    if v.upgrade_conditions:
+                        report.append(f"   *{v.hgvsp or v.hgvsc} 升级条件*: {' / '.join(v.upgrade_conditions[:2])}\n")
+                report.append(f"\n")
 
     # Methodology
     report.append("---\n\n## 方法学附录\n")
@@ -1388,6 +2792,147 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     report.append("8. **缓存**: 所有 API 响应缓存 30 天 (SQLite); 离线模式仅用缓存\n")
 
     return "\n".join(report)
+
+# =============================================================================
+# JSON Structured Report Generation (v0.5 P1-12)
+# =============================================================================
+
+def generate_json_report(variants: List[Variant], config: DGRAConfig,
+                         tissue_profile: Dict, multi_hits: List[Dict],
+                         cross_check: List[Dict], report_md: str,
+                         qc_summary: Optional[Dict] = None) -> Dict:
+    """
+    Generate structured JSON report for downstream system consumption.
+    v0.5 P1-12: Complete structured output alongside Markdown report.
+    """
+    profile_name = tissue_profile.get("display_name", config.tissue_profile)
+    
+    # Meta section — v0.5 P1-15: include full version metadata
+    meta = {
+        "dgra_version": "0.5.0",
+        "analysis_date": datetime.now().isoformat(),
+        "input_format": "vcf",
+        "tissue_profile": config.tissue_profile,
+        "target_population": getattr(config, 'target_population', None),
+        "scoring_model": "weighted",
+        "evidence_detail": getattr(config, 'evidence_detail', 'brief'),
+        "offline_mode": config.offline_mode,
+        "somatic_mode": config.somatic_mode,
+        "multi_organ_profiles": config.multi_organ_profiles,
+    }
+    # Merge version/provenance info (P1-15)
+    meta.update(_get_version_info(config))
+    
+    # Summary section
+    summary = {
+        "total_variants": len(variants),
+        "tier1_count": len([v for v in variants if v.tier == 1]),
+        "tier2_count": len([v for v in variants if v.tier == 2]),
+        "tier3_count": len([v for v in variants if v.tier == 3]),
+        "multi_hit_genes": [mh["gene"] for mh in multi_hits],
+        "patient_inherited_drivers": [
+            cc["patient_mutation"]["gene"]
+            for cc in cross_check if cc.get("donor_status") == "PRESENT"
+        ],
+    }
+    
+    # Variants array — structured per variant
+    variants_json = []
+    for v in variants:
+        # Build evidence chain JSON
+        evidence_chain = []
+        for ev in v.evidence_chain:
+            evidence_chain.append({
+                "source": ev.source,
+                "rule": ev.rule,
+                "weight": ev.weight,
+                "confidence": ev.confidence,
+                "raw_data": ev.raw_data,
+            })
+        
+        # Build gnomAD section
+        gnomad_section = {
+            "overall_af": v.gnomad_af,
+            "popmax_af": None,
+            "eas_af": None,
+        }
+        if v.gnomad_populations:
+            for pop_code, pop_data in v.gnomad_populations.items():
+                if pop_code == "EAS":
+                    gnomad_section["eas_af"] = pop_data.get("af")
+                # Track popmax
+                pop_af = pop_data.get("af")
+                if pop_af is not None:
+                    current_max = gnomad_section["popmax_af"] or 0
+                    if pop_af > current_max:
+                        gnomad_section["popmax_af"] = pop_af
+        
+        # Build GTEx section
+        gtex_section = {"tissue": None, "tpm_median": None}
+        if v.tissue_relevance:
+            gtex_section["tissue"] = v.tissue_relevance.get("gtex_tissue")
+            gtex_section["tpm_median"] = v.tissue_relevance.get("gtex_tpm")
+        
+        # Build NMD prediction
+        nmd_section = {"status": "not_applicable"}
+        if v.gene_constraint and "nmd_prediction" in v.gene_constraint:
+            nmd_section = v.gene_constraint["nmd_prediction"]
+        
+        # Build ClinVar section
+        clinvar_section = {
+            "clinical_significance": v.clinvar if v.clinvar != _UNKNOWN else None,
+            "review_status": None,
+        }
+        
+        variant_json = {
+            "gene": v.gene,
+            "gene_original": v.gene_original or v.gene,
+            "chrom": v.chrom,
+            "pos": v.pos,
+            "ref": v.ref,
+            "alt": v.alt,
+            "hgvsc": v.hgvsc or None,
+            "hgvsp": v.hgvsp or None,
+            "transcript": v.transcript or None,
+            "exon": v.exon or None,
+            "impact": v.impact if v.impact != _UNKNOWN else None,
+            "consequence": v.consequence if v.consequence != _UNKNOWN else None,
+            "zygosity": v.gt or None,
+            "vaf": v.vaf,
+            "dp": v.dp,
+            "gq": v.gq,
+            "tier": v.tier,
+            "tier_confidence": v.tier_confidence,
+            "tier_reason": v.tier_reason or None,
+            "tier_actions": v.tier_actions,
+            "evidence_chain": evidence_chain,
+            "upgrade_conditions": v.upgrade_conditions,
+            "gene_constraint": v.gene_constraint,
+            "clinvar": clinvar_section,
+            "gnomAD": gnomad_section,
+            "gtex": gtex_section,
+            "nmd_prediction": nmd_section,
+            "domain_info": v.domain_info,
+            "tissue_relevance": v.tissue_relevance,
+            "quality_confidence": v.quality_confidence,
+            "missing_fields": v.missing_fields,
+            "pseudogene_warning": json.loads(v.pseudogene_warning) if v.pseudogene_warning else None,
+            "transcript_warning": json.loads(v.transcript_warning) if v.transcript_warning else None,
+        }
+        variants_json.append(variant_json)
+    
+    # Assemble final JSON
+    json_report = {
+        "meta": meta,
+        "summary": summary,
+        "variants": variants_json,
+        "multi_hit_details": multi_hits,
+        "patient_donor_cross_check": cross_check,
+        "qc_summary": qc_summary,  # v0.5 P1-13: input QC flags
+        "report_md": report_md,
+    }
+    
+    return json_report
 
 # =============================================================================
 # Main Pipeline  (v0.4: async + batch API queries)
@@ -1420,6 +2965,56 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     # Parse variants
     variants = []
     for vd in variants_data:
+        # P0-7: Conservative missing field handling
+        # Detect which critical fields are missing/empty and record them.
+        missing = []
+        
+        raw_impact = vd.get("IMPACT", "").strip()
+        if not raw_impact:
+            raw_impact = _UNKNOWN
+            missing.append("IMPACT")
+        
+        raw_consequence = vd.get("Consequence", "").strip()
+        if not raw_consequence:
+            raw_consequence = _UNKNOWN
+            missing.append("Consequence")
+        
+        raw_clinvar = vd.get("CLIN_SIG", "").strip()
+        if not raw_clinvar:
+            raw_clinvar = _UNKNOWN
+            missing.append("CLIN_SIG")
+        
+        raw_dp = vd.get("DP", "").strip()
+        dp_val = int(raw_dp) if raw_dp and raw_dp != _UNKNOWN else 0
+        if not raw_dp:
+            missing.append("DP")
+        
+        raw_gq = vd.get("GQ", "").strip()
+        gq_val = float(raw_gq) if raw_gq and raw_gq != _UNKNOWN else 0.0
+        if not raw_gq:
+            missing.append("GQ")
+        
+        raw_vaf = vd.get("VAF", "").strip()
+        vaf_val = float(raw_vaf) if raw_vaf else None
+        if not raw_vaf:
+            missing.append("VAF")
+        
+        raw_gnomad = vd.get("gnomAD_AF", "").strip()
+        gnomad_val = float(raw_gnomad) if raw_gnomad and raw_gnomad != "N/A" else None
+        if not raw_gnomad:
+            missing.append("gnomAD_AF")
+        
+        # Determine quality confidence
+        quality_confidence = "high"
+        if missing:
+            n_critical = sum(1 for f in missing if f in ("IMPACT", "Consequence", "VAF", "CLIN_SIG"))
+            if n_critical >= 3:
+                quality_confidence = "unknown"
+            elif n_critical >= 1:
+                quality_confidence = "low"
+            else:
+                quality_confidence = "medium"
+        
         v = Variant(
             chrom=vd.get("CHROM", ""),
             pos=int(vd.get("POS", 0)),
@@ -1428,20 +3023,23 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
             gene=vd.get("GENE", ""),
             transcript=vd.get("Feature", ""),
             exon=vd.get("EXON", ""),
-            impact=vd.get("IMPACT", ""),
-            consequence=vd.get("Consequence", ""),
+            impact=raw_impact,
+            consequence=raw_consequence,
             hgvsp=vd.get("HGVSp", ""),
             hgvsc=vd.get("HGVSc", ""),
-            clinvar=vd.get("CLIN_SIG", ""),
-            dp=int(vd.get("DP", 0)) if vd.get("DP") else 0,
-            gq=float(vd.get("GQ", 0)) if vd.get("GQ") else 0,
+            clinvar=raw_clinvar,
+            dp=dp_val,
+            gq=gq_val,
             gt=vd.get("GT", ""),
-            vaf=float(vd.get("VAF", 0)) if vd.get("VAF") else None,
-            gnomad_af=float(vd.get("gnomAD_AF", 0)) if vd.get("gnomAD_AF") else None,
+            vaf=vaf_val,
+            gnomad_af=gnomad_val,
             # v0.4.5: somatic annotation fields
             classification=vd.get("classification", ""),
             is_tsg=vd.get("is_tsg", "") == "Yes" or vd.get("is_tsg", False) == True,
             is_oncogene=vd.get("is_oncogene", "") == "Yes" or vd.get("is_oncogene", False) == True,
+            # v0.5 P0-7
+            quality_confidence=quality_confidence,
+            missing_fields=missing,
         )
         variants.append(v)
 
@@ -1456,26 +3054,54 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     ensembl_data = {}
     uniprot_data = {}
     gtex_data = {}
+    hgnc_data = {}
+    gnomad_constraint_data = {}
 
     if not config.offline_mode and unique_genes:
         cache = DGRACache(global_config.cache_db_path)
         async with DGRAAPIClient(global_config, cache) as client:
-            # Batch query all three APIs concurrently
-            ensembl_raw, uniprot_raw, gtex_raw = await asyncio.gather(
+            # v0.5 P1-6: Multi-tissue GTEx aggregation
+            gtex_tissues = tissue_profile.get("gtex_tissues")
+            gtex_single_tissue = tissue_profile.get("gtex_tissue")
+            
+            if gtex_tissues and len(gtex_tissues) > 1:
+                # Multi-tissue query
+                gtex_raw = await client.batch_query_genes(
+                    unique_genes, "gtex_multi",
+                    tissues=gtex_tissues
+                )
+                # Aggregate multi-tissue results
+                gtex_data = {}
+                for gene in unique_genes:
+                    multi_result = gtex_raw.get(gene, [])
+                    if isinstance(multi_result, list) and multi_result:
+                        gtex_data[gene] = aggregate_gtex_expression(multi_result)
+                    else:
+                        gtex_data[gene] = multi_result if isinstance(multi_result, dict) else {}
+                print(f"[DGRA] GTEx multi-tissue query: {len(gtex_tissues)} tissues ({', '.join(gtex_tissues)})")
+            else:
+                # Single tissue query (backward compatible)
+                gtex_raw = await client.batch_query_genes(
+                    unique_genes, "gtex",
+                    tissue=gtex_single_tissue or "Whole Blood"
+                )
+                gtex_data = {g: gtex_raw.get(g, {}) for g in unique_genes}
+            
+            # Batch query other APIs concurrently with GTEx
+            ensembl_raw, uniprot_raw, hgnc_raw, gnomad_constraint_raw = await asyncio.gather(
                 client.batch_query_genes(unique_genes, "ensembl"),
                 client.batch_query_genes(unique_genes, "uniprot"),
-                client.batch_query_genes(
-                    unique_genes, "gtex",
-                    tissue=tissue_profile.get("gtex_tissue", "Whole Blood")
-                ),
+                client.batch_query_genes(unique_genes, "hgnc"),
+                client.batch_query_genes(unique_genes, "gnomad_constraint"),
             )
             ensembl_data = {g: ensembl_raw.get(g, {}) for g in unique_genes}
             uniprot_data = {g: uniprot_raw.get(g, {}) for g in unique_genes}
-            gtex_data = {g: gtex_raw.get(g, {}) for g in unique_genes}
-        print(f"[DGRA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}")
+            hgnc_data = {g: hgnc_raw.get(g, {}) for g in unique_genes}
+            gnomad_constraint_data = {g: gnomad_constraint_raw.get(g, {}) for g in unique_genes}
+        print(f"[DGRA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
         # Persist successful API results for future offline use
         for gene in unique_genes:
-            _save_offline_archive(gene, ensembl_data, uniprot_data, gtex_data, config.tissue_profile)
+            _save_offline_archive(gene, ensembl_data, uniprot_data, gtex_data, config.tissue_profile, gnomad_constraint_data)
         print(f"[DGRA] Offline archive saved for {len(unique_genes)} genes to {OFFLINE_ARCHIVE_DIR}")
     else:
         # Offline mode: try to load archived data first, then fall back to local rules
@@ -1486,10 +3112,52 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
                 ensembl_data[gene] = archive.get("ensembl", {})
                 uniprot_data[gene] = archive.get("uniprot", {})
                 gtex_data[gene] = archive.get("gtex", {})
+                # v0.5 P1-4: Load cached gnomAD constraint if available
+                gc = archive.get("gnomad_constraint")
+                if gc and gc.get("status") == "CAPTURED":
+                    gnomad_constraint_data[gene] = gc
                 loaded += 1
         print(f"[DGRA] Offline mode: loaded archived data for {loaded}/{len(unique_genes)} genes from {OFFLINE_ARCHIVE_DIR}")
         if loaded == 0:
             print("[DGRA] Offline mode: no archive found, using local fallbacks only (conservative)")
+        hgnc_data = {}
+        # gnomad_constraint_data already populated from archive above
+        # No HGNC data in offline mode unless cached
+
+    # ------------------------------------------------------------------
+    # Step 0.5: HGNC Gene Symbol Normalization (v0.5 P1-2)
+    # ------------------------------------------------------------------
+    hgnc_warnings = normalize_gene_symbols(variants, hgnc_data, offline_mode=config.offline_mode)
+    if hgnc_warnings:
+        print(f"[DGRA] HGNC normalization: {len(hgnc_warnings)} warnings")
+        for w in hgnc_warnings[:5]:  # Print first 5
+            print(f"  - {w}")
+        if len(hgnc_warnings) > 5:
+            print(f"  ... and {len(hgnc_warnings) - 5} more")
+
+    # Step 0.6: Populate gene constraint data (v0.5 P1-4)
+    for v in variants:
+        gc = gnomad_constraint_data.get(v.gene, {})
+        if gc and gc.get("status") == "CAPTURED":
+            v.gene_constraint = {
+                "pLI": gc.get("pLI"),
+                "loeuf": gc.get("loeuf"),
+                "lof_z": gc.get("lof_z"),
+                "mis_z": gc.get("mis_z"),
+                "oe_lof": gc.get("oe_lof"),
+                "source": gc.get("source", "gnomad"),
+            }
+
+    # Step 0.7: NMD prediction for truncating variants (v0.5 P1-5)
+    nmd_count = 0
+    for v in variants:
+        lof_terms = {"frameshift", "nonsense", "stop_gained", "start_lost"}
+        is_truncating = any(term in v.consequence.lower() for term in lof_terms)
+        if is_truncating:
+            v.nmd_prediction = predict_nmd(v, ensembl_data.get(v.gene, {}) if ensembl_data else None)
+            nmd_count += 1
+    if nmd_count > 0:
+        print(f"[DGRA] NMD prediction computed for {nmd_count} truncating variants")
 
     # ------------------------------------------------------------------
     # Step 1: Transcript correction (v0.4: Ensembl API)
@@ -1505,9 +3173,13 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         if pg_warning:
             v.pseudogene_warning = json.dumps(pg_warning)
 
-    # Step 3: gnomAD classification (unchanged)
+    # Step 3: gnomAD classification (v0.5 P1-1: population subgroup AFs)
     for v in variants:
-        gnomad_info = classify_gnomad_frequency(v.gnomad_af, v.gene)
+        gnomad_info = classify_gnomad_frequency(
+            v.gnomad_af, v.gene,
+            af_by_population=v.gnomad_populations,
+            target_population=getattr(config, 'target_population', None)
+        )
         v.gnomad_status = gnomad_info["status"]
 
     # Step 4: Protein domain mapping (v0.4: UniProt API)
@@ -1524,10 +3196,19 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     # Step 6: Multi-hit detection (unchanged)
     multi_hits = detect_multi_hit_genes(variants, gtex_data)
 
+    # v0.5 P1-13: Input QC checks — after parsing, before tier classification
+    qc_summary = _run_qc_checks(variants)
+    if qc_summary["flagged"] > 0:
+        print(f"[DGRA] QC: {qc_summary['flagged']}/{qc_summary['total']} variants flagged: {qc_summary['by_flag']}")
+
     # Step 7: Three-tier classification (with tissue context)
     for v in variants:
         tissue = tissue_assessments[v.gene]
-        gnomad_info = classify_gnomad_frequency(v.gnomad_af, v.gene)
+        gnomad_info = classify_gnomad_frequency(
+            v.gnomad_af, v.gene,
+            af_by_population=v.gnomad_populations,
+            target_population=getattr(config, 'target_population', None)
+        )
         tw = json.loads(v.transcript_warning) if v.transcript_warning else None
         pw = json.loads(v.pseudogene_warning) if v.pseudogene_warning else None
 
@@ -1575,6 +3256,9 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
 
     # Step 9: Generate report (with tissue context)
     report_md = generate_tier_report(variants, config, tissue_profile, multi_hits, cross_check)
+    
+    # v0.5 P1-12: Generate structured JSON report
+    json_report = generate_json_report(variants, config, tissue_profile, multi_hits, cross_check, report_md, qc_summary)
 
     # Compile structured output
     def _count_valid(data_dict):
@@ -1606,10 +3290,202 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         "tier3_variants": [asdict(v) for v in variants if v.tier == 3],
         "multi_hit_details": multi_hits,
         "patient_donor_cross_check": cross_check,
-        "report_markdown": report_md
+        "report_markdown": report_md,
+        "json_report": json_report,  # v0.5 P1-12: structured JSON for downstream systems
+        "qc_summary": qc_summary,  # v0.5 P1-13: input QC flags
     }
 
     return output
+
+# =============================================================================
+# Multi-Organ Assessment  (v0.5 P1-7)
+# =============================================================================
+
+async def run_multi_organ_assessment(variants_data: List[Dict],
+                                      patient_mutations: List[Dict] = None,
+                                      config: Optional[DGRAConfig] = None) -> Dict:
+    """
+    v0.5 P1-7: Multi-organ joint assessment.
+    
+    Runs DGRA for each profile in config.multi_organ_profiles, then generates
+    a joint risk matrix taking the MAX tier across profiles per variant.
+    
+    API queries are performed per-profile (GTEx tissue-specific), but cached
+    responses minimize redundant calls.
+    
+    Args:
+        variants_data: List of variant dicts from VCF annotation
+        patient_mutations: List of patient somatic driver mutations
+        config: DGRA configuration with multi_organ_profiles set
+    
+    Returns:
+        Dict with per-profile results + joint report
+    """
+    if config is None:
+        config = DGRAConfig()
+    
+    if not config.multi_organ_profiles or len(config.multi_organ_profiles) == 0:
+        raise ValueError("multi_organ_profiles must be set for multi-organ assessment")
+    
+    profiles = config.multi_organ_profiles
+    print(f"[DGRA] Multi-organ assessment: {len(profiles)} profiles — {', '.join(profiles)}")
+    
+    # Run each profile independently
+    profile_results = {}
+    for profile_name in profiles:
+        profile_config = DGRAConfig(
+            tissue_profile=profile_name,
+            offline_mode=config.offline_mode,
+            somatic_mode=config.somatic_mode,
+            target_population=config.target_population,
+            min_dp=config.min_dp,
+            min_gq=config.min_gq,
+            common_af_threshold=config.common_af_threshold,
+            low_af_threshold=config.low_af_threshold,
+            vaf_deviation_threshold=config.vaf_deviation_threshold,
+            force_sync=config.force_sync,
+        )
+        print(f"\n[DGRA] === Running profile: {profile_name} ===")
+        result = await run_dgra_pipeline(variants_data, patient_mutations, profile_config)
+        profile_results[profile_name] = result
+    
+    # Build joint risk matrix: max tier across profiles per variant
+    variant_tiers_by_profile = {}  # gene_pos -> {profile: tier}
+    variant_details = {}  # gene_pos -> variant dict
+    
+    for profile_name, result in profile_results.items():
+        for tier_field in ["tier1_variants", "tier2_variants", "tier3_variants"]:
+            tier_num = int(tier_field.replace("tier", "").replace("_variants", ""))
+            for v_dict in result.get(tier_field, []):
+                key = (v_dict.get("gene", ""), v_dict.get("chrom", ""), v_dict.get("pos", 0))
+                if key not in variant_tiers_by_profile:
+                    variant_tiers_by_profile[key] = {}
+                    variant_details[key] = v_dict
+                variant_tiers_by_profile[key][profile_name] = tier_num
+    
+    # Compute max tier per variant
+    joint_tiers = {}
+    for key, tiers in variant_tiers_by_profile.items():
+        max_tier = max(tiers.values())
+        joint_tiers[key] = {
+            "gene": key[0],
+            "chrom": key[1],
+            "pos": key[2],
+            "max_tier": max_tier,
+            "per_profile": tiers,
+            "details": variant_details[key],
+        }
+    
+    # Generate joint report
+    joint_report = generate_multi_organ_report(profile_results, joint_tiers, profiles)
+    
+    # Summary
+    tier1_joint = [k for k, v in joint_tiers.items() if v["max_tier"] == 1]
+    tier2_joint = [k for k, v in joint_tiers.items() if v["max_tier"] == 2]
+    tier3_joint = [k for k, v in joint_tiers.items() if v["max_tier"] == 3]
+    
+    # Cross-profile high-concern variants (Tier 1 in any profile)
+    high_concern = []
+    for key, info in joint_tiers.items():
+        if info["max_tier"] == 1:
+            profiles_t1 = [p for p, t in info["per_profile"].items() if t == 1]
+            high_concern.append({
+                "gene": info["gene"],
+                "chrom": info["chrom"],
+                "pos": info["pos"],
+                "tier_1_in": profiles_t1,
+                "all_profiles": info["per_profile"],
+            })
+    
+    return {
+        "meta": {
+            "multi_organ": True,
+            "profiles": profiles,
+            "analysis_date": datetime.now().isoformat(),
+            "total_variants": len(variants_data),
+        },
+        "profile_results": profile_results,
+        "joint_summary": {
+            "tier1_count": len(tier1_joint),
+            "tier2_count": len(tier2_joint),
+            "tier3_count": len(tier3_joint),
+            "high_concern_variants": high_concern,
+        },
+        "joint_risk_matrix": joint_tiers,
+        "joint_report_markdown": joint_report,
+    }
+
+
+def generate_multi_organ_report(profile_results: Dict[str, Dict],
+                                 joint_tiers: Dict,
+                                 profiles: List[str]) -> str:
+    """
+    v0.5 P1-7: Generate a joint multi-organ risk assessment report.
+    
+    Includes:
+    - Joint summary (Tier 1/2/3 counts across all profiles)
+    - Risk matrix table (variant x profile)
+    - High-concern variants (Tier 1 in any profile)
+    - Per-profile reports (appended)
+    """
+    report = []
+    
+    report.append("# DGRA 多器官联合风险评估报告\n")
+    report.append(f"**评估器官**: {', '.join(profiles)}\n")
+    report.append(f"**分析日期**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    report.append(f"**联合策略**: 跨器官取最高 Tier（最保守）\n\n")
+    
+    # Joint summary
+    tier1_count = sum(1 for k, v in joint_tiers.items() if v["max_tier"] == 1)
+    tier2_count = sum(1 for k, v in joint_tiers.items() if v["max_tier"] == 2)
+    tier3_count = sum(1 for k, v in joint_tiers.items() if v["max_tier"] == 3)
+    
+    report.append("## 联合风险摘要\n\n")
+    report.append(f"- **Tier 1 (需干预)**: {tier1_count} 个变异\n")
+    report.append(f"- **Tier 2 (需知情)**: {tier2_count} 个变异\n")
+    report.append(f"- **Tier 3 (无需担忧)**: {tier3_count} 个变异\n\n")
+    
+    # Risk matrix
+    report.append("## 联合风险矩阵\n\n")
+    report.append("| 基因 | 位置 | " + " | ".join(profiles) + " | **最高 Tier** |\n")
+    report.append("|------|------|" + "|".join(["------"] * len(profiles)) + "|----------|\n")
+    
+    for key, info in sorted(joint_tiers.items(), key=lambda x: (x[1]["gene"], x[1]["pos"])):
+        gene = info["gene"]
+        pos = f"{info['chrom']}:{info['pos']}"
+        tier_cells = []
+        for p in profiles:
+            t = info["per_profile"].get(p, "-")
+            tier_cells.append(str(t))
+        max_tier = info["max_tier"]
+        report.append(f"| {gene} | {pos} | " + " | ".join(tier_cells) + f" | **{max_tier}** |\n")
+    
+    report.append("\n")
+    
+    # High-concern variants
+    high_concern = [(k, v) for k, v in joint_tiers.items() if v["max_tier"] == 1]
+    if high_concern:
+        report.append("## 高关注变异（任一器官 Tier 1）\n\n")
+        for key, info in high_concern:
+            gene = info["gene"]
+            pos = f"{info['chrom']}:{info['pos']}"
+            t1_profiles = [p for p, t in info["per_profile"].items() if t == 1]
+            report.append(f"- **{gene}** ({pos}): Tier 1 于 {', '.join(t1_profiles)}\n")
+            # Show all profile tiers
+            tier_detail = ", ".join([f"{p}: Tier {t}" for p, t in info["per_profile"].items()])
+            report.append(f"  - 全器官评估: {tier_detail}\n")
+        report.append("\n")
+    
+    # Per-profile reports
+    report.append("---\n\n")
+    report.append("# 各器官独立评估报告\n\n")
+    for profile_name in profiles:
+        result = profile_results[profile_name]
+        report.append(f"## [{profile_name}] {result['meta']['profile_display_name']}\n\n")
+        report.append(result.get("report_markdown", "(无报告)\n"))
+        report.append("\n---\n\n")
+    
+    return "\n".join(report)
 
 # =============================================================================
 # CLI Interface  (v0.4: --offline + asyncio.run)
@@ -1624,18 +3500,55 @@ def main():
     parser.add_argument("--input", "-i", required=True, help="Input CSV/TSV with annotated variants")
     parser.add_argument("--patient-mutations", "-p", help="JSON file with patient somatic mutations")
     parser.add_argument("--output", "-o", default="dgra_report.md", help="Output report file")
-    parser.add_argument("--json", "-j", help="Output JSON file with structured results")
-    parser.add_argument("--tissue", "-t", required=True,
-                        help="Tissue/organ context profile (REQUIRED). "
+    parser.add_argument("--json", "-j", help="Output JSON file with full structured results (backward compatible)")
+    parser.add_argument("--output-json", dest="output_json",
+                        help="Output P1-12 structured JSON report for downstream systems (v0.5 P1-12)")
+    parser.add_argument("--tissue", "-t", default="hematopoietic",
+                        help="Tissue/organ context profile. "
                              "Controls which genes are considered relevant for tier classification. "
-                             "Available: hematopoietic, cardiovascular, hepatic, renal, neurological")
+                             "Available: general, hematopoietic, cardiovascular, hepatic, renal, neurological. "
+                             "Default: hematopoietic. Mutually exclusive with --multi-organ.")
+    parser.add_argument("--multi-organ", default=None,
+                        help="Multi-organ assessment: comma-separated profiles, e.g. 'hematopoietic,cardiovascular'. "
+                             "Runs independent assessment for each profile and generates a joint risk matrix. "
+                             "Takes max tier across profiles. Mutually exclusive with --tissue. (v0.5 P1-7)")
     parser.add_argument("--offline", action="store_true",
                         help="Offline mode: skip all API calls, use cache + local references only")
     parser.add_argument("--somatic", action="store_true",
                         help="Somatic mode: tumor driver mutation analysis (not germline donor screening). "
                              "TSG truncating + oncogene hotspots = Tier 1")
+    parser.add_argument("--sync-gene-lists", action="store_true",
+                        help="Force sync special_gene_lists from external sources (Orphanet, OMIM) before analysis. "
+                             "Bypasses cache TTL. (v0.5 P1-8)")
+    parser.add_argument("--evidence-detail", choices=["brief", "full"], default="brief",
+                        help="Evidence chain detail level in report: brief (top 3) or full (all). (v0.5 P1-9)")
+    parser.add_argument("--target-population", "--population",
+                        choices=["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN", "MID", "OTH"],
+                        help="Target population for gnomAD subgroup AF classification (v0.5 P1-1). "
+                             "Uses that population's AF instead of overall AF for frequency-based tiering.")
+    parser.add_argument("--database-version",
+                        help="Freeze analysis to a specific database version for reproducibility "
+                             "(e.g., 'gnomAD v4.1'). Recorded in output meta. (v0.5 P1-15)")
 
     args = parser.parse_args()
+
+    # v0.5 P1-7: Validate --multi-organ vs --tissue mutual exclusion
+    multi_organ = None
+    if args.multi_organ:
+        if args.tissue != "hematopoietic":
+            # tissue was explicitly set (not default)
+            print("Error: --tissue and --multi-organ are mutually exclusive. Use one or the other.")
+            sys.exit(1)
+        multi_organ = [p.strip() for p in args.multi_organ.split(",") if p.strip()]
+        valid_tissues = {"general", "hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
+        invalid = [p for p in multi_organ if p not in valid_tissues]
+        if invalid:
+            print(f"Error: Invalid multi-organ profile(s): {', '.join(invalid)}. Valid: {', '.join(sorted(valid_tissues))}")
+            sys.exit(1)
+        if len(multi_organ) < 1 or len(multi_organ) > 3:
+            print("Error: --multi-organ requires 1-3 profiles.")
+            sys.exit(1)
+        print(f"Multi-organ assessment: {', '.join(multi_organ)}")
 
     # Read variants from CSV/TSV
     variants_data = []
@@ -1651,7 +3564,50 @@ def main():
             patient_mutations = json.load(f)
 
     # Run async pipeline with tissue context
-    config = DGRAConfig(tissue_profile=args.tissue, offline_mode=args.offline, somatic_mode=args.somatic)
+    config = DGRAConfig(
+        tissue_profile=args.tissue,
+        offline_mode=args.offline,
+        somatic_mode=args.somatic,
+        target_population=args.target_population,
+        multi_organ_profiles=multi_organ,
+        force_sync=args.sync_gene_lists,
+        evidence_detail=args.evidence_detail,
+        database_version=args.database_version,  # v0.5 P1-15
+    )
+    
+    # v0.5 P1-7: Multi-organ path
+    if multi_organ:
+        results = asyncio.run(run_multi_organ_assessment(variants_data, patient_mutations, config))
+        
+        # Write joint report
+        with open(args.output, 'w') as f:
+            f.write(results["joint_report_markdown"])
+        
+        print(f"DGRA Multi-Organ Report Generated: {args.output}")
+        print(f"Profiles assessed: {', '.join(multi_organ)}")
+        print(f"Joint Summary: Tier 1={results['joint_summary']['tier1_count']}, "
+              f"Tier 2={results['joint_summary']['tier2_count']}, "
+              f"Tier 3={results['joint_summary']['tier3_count']}")
+        
+        if results['joint_summary']['high_concern_variants']:
+            genes = [v['gene'] for v in results['joint_summary']['high_concern_variants']]
+            print(f"High-concern variants (Tier 1 in any profile): {', '.join(genes)}")
+        
+        # Write JSON if requested (backward compatible)
+        if args.json:
+            with open(args.json, 'w') as f:
+                json.dump(results, f, indent=2, default=str)
+            print(f"Structured output written to: {args.json}")
+        
+        # v0.5 P1-12: Write P1-12 structured JSON report if requested
+        if args.output_json:
+            with open(args.output_json, 'w') as f:
+                json.dump(results.get("json_report", {}), f, indent=2, default=str, ensure_ascii=False)
+            print(f"P1-12 JSON report written to: {args.output_json}")
+        
+        return
+    
+    # Single-organ path (original behavior)
     results = asyncio.run(run_dgra_pipeline(variants_data, patient_mutations, config))
 
     # Write report
@@ -1668,11 +3624,17 @@ def main():
     if results['summary']['multi_hit_genes']:
         print(f"Multi-hit genes: {', '.join(results['summary']['multi_hit_genes'])}")
 
-    # Write JSON if requested
+    # Write JSON if requested (backward compatible)
     if args.json:
         with open(args.json, 'w') as f:
             json.dump(results, f, indent=2, default=str)
         print(f"Structured output written to: {args.json}")
+    
+    # v0.5 P1-12: Write P1-12 structured JSON report if requested
+    if args.output_json:
+        with open(args.output_json, 'w') as f:
+            json.dump(results.get("json_report", {}), f, indent=2, default=str, ensure_ascii=False)
+        print(f"P1-12 JSON report written to: {args.output_json}")
 
 if __name__ == "__main__":
     main()

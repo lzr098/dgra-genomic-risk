@@ -600,22 +600,70 @@ class DGRAAPIClient:
         with open(cache_path, "w") as f:
             json.dump(cache, f, indent=2, sort_keys=True)
     
+    async def query_gtex_expression_multi(self, gene_id: str, tissues: List[str]) -> List[Dict[str, Any]]:
+        """
+        Query GTEx v2 API for median gene expression across multiple tissues.
+        
+        Uses asyncio.gather to concurrently query all tissues.
+        Returns a list of individual tissue results.
+        
+        Args:
+            gene_id: Gene symbol (e.g., "VWF")
+            tissues: List of GTEx tissue names (e.g., ["Bone Marrow", "Whole Blood"])
+            
+        Returns:
+            List of result dicts, one per tissue (same format as query_gtex_expression)
+        """
+        if not tissues:
+            return []
+        
+        # Launch concurrent queries for all tissues
+        tasks = [self.query_gtex_expression(gene_id, tissue) for tissue in tissues]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        processed = []
+        for tissue, result in zip(tissues, results):
+            if isinstance(result, Exception):
+                processed.append({
+                    "gene": gene_id,
+                    "tissue": tissue,
+                    "median_tpm": None,
+                    "unit": "TPM",
+                    "source": "failed",
+                    "confidence": "low",
+                    "error": str(result),
+                })
+            else:
+                processed.append(result)
+        
+        return processed
+    
     # =====================================================================
     # gnomAD GraphQL API
     # =====================================================================
     
     async def query_gnomad_variant(self, chrom: str, pos: int, ref: str, alt: str,
-                                    dataset: str = "gnomad_r4") -> Dict[str, Any]:
+                                    dataset: str = "gnomad_r4",
+                                    populations: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Query gnomAD for variant allele frequency and constraint metrics.
+        v0.5 P1-1: Population subgroup frequencies (EAS, AMR, AFR, NFE, SAS, etc.)
         
-        Uses GraphQL API. Returns structured frequency data.
+        Uses GraphQL API. Returns structured frequency data including per-population AFs.
+        
+        Args:
+            populations: List of population codes to query. Default: ["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN"]
         
         Returns:
         {
             "variant_id": "1-12345-A-G",
-            "af": 0.00123,
-            "af_popmax": 0.00234,
+            "af": 0.00123,           # overall combined AF
+            "af_popmax": 0.00234,   # max across populations
+            "af_populations": {      # per-population AFs
+                "EAS": {"af": 0.0001, "ac": 1, "an": 15278},
+                "AMR": {"af": 0.0023, "ac": 3, "an": 13000},
+                ...
+            },
             "an": 152000,
             "hom_count": 2,
             "gene_constraint": {"lof_z": 2.5, "pLI": 0.99},
@@ -623,24 +671,42 @@ class DGRAAPIClient:
             "confidence": "medium",
         }
         """
-        query = """
-        query VariantQuery($variantId: String!, $datasetId: DatasetId!) {
-            variant(variantId: $variantId, dataset: $datasetId) {
+        if populations is None:
+            populations = ["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN", "MID", "OTH"]
+        
+        # Build populations query fragment dynamically
+        pop_fields = "\n".join(
+            f"""                {pop} {{
+                    ac
+                    an
+                    homozygote_count
+                }}""" for pop in populations
+        )
+        
+        query = f"""
+        query VariantQuery($variantId: String!, $datasetId: DatasetId!) {{
+            variant(variantId: $variantId, dataset: $datasetId) {{
                 variantId
-                exome {
+                exome {{
                     af
                     an
                     ac
                     homozygote_count
-                }
-                genome {
+                    populations {{
+{pop_fields}
+                    }}
+                }}
+                genome {{
                     af
                     an
                     ac
                     homozygote_count
-                }
-            }
-        }
+                    populations {{
+{pop_fields}
+                    }}
+                }}
+            }}
+        }}
         """
         variant_id = f"{chrom}-{pos}-{ref}-{alt}"
         
@@ -665,6 +731,8 @@ class DGRAAPIClient:
                 return {
                     "variant_id": variant_id,
                     "af": None,
+                    "af_popmax": None,
+                    "af_populations": {},
                     "status": "NOT_CAPTURED",
                     "source": "gnomad",
                     "confidence": "medium",
@@ -690,9 +758,47 @@ class DGRAAPIClient:
             else:
                 combined_af = None
             
+            # v0.5 P1-1: Aggregate per-population frequencies across exome + genome
+            af_populations = {}
+            ex_pops = exome.get("populations", {}) or {}
+            gen_pops = genome.get("populations", {}) or {}
+            
+            all_pops = set(ex_pops.keys()) | set(gen_pops.keys())
+            popmax_af = 0.0
+            
+            for pop in all_pops:
+                ex_pop = ex_pops.get(pop, {}) or {}
+                gen_pop = gen_pops.get(pop, {}) or {}
+                
+                ex_ac = ex_pop.get("ac", 0) or 0
+                ex_an = ex_pop.get("an", 0) or 0
+                ex_hom = ex_pop.get("homozygote_count", 0) or 0
+                
+                gen_ac = gen_pop.get("ac", 0) or 0
+                gen_an = gen_pop.get("an", 0) or 0
+                gen_hom = gen_pop.get("homozygote_count", 0) or 0
+                
+                total_ac = ex_ac + gen_ac
+                total_an = ex_an + gen_an
+                total_hom = ex_hom + gen_hom
+                
+                pop_af = total_ac / total_an if total_an > 0 else None
+                
+                if pop_af is not None:
+                    af_populations[pop] = {
+                        "af": pop_af,
+                        "ac": total_ac,
+                        "an": total_an,
+                        "homozygote_count": total_hom,
+                    }
+                    if pop_af > popmax_af:
+                        popmax_af = pop_af
+            
             return {
                 "variant_id": variant_id,
                 "af": combined_af,
+                "af_popmax": popmax_af if af_populations else None,
+                "af_populations": af_populations,
                 "af_exome": exome_af,
                 "af_genome": genome_af,
                 "an_exome": exome.get("an"),
@@ -707,6 +813,103 @@ class DGRAAPIClient:
         return {
             "variant_id": variant_id,
             "af": None,
+            "af_popmax": None,
+            "af_populations": {},
+            "status": "QUERY_FAILED",
+            "source": "failed",
+            "confidence": "low",
+            "error": result.get("error"),
+        }
+    
+    # =====================================================================
+    # gnomAD Gene Constraint (v0.5 P1-4: pLI/LOEUF)
+    # =====================================================================
+    
+    async def query_gnomad_gene_constraint(self, gene_symbol: str) -> Dict[str, Any]:
+        """
+        Query gnomAD gene constraint metrics (pLI, LOEUF, lof_z, mis_z).
+        
+        Uses GraphQL API. Returns structured constraint data.
+        
+        Returns:
+        {
+            "gene": "BRCA1",
+            "pLI": 1.0,
+            "lof_z": 5.2,
+            "mis_z": 3.1,
+            "loeuf": 0.12,       # Loss-of-function observed/expected upper bound fraction
+            "oe_lof": 0.08,       # Observed/expected LOF
+            "source": "gnomad|cache",
+            "confidence": "medium",
+        }
+        """
+        query = """
+        query GeneConstraint($geneSymbol: String!, $datasetId: DatasetId!) {
+            gene(gene_symbol: $geneSymbol, reference_genome: GRCh38) {
+                gnomad_constraint {
+                    pLI
+                    oe_lof
+                    oe_lof_upper  # LOEUF
+                    oe_lof_lower
+                    lof_z
+                    mis_z
+                }
+            }
+        }
+        """
+        
+        result = await self._request_with_retry(
+            api_name="gnomad",
+            endpoint="/",
+            method="POST",
+            json_body={
+                "query": query,
+                "variables": {
+                    "geneSymbol": gene_symbol,
+                    "datasetId": "gnomad_r4",
+                },
+            },
+        )
+        
+        if result["data"] and result["http_status"] == 200:
+            data = result["data"]
+            gene_data = data.get("data", {}).get("gene", {})
+            constraint = gene_data.get("gnomad_constraint", {}) if gene_data else {}
+            
+            if not constraint:
+                return {
+                    "gene": gene_symbol,
+                    "pLI": None,
+                    "lof_z": None,
+                    "mis_z": None,
+                    "loeuf": None,
+                    "oe_lof": None,
+                    "status": "NO_CONSTRAINT_DATA",
+                    "source": "gnomad",
+                    "confidence": "medium",
+                    "note": f"No constraint data for {gene_symbol}",
+                }
+            
+            return {
+                "gene": gene_symbol,
+                "pLI": constraint.get("pLI"),
+                "lof_z": constraint.get("lof_z"),
+                "mis_z": constraint.get("mis_z"),
+                "loeuf": constraint.get("oe_lof_upper"),
+                "oe_lof": constraint.get("oe_lof"),
+                "oe_lof_lower": constraint.get("oe_lof_lower"),
+                "status": "CAPTURED",
+                "source": "cache" if result["from_cache"] else "gnomad",
+                "confidence": result["confidence"],
+            }
+        
+        return {
+            "gene": gene_symbol,
+            "pLI": None,
+            "lof_z": None,
+            "mis_z": None,
+            "loeuf": None,
+            "oe_lof": None,
             "status": "QUERY_FAILED",
             "source": "failed",
             "confidence": "low",
@@ -807,6 +1010,120 @@ class DGRAAPIClient:
         }
     
     # =====================================================================
+    # HGNC Symbol Normalization (v0.5 P1-2)
+    # =====================================================================
+    
+    async def query_hgnc_symbol(self, symbol: str) -> Dict[str, Any]:
+        """
+        Query HGNC REST API to validate and normalize a gene symbol.
+        
+        Uses /search/symbol:{symbol} endpoint. Returns approval status,
+        previous/alias symbols, and HGNC ID.
+        
+        Returns:
+        {
+            "input": "BRCA1",
+            "approved_symbol": "BRCA1",
+            "hgnc_id": "HGNC:1100",
+            "status": "approved",       # approved | previous | alias | withdrawn | not_found
+            "previous_symbols": [],
+            "alias_symbols": [],
+            "locus_type": "gene with protein product",
+            "source": "hgnc|cache",
+            "confidence": "medium",
+        }
+        """
+        result = await self._request_with_retry(
+            api_name="hgnc",
+            endpoint=f"/search/symbol:{symbol}",
+            headers={"Accept": "application/json"},
+        )
+        
+        if result["data"] and result["http_status"] == 200:
+            data = result["data"]
+            docs = data.get("response", {}).get("docs", [])
+            
+            if not docs:
+                return {
+                    "input": symbol,
+                    "approved_symbol": symbol,
+                    "hgnc_id": None,
+                    "status": "not_found",
+                    "previous_symbols": [],
+                    "alias_symbols": [],
+                    "locus_type": None,
+                    "source": "hgnc",
+                    "confidence": "medium",
+                }
+            
+            doc = docs[0]  # Best match
+            hgnc_id = doc.get("hgnc_id")
+            approved = doc.get("symbol")
+            status = doc.get("status", "unknown")
+            
+            # HGNC returns status as strings like "Approved", "Entry Withdrawn"
+            status_norm = status.lower().replace(" ", "_")
+            if "approved" in status_norm and "withdrawn" not in status_norm:
+                status_code = "approved"
+            elif "withdrawn" in status_norm:
+                status_code = "withdrawn"
+            elif status_norm == "previous":
+                status_code = "previous"
+            elif status_norm == "alias":
+                status_code = "alias"
+            else:
+                status_code = "unknown"
+            
+            # If input doesn't match approved symbol, check if it's a previous/alias
+            if symbol.upper() != approved.upper():
+                # Check previous symbols
+                prev_syms = doc.get("prev_symbol", [])
+                if symbol.upper() in [s.upper() for s in prev_syms]:
+                    status_code = "previous"
+                
+                # Check alias symbols
+                alias_syms = doc.get("alias_symbol", [])
+                if symbol.upper() in [s.upper() for s in alias_syms]:
+                    status_code = "alias"
+            
+            return {
+                "input": symbol,
+                "approved_symbol": approved,
+                "hgnc_id": hgnc_id,
+                "status": status_code,
+                "previous_symbols": doc.get("prev_symbol", []),
+                "alias_symbols": doc.get("alias_symbol", []),
+                "locus_type": doc.get("locus_type"),
+                "source": "cache" if result["from_cache"] else "hgnc",
+                "confidence": result["confidence"],
+            }
+        
+        return {
+            "input": symbol,
+            "approved_symbol": symbol,
+            "hgnc_id": None,
+            "status": "query_failed",
+            "previous_symbols": [],
+            "alias_symbols": [],
+            "locus_type": None,
+            "source": "failed",
+            "confidence": "low",
+            "error": result.get("error"),
+        }
+    
+    async def batch_normalize_gene_symbols(
+        self,
+        symbols: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch normalize gene symbols via HGNC API.
+        
+        Returns dict mapping original symbol -> normalization result.
+        Uses batch_query_genes with hgnc query_type internally.
+        """
+        return await self.batch_query_genes(symbols, query_type="hgnc")
+    
+    # =====================================================================
     # Batch Query Support
     # =====================================================================
     
@@ -835,6 +1152,13 @@ class DGRAAPIClient:
                 elif query_type == "gtex":
                     tissue = kwargs.get("tissue", "Whole Blood")
                     return await self.query_gtex_expression(gene, tissue)
+                elif query_type == "gtex_multi":
+                    tissues = kwargs.get("tissues", ["Whole Blood"])
+                    return await self.query_gtex_expression_multi(gene, tissues)
+                elif query_type == "hgnc":
+                    return await self.query_hgnc_symbol(gene)
+                elif query_type == "gnomad_constraint":
+                    return await self.query_gnomad_gene_constraint(gene)
                 else:
                     raise ValueError(f"Unknown query_type: {query_type}")
         

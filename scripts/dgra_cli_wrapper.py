@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DGRA CLI Wrapper — 简化供者基因组风险评估的调用接口
+DGRA CLI Wrapper - 简化供者基因组风险评估的调用接口
 供 OpenClaw agent 直接使用。
 
 用法:
@@ -11,7 +11,7 @@ DGRA CLI Wrapper — 简化供者基因组风险评估的调用接口
     1. 将 variant list (JSON) 写入临时 TSV 输入文件
     2. 调用 dgra_core.py 执行分析
     3. 解析 JSON 输出并返回结构化 dict
-    4. 失败时返回 error dict，不抛异常
+    4. 失败时返回 error dict,不抛异常
 """
 
 import json
@@ -21,6 +21,9 @@ import csv
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+# v0.5 P0-1: Unified input parsing layer
+from dgra_input_parsers import parse_input, FreeTextParser, auto_detect
 
 
 # DGRA core script path
@@ -35,25 +38,41 @@ REQUIRED_COLS = [
     "GT", "DP", "GQ", "VAF", "gnomAD_AF"
 ]
 
-# Optional columns with defaults
+# v0.5 P0-7: Missing field sentinel. Critical fields are NOT backfilled with
+# false defaults (e.g., IMPACT="MODERATE", VAF="0.5") that systematically
+# underestimate risk. Empty strings are passed to core.py, which maps them to
+# _UNKNOWN and applies conservative assessment.
 OPTIONAL_DEFAULTS = {
-    "Feature": "",
-    "EXON": "",
-    "IMPACT": "MODERATE",
-    "Consequence": "missense_variant",
-    "HGVSp": "",
-    "HGVSc": "",
-    "CLIN_SIG": "",
-    "GT": "0/1",
-    "DP": "30",
-    "GQ": "99",
-    "VAF": "0.5",
-    "gnomAD_AF": "",
+    "Feature": "",       # transcript - harmless when missing
+    "EXON": "",          # exon info - harmless when missing
+    "HGVSp": "",         # protein change - harmless when missing
+    "HGVSc": "",         # cDNA change - harmless when missing
+    # NOTE: The following fields are CRITICAL and are NOT given defaults:
+    #   IMPACT, Consequence, CLIN_SIG, VAF, DP, GQ, gnomAD_AF
+    # Missing values are written as empty strings and core.py treats them
+    # as _UNKNOWN with conservative rules (e.g., UNKNOWN impact → HIGH).
 }
+
+# Legacy critical defaults (REMOVED in v0.5 P0-7 - see note above):
+#   IMPACT: "MODERATE"    → now empty / UNKNOWN (conservatively treated as HIGH)
+#   Consequence: "missense_variant" → now empty / UNKNOWN
+#   CLIN_SIG: ""          → unchanged (was already empty)
+#   GT: "0/1"            → removed (GT missing means no genotype info)
+#   DP: "30"             → now empty / 0 (quality filter skips UNKNOWN)
+#   GQ: "99"             → now empty / 0.0 (quality filter skips UNKNOWN)
+#   VAF: "0.5"           → now empty / None (no frequency assumption)
+#   gnomAD_AF: ""        → unchanged (was already empty)
 
 
 def _write_tsv(variants: List[Dict[str, Any]], tsv_path: Path) -> None:
-    """将 variant dict list 写入 TSV，补全缺失列。"""
+    """将 variant dict list 写入 TSV,补全缺失列。
+    v0.5 P0-7: 关键字段(IMPACT, Consequence, CLIN_SIG, VAF, DP, GQ, gnomAD_AF)
+    缺失时不注入虚假默认值,而是写空字符串,由 core.py 标记为 UNKNOWN
+    并应用保守评估规则。
+    """
+    # Critical fields that must NOT receive synthetic defaults
+    CRITICAL_FIELDS = {"IMPACT", "Consequence", "CLIN_SIG", "VAF", "DP", "GQ", "gnomAD_AF", "GT"}
+
     with open(tsv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=REQUIRED_COLS, delimiter="\t")
         writer.writeheader()
@@ -62,7 +81,12 @@ def _write_tsv(variants: List[Dict[str, Any]], tsv_path: Path) -> None:
             for col in REQUIRED_COLS:
                 val = v.get(col)
                 if val is None or val == "":
-                    val = OPTIONAL_DEFAULTS.get(col, "")
+                    if col in CRITICAL_FIELDS:
+                        # P0-7: Do NOT backfill critical fields with defaults.
+                        # Pass empty string to core.py → _UNKNOWN → conservative assessment.
+                        val = ""
+                    else:
+                        val = OPTIONAL_DEFAULTS.get(col, "")
                 row[col] = str(val)
             writer.writerow(row)
 
@@ -73,21 +97,72 @@ def _write_patient_mutations(mutations: List[Dict[str, Any]], json_path: Path) -
         json.dump(mutations, f, indent=2, ensure_ascii=False)
 
 
-def run_dgra(
-    variants: List[Dict[str, Any]],
-    tissue: str = "hematopoietic",
+def run_dgra_from_file(
+    input_path: Path,
+    tissue: str = "general",
     patient_mutations: Optional[List[Dict[str, Any]]] = None,
     offline: bool = False,
     somatic: bool = False,
+    fmt: Optional[str] = None,
+    annotation_fmt: Optional[str] = None,
+    target_population: Optional[str] = None,
+    multi_organ: Optional[List[str]] = None,
+    force_sync: bool = False,
+    evidence_detail: str = "brief",  # v0.5 P1-9
+    database_version: Optional[str] = None,  # v0.5 P1-15
 ) -> Dict[str, Any]:
     """
-    运行 DGRA 分析管道。
+    v0.5 P0-1/P0-2/P1-1: Run DGRA from an input file (VCF, Excel, TSV, CSV, or free text).
+    Auto-detects format unless fmt is specified. Annotation adapter auto-detects
+    unless annotation_fmt is specified.
+    v0.5 P1-7: Supports multi_organ multi-organ assessment.
+    v0.5 P1-8: Supports force_sync for gene list sync.
+    v0.5 P1-9: Supports evidence_detail for evidence chain detail level.
+    """
+    try:
+        variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
+    except Exception as e:
+        return {"success": False, "error": f"Failed to parse {input_path}: {e}"}
+    return run_dgra(
+        variants=variants,
+        tissue=tissue,
+        patient_mutations=patient_mutations,
+        offline=offline,
+        somatic=somatic,
+        target_population=target_population,
+        multi_organ=multi_organ,
+        force_sync=force_sync,
+        evidence_detail=evidence_detail,
+        database_version=database_version,
+    )
+
+
+def run_dgra(
+    variants: List[Dict[str, Any]],
+    tissue: str = "general",
+    patient_mutations: Optional[List[Dict[str, Any]]] = None,
+    offline: bool = False,
+    somatic: bool = False,
+    target_population: Optional[str] = None,
+    multi_organ: Optional[List[str]] = None,
+    force_sync: bool = False,
+    evidence_detail: str = "brief",  # v0.5 P1-9
+    database_version: Optional[str] = None,  # v0.5 P1-15
+) -> Dict[str, Any]:
+    """
+    v0.5 P1-1: 运行 DGRA 分析管道。
+    v0.5 P1-7: 支持 multi_organ 多器官联合评估。
+    v0.5 P1-8: 支持 force_sync 强制同步基因列表。
 
     Args:
-        variants: variant dict 列表，每个 dict 至少包含 CHROM, POS, REF, ALT, GENE
-        tissue: 组织类型，默认 hematopoietic
-        patient_mutations: 可选，患者体细胞突变列表用于交叉比对
-        offline: 是否离线模式（跳过 API）
+        variants: variant dict 列表,每个 dict 至少包含 CHROM, POS, REF, ALT, GENE
+        tissue: 组织类型,默认 general (v0.5 P0-6)
+        patient_mutations: 可选,患者体细胞突变列表用于交叉比对
+        offline: 是否离线模式(跳过 API)
+        target_population: gnomAD 目标人群亚组 (EAS/AMR/AFR/NFE/SAS/ASJ/FIN/MID/OTH)
+        multi_organ: 多器官评估 profile 列表(如 ["hematopoietic", "cardiovascular"]),
+                      与 tissue 互斥。非 None 时覆盖 tissue 参数。
+        force_sync: 强制同步 special_gene_lists(绕过缓存 TTL)
 
     Returns:
         dict: {"success": True, "results": {...}, "report_md": "..."}
@@ -97,12 +172,21 @@ def run_dgra(
         return {"success": False, "error": "variants list is empty"}
 
     # Validate tissue
-    valid_tissues = {"hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
+    valid_tissues = {"general", "hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
     if tissue not in valid_tissues:
         return {
             "success": False,
             "error": f"Invalid tissue '{tissue}'. Valid: {', '.join(sorted(valid_tissues))}",
         }
+
+    # Validate multi_organ profiles
+    if multi_organ:
+        invalid = [p for p in multi_organ if p not in valid_tissues]
+        if invalid:
+            return {
+                "success": False,
+                "error": f"Invalid multi-organ profile(s): {', '.join(invalid)}. Valid: {', '.join(sorted(valid_tissues))}",
+            }
 
     # 创建临时文件
     with tempfile.TemporaryDirectory(prefix="dgra_wrapper_") as tmpdir:
@@ -122,16 +206,27 @@ def run_dgra(
             sys.executable,
             str(DGRA_CORE),
             "--input", str(tsv_path),
-            "--tissue", tissue,
             "--output", str(md_out),
             "--json", str(json_out),
         ]
+        if multi_organ:
+            cmd.extend(["--multi-organ", ",".join(multi_organ)])
+        else:
+            cmd.extend(["--tissue", tissue])
         if offline:
             cmd.append("--offline")
         if somatic:
             cmd.append("--somatic")
+        if force_sync:
+            cmd.append("--sync-gene-lists")
+        if target_population:
+            cmd.extend(["--target-population", target_population])
+        if evidence_detail:
+            cmd.extend(["--evidence-detail", evidence_detail])
+        if database_version:
+            cmd.extend(["--database-version", database_version])
 
-        # 患者突变（可选）
+        # 患者突变(可选)
         patient_json = None
         if patient_mutations:
             patient_json = tmp / "patient_mutations.json"
@@ -181,6 +276,7 @@ def run_dgra(
             "success": True,
             "results": results,
             "report_md": report_md,
+            "json_report": results.get("json_report", {}),  # v0.5 P1-12: structured JSON for downstream
             "stdout": result.stdout,
         }
 
@@ -188,28 +284,85 @@ def run_dgra(
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="DGRA CLI Wrapper")
+    parser = argparse.ArgumentParser(description="DGRA CLI Wrapper v0.5")
+    # v0.5 P0-1: --input-file and --format replace / augment --variants
     parser.add_argument(
         "--variants",
-        required=True,
         help='JSON array of variant dicts, e.g. \'[{"CHROM":"1","POS":12345,"REF":"A","ALT":"G","GENE":"VWF"}]\'',
     )
-    parser.add_argument("--tissue", default="hematopoietic", help="Tissue profile")
+    parser.add_argument(
+        "--input-file", "-i",
+        type=Path,
+        help="Input file path (.vcf, .vcf.gz, .xlsx, .tsv, .csv, .txt)",
+    )
+    parser.add_argument(
+        "--format", "-f",
+        choices=["auto", "vcf", "tsv", "csv", "excel", "freetext"],
+        default="auto",
+        help="Input file format (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--annotation-format", "-a",
+        choices=["auto", "vep", "annovar", "snpeff"],
+        default="auto",
+        help="Annotation format for TSV/CSV/VCF columns (default: auto-detect from headers)",
+    )
+    parser.add_argument(
+        "--free-text",
+        help='Free-text variant description, e.g. "TP53 c.722C>T" or "chr17:7578406C>A"',
+    )
+    parser.add_argument("--tissue", default="general", help="Tissue profile: general (default), hematopoietic, cardiovascular, hepatic, renal, neurological")
+    parser.add_argument("--multi-organ", default=None,
+                        help="Multi-organ assessment: comma-separated profiles, e.g. 'hematopoietic,cardiovascular'. "
+                             "Mutually exclusive with --tissue. (v0.5 P1-7)")
+    parser.add_argument("--target-population", "--population", default=None,
+                        choices=["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN", "MID", "OTH"],
+                        help="Target population for gnomAD subgroup AF classification (v0.5 P1-1). "
+                             "When specified, uses that population's AF instead of overall AF.")
     parser.add_argument("--patient-mutations", help="JSON array of patient mutations")
     parser.add_argument("--offline", action="store_true", help="Offline mode")
     parser.add_argument("--somatic", action="store_true",
                         help="Somatic mode: tumor driver mutation analysis (not germline donor screening). "
                              "TSG truncating + oncogene hotspots = Tier 1")
+    parser.add_argument("--sync-gene-lists", action="store_true",
+                        help="Force sync special_gene_lists from external sources (Orphanet, OMIM) before analysis. "
+                             "Bypasses cache TTL. (v0.5 P1-8)")
+    parser.add_argument("--evidence-detail", choices=["brief", "full"], default="brief",
+                        help="Evidence chain detail level in report: brief (top 3) or full (all). (v0.5 P1-9)")
+    parser.add_argument("--database-version",
+                        help="Freeze analysis to a specific database version for reproducibility "
+                             "(e.g., 'gnomAD v4.1'). Recorded in output meta. (v0.5 P1-15)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
 
-    try:
-        variants = json.loads(args.variants)
-    except json.JSONDecodeError as e:
-        print(json.dumps({"success": False, "error": f"Invalid variants JSON: {e}"}, indent=2))
+    # v0.5 P1-7: Validate --multi-organ vs --tissue mutual exclusion
+    multi_organ = None
+    if args.multi_organ:
+        if args.tissue != "general":
+            # tissue was explicitly set
+            print(json.dumps({"success": False, "error": "--tissue and --multi-organ are mutually exclusive. Use one or the other."}, indent=2))
+            sys.exit(1)
+        multi_organ = [p.strip() for p in args.multi_organ.split(",") if p.strip()]
+        if len(multi_organ) < 1 or len(multi_organ) > 3:
+            print(json.dumps({"success": False, "error": "--multi-organ requires 1-3 profiles."}, indent=2))
+            sys.exit(1)
+
+    # Determine variants source
+    variants: Optional[List[Dict[str, Any]]] = None
+    input_source = "inline"
+
+    if args.input_file:
+        input_source = f"file:{args.input_file}"
+    elif args.free_text:
+        input_source = f"text:{args.free_text[:40]}"
+    elif args.variants:
+        input_source = "inline_json"
+    else:
+        print(json.dumps({"success": False, "error": "No input provided. Use --variants, --input-file, or --free-text."}, indent=2))
         sys.exit(1)
 
+    # Parse patient mutations (common to all paths)
     patient_mutations = None
     if args.patient_mutations:
         try:
@@ -218,13 +371,61 @@ def main():
             print(json.dumps({"success": False, "error": f"Invalid patient_mutations JSON: {e}"}, indent=2))
             sys.exit(1)
 
-    result = run_dgra(
-        variants=variants,
-        tissue=args.tissue,
-        patient_mutations=patient_mutations,
-        offline=args.offline,
-    )
-
+    # Dispatch by input type
+    if args.input_file:
+        result = run_dgra_from_file(
+            input_path=args.input_file,
+            tissue=args.tissue,
+            patient_mutations=patient_mutations,
+            offline=args.offline,
+            somatic=args.somatic,
+            fmt=args.format if args.format != "auto" else None,
+            annotation_fmt=args.annotation_format if args.annotation_format != "auto" else None,
+            target_population=args.target_population,
+            multi_organ=multi_organ,
+            force_sync=args.sync_gene_lists,
+            evidence_detail=args.evidence_detail,
+            database_version=args.database_version,
+        )
+    elif args.free_text:
+        try:
+            ftp = FreeTextParser()
+            variants = ftp.parse_text(args.free_text)
+        except Exception as e:
+            print(json.dumps({"success": False, "error": f"Failed to parse free text: {e}"}, indent=2))
+            sys.exit(1)
+        result = run_dgra(
+            variants=variants,
+            tissue=args.tissue,
+            patient_mutations=patient_mutations,
+            offline=args.offline,
+            somatic=args.somatic,
+            target_population=args.target_population,
+            multi_organ=multi_organ,
+            force_sync=args.sync_gene_lists,
+            evidence_detail=args.evidence_detail,
+            database_version=args.database_version,
+        )
+    else:
+        # Inline JSON variants
+        try:
+            variants = json.loads(args.variants)
+        except json.JSONDecodeError as e:
+            print(json.dumps({"success": False, "error": f"Invalid variants JSON: {e}"}, indent=2))
+            sys.exit(1)
+        result = run_dgra(
+            variants=variants,
+            tissue=args.tissue,
+            patient_mutations=patient_mutations,
+            offline=args.offline,
+            somatic=args.somatic,
+            target_population=args.target_population,
+            multi_organ=multi_organ,
+            force_sync=args.sync_gene_lists,
+            evidence_detail=args.evidence_detail,
+            database_version=args.database_version,
+        )
+    
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)
 
     if args.output_json:

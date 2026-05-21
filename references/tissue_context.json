@@ -1,11 +1,44 @@
 {
   "description": "Tissue/organ context profiles for DGRA relevance assessment. v0.4: genes are no longer hardcoded here — tissue relevance is fetched live from GTEx API. This file now only contains irreplaceable clinical rules and gene lists.",
   "version": "0.4",
-  "default_profile": "hematopoietic",
+  "default_profile": "general",
   "profiles": {
+    "general": {
+      "display_name": "通用健康筛查 / General Health Screening",
+      "gtex_tissue": null,
+      "fast_track_rule": "非必需基因 + ClinVar良性/意义不明 + gnomAD常见 → Tier 3",
+      "special_gene_lists": {
+        "cancer_predisposition": ["BRCA1", "BRCA2", "TP53", "PTEN", "APC", "MLH1", "MSH2", "MSH6", "PMS2", "ATM", "CHEK2", "PALB2", "NBN", "BARD1", "RAD51C", "RAD51D", "BRIP1", "CDH1", "STK11", "CDKN2A", "CDKN2B"],
+        "cardiac_safety": ["SCN5A", "KCNQ1", "KCNH2", "KCNE1", "KCNE2", "RYR2", "CASQ2", "CALM1", "CALM2", "CALM3", "TRDN", "DSP", "PKP2", "DSG2", "DSC2", "JUP", "TMEM43", "DES", "LMNA", "PLN", "RANGRF", "TGFB3", "TTN"],
+        "drug_metabolism": ["CYP2D6", "CYP2C19", "CYP3A4", "CYP3A5", "ABCB1", "SLC22A1", "SLC22A2", "TPMT", "DPYD", "UGT1A1", "CYP2C9", "CYP2B6", "CYP2E1", "CYP1A2", "NAT2", "G6PD", "VKORC1", "SLCO1B1"],
+        "coagulation": ["VWF", "F8", "F9", "F7", "F10", "F11", "F12", "F13A1", "F13B", "PROC", "PROS1", "SERPINC1", "SERPIND1", "PLG", "THBD", "SERPINA10"],
+        "immunodeficiency": ["IL2RG", "JAK3", "RAG1", "RAG2", "DCLRE1C", "PRKDC", "LIG4", "NHEJ1", "AK2", "RMRP", "ADA", "PNP", "CD3G", "CD3D", "CD3E", "ZAP70", "CORO1A", "CIITA", "RFX5", "RFXAP", "RFXANK", "TAP1", "TAP2", "TAPBP"]
+      },
+      "tier_rules": {
+        "tier_1_conditions": [
+          "纯合截断 + 癌症易感性基因 → 高外显率癌症综合征风险",
+          "ClinVar致病 + cardiac_safety基因 → 心源性猝死/心律失常风险评估",
+          "ClinVar致病 + 严重免疫缺陷基因 → 感染风险/疫苗接种评估",
+          "ClinVar致病 + 凝血因子基因 → 出血/血栓风险评估"
+        ],
+        "tier_2_conditions": [
+          "杂合癌症易感性基因 → 携带者筛查，家族癌症风险评估",
+          "ClinVar致病 + none基因 → 个体自身健康风险",
+          "药物代谢基因多态性 → 用药剂量调整指导",
+          "免疫缺陷基因杂合 → 免疫状态评估"
+        ],
+        "tier_3_conditions": [
+          "none基因 + ClinVar良性/意义不明 + gnomAD常见",
+          "旁系补偿基因",
+          "低外显率变异",
+          "药物代谢常见多态性（如CYP2D6*1/*2）"
+        ]
+      }
+    },
     "hematopoietic": {
       "display_name": "造血系统 / 造血干细胞移植",
       "gtex_tissue": "Bone Marrow",
+      "gtex_tissues": ["Bone Marrow", "Whole Blood", "Spleen", "Thymus", "Cells - EBV-transformed lymphocytes"],
       "fast_track_rule": "GTEx表达≈0且无造血功能 → Tier 3",
       "special_gene_lists": {
         "drug_metabolism": ["CYP2D6", "CYP2C19", "CYP3A4", "CYP3A5", "ABCB1", "SLC22A1", "SLC22A2", "NT5C2", "TPMT", "DPD", "UGT1A1"],
@@ -35,6 +68,7 @@
     "cardiovascular": {
       "display_name": "心血管系统",
       "gtex_tissue": "Heart - Left Ventricle",
+      "gtex_tissues": ["Heart - Left Ventricle", "Heart - Atrial Appendage", "Heart - Right Ventricle", "Artery - Aorta", "Artery - Coronary"],
       "fast_track_rule": "GTEx心脏表达≈0且无心血管功能 → Tier 3",
       "special_gene_lists": {
         "cardiomyopathy": ["MYH7", "MYBPC3", "TNNT2", "TNNI3", "TPM1", "ACTC1", "PRKAG2", "GLA", "LAMP2", "PTPN11"],
@@ -62,6 +96,7 @@
     "hepatic": {
       "display_name": "肝脏功能 / 肝移植",
       "gtex_tissue": "Liver",
+      "gtex_tissues": ["Liver", "Small Intestine - Terminal Ileum", "Colon - Transverse", "Stomach"],
       "fast_track_rule": "GTEx肝脏表达≈0且无肝功能 → Tier 3",
       "special_gene_lists": {
         "bilirubin_metabolism": ["UGT1A1", "UGT1A3", "UGT1A4", "UGT1A6", "UGT1A9", "UGT2B7"],
@@ -87,6 +122,7 @@
     "renal": {
       "display_name": "肾脏功能 / 肾移植",
       "gtex_tissue": "Kidney - Cortex",
+      "gtex_tissues": ["Kidney - Cortex", "Kidney - Medulla", "Bladder"],
       "fast_track_rule": "GTEx肾脏表达≈0且无肾功能 → Tier 3",
       "special_gene_lists": {
         "glomerular": ["NPHS1", "NPHS2", "WT1", "LAMB2", "PLCE1", "CD2AP", "TRPC6", "ACTN4"],
@@ -112,6 +148,7 @@
     "neurological": {
       "display_name": "神经系统",
       "gtex_tissue": "Brain - Cortex",
+      "gtex_tissues": ["Brain - Cortex", "Brain - Cerebellum", "Brain - Hippocampus", "Brain - Frontal Cortex (BA9)", "Brain - Caudate (basal ganglia)"],
       "fast_track_rule": "GTEx脑表达≈0且无神经功能 → Tier 3",
       "special_gene_lists": {
         "trinucleotide_repeat": ["HTT", "ATXN1", "ATXN2", "ATXN3", "ATXN7", "C9orf72", "DMPK", "FXN", "FMR1"],
