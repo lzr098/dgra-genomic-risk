@@ -188,13 +188,62 @@ Wrapper 返回 JSON 结构：
 
 ### 给用户呈现的关键信息
 
-1. **风险分级统计**：Tier 1 / Tier 2 / Tier 3 各多少个
-2. **高风险变异详情**（Tier 1 和 Tier 2）：基因、突变、影响、建议行动
-3. **多基因命中**：是否有同一基因多个变异，相位状态（cis/trans/unknown）
-4. **患者-供者交叉比对**：患者突变是否被供者遗传携带（仅移植场景）
-5. **Markdown 报告**：完整报告文本可直接呈现给用户
+**默认行为：分析完成后，直接读取报告文件内容并完整展示给用户。** 不要只给统计数字，不要让用户自己去看文件。
 
-### 组织类型选择
+呈现内容优先级：
+1. **完整 Markdown 报告** — 直接贴出报告全文（Tier 1/2/3 详情、多基因命中、交叉比对）
+2. **若报告过长** — 先展示 Tier 1 和关键发现，再询问是否需要完整报告
+3. **保存到指定路径** — 如果用户需要文件，用 `--output /path/to/file.md` 保存，不要用 /tmp
+
+### 输出解析
+
+Wrapper 返回 JSON 结构：
+
+```json
+{
+  "success": true,
+  "results": {
+    "meta": {...},
+    "summary": {
+      "tier1_gene_count": 0,
+      "tier1_variant_count": 0,
+      "tier2_gene_count": 1,
+      "tier2_variant_count": 2,
+      "tier3_gene_count": 2,
+      "tier3_variant_count": 5,
+      "multi_hit_genes": ["VWF"],
+      "patient_inherited_mutations": []
+    },
+    "tier1_variants": [],
+    "tier2_variants": [...],
+    "tier3_variants": [...],
+    "multi_hit_details": [...],
+    "patient_donor_cross_check": [...],
+    "report_markdown": "# DGRA 报告..."
+  },
+  "report_md": "# DGRA Report...",
+  "stdout": "DGRA Report Generated..."
+}
+```
+
+**呈现格式要求：**
+
+每个变异必须展示以下字段（方便用户直接查询）：
+
+| 字段 | 示例 | 用途 |
+|------|------|------|
+| **基因** | VWF | 基因符号 |
+| **位点** | `chr12:6126538:G>A` | **CHROM:POS:REF:ALT，可直接在 IGV/UCSC/ClinVar 查询** |
+| **转录本变化** | c.3931C>T | cDNA 水平 |
+| **蛋白变化** | p.Gln1311Ter | 氨基酸水平 |
+| **影响** | HIGH | VEP IMPACT |
+| **类型** | stop_gained | Consequence |
+| **合子性** | 0/1 | GT |
+| **ClinVar** | 致病 | 中文/英文 |
+| **Tier** | 1 | DGRA 分级 |
+| **原因** | ClinVar pathogenic... | 为什么是这个 tier |
+
+**若 chrom 为空或转录本选择有警告，必须标注并说明影响。**
 
 | 场景 | 组织类型 |
 |------|---------|
