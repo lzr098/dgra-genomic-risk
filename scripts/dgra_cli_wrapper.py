@@ -110,6 +110,7 @@ def run_dgra_from_file(
     force_sync: bool = False,
     evidence_detail: str = "brief",  # v0.5 P1-9
     database_version: Optional[str] = None,  # v0.5 P1-15
+    config_path: Optional[Path] = None,  # v0.5 P2-3
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run DGRA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -118,6 +119,7 @@ def run_dgra_from_file(
     v0.5 P1-7: Supports multi_organ multi-organ assessment.
     v0.5 P1-8: Supports force_sync for gene list sync.
     v0.5 P1-9: Supports evidence_detail for evidence chain detail level.
+    v0.5 P2-3: Supports config_path for YAML config file.
     """
     try:
         variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
@@ -134,6 +136,7 @@ def run_dgra_from_file(
         force_sync=force_sync,
         evidence_detail=evidence_detail,
         database_version=database_version,
+        config_path=config_path,
     )
 
 
@@ -148,11 +151,13 @@ def run_dgra(
     force_sync: bool = False,
     evidence_detail: str = "brief",  # v0.5 P1-9
     database_version: Optional[str] = None,  # v0.5 P1-15
+    config_path: Optional[Path] = None,  # v0.5 P2-3
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 DGRA 分析管道。
     v0.5 P1-7: 支持 multi_organ 多器官联合评估。
     v0.5 P1-8: 支持 force_sync 强制同步基因列表。
+    v0.5 P2-3: 支持 config_path YAML 配置文件。
 
     Args:
         variants: variant dict 列表,每个 dict 至少包含 CHROM, POS, REF, ALT, GENE
@@ -163,6 +168,7 @@ def run_dgra(
         multi_organ: 多器官评估 profile 列表(如 ["hematopoietic", "cardiovascular"]),
                       与 tissue 互斥。非 None 时覆盖 tissue 参数。
         force_sync: 强制同步 special_gene_lists(绕过缓存 TTL)
+        config_path: YAML 配置文件路径 (v0.5 P2-3)
 
     Returns:
         dict: {"success": True, "results": {...}, "report_md": "..."}
@@ -225,6 +231,9 @@ def run_dgra(
             cmd.extend(["--evidence-detail", evidence_detail])
         if database_version:
             cmd.extend(["--database-version", database_version])
+        # v0.5 P2-3: YAML config file
+        if config_path:
+            cmd.extend(["--config", str(config_path)])
 
         # 患者突变(可选)
         patient_json = None
@@ -332,6 +341,9 @@ def main():
     parser.add_argument("--database-version",
                         help="Freeze analysis to a specific database version for reproducibility "
                              "(e.g., 'gnomAD v4.1'). Recorded in output meta. (v0.5 P1-15)")
+    # v0.5 P2-3: YAML config file support
+    parser.add_argument("--config", "-c", type=Path, default=None,
+                        help="Path to dgra.yaml configuration file. Overrides built-in defaults. (v0.5 P2-3)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
@@ -386,6 +398,7 @@ def main():
             force_sync=args.sync_gene_lists,
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
+            config_path=args.config,  # v0.5 P2-3
         )
     elif args.free_text:
         try:
@@ -405,6 +418,7 @@ def main():
             force_sync=args.sync_gene_lists,
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
+            config_path=args.config,  # v0.5 P2-3
         )
     else:
         # Inline JSON variants
@@ -424,6 +438,7 @@ def main():
             force_sync=args.sync_gene_lists,
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
+            config_path=args.config,  # v0.5 P2-3
         )
     
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)

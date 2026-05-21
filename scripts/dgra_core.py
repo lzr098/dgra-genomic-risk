@@ -23,8 +23,8 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple, Any
 import argparse
 
-# v0.4 API layer imports
-from dgra_config import DGRAGlobalConfig
+# v0.5 P2-3: YAML config support
+from dgra_config import DGRAGlobalConfig, DGRAFileConfig, DEFAULT_CONFIG_PATH
 from dgra_cache import DGRACache
 from dgra_api import DGRAAPIClient
 
@@ -3662,8 +3662,28 @@ def main():
     parser.add_argument("--database-version",
                         help="Freeze analysis to a specific database version for reproducibility "
                              "(e.g., 'gnomAD v4.1'). Recorded in output meta. (v0.5 P1-15)")
+    # v0.5 P2-3: YAML config file support
+    parser.add_argument("--config", "-c", type=Path, default=None,
+                        help="Path to dgra.yaml configuration file. Overrides built-in defaults. "
+                             "If not specified, uses references/dgra.yaml if it exists, "
+                             "otherwise falls back to built-in defaults. (v0.5 P2-3)")
 
     args = parser.parse_args()
+
+    # v0.5 P2-3: Load YAML config if provided or default exists
+    file_config = None
+    config_path = args.config
+    if config_path is None and DEFAULT_CONFIG_PATH.exists():
+        config_path = DEFAULT_CONFIG_PATH
+    
+    if config_path:
+        try:
+            file_config = DGRAFileConfig.from_yaml(config_path)
+            print(f"[DGRA] Loaded configuration from {config_path}")
+        except FileNotFoundError:
+            print(f"[DGRA] Config file not found: {config_path}, using built-in defaults")
+        except Exception as e:
+            print(f"[DGRA] Warning: Failed to load config {config_path}: {e}")
 
     # v0.5 P1-7: Validate --multi-organ vs --tissue mutual exclusion
     multi_organ = None
@@ -3708,6 +3728,16 @@ def main():
         database_version=args.database_version,  # v0.5 P1-15
     )
     
+    # v0.5 P2-3: Apply YAML config overrides to user config
+    if file_config:
+        file_config.apply_to_user_config(config)
+    
+    # v0.5 P2-3: Also build global config with file overrides (for API layer)
+    global_config = config.to_global()
+    if file_config:
+        base_dir = config_path.parent if config_path else Path(__file__).parent.parent
+        file_config.apply_to_global(global_config, base_dir)
+
     # v0.5 P1-7: Multi-organ path
     if multi_organ:
         results = asyncio.run(run_multi_organ_assessment(variants_data, patient_mutations, config))
