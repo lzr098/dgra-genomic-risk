@@ -2809,6 +2809,114 @@ def _format_vep_reannotation_note(v: Variant) -> Optional[str]:
     return note
 
 
+def _generate_pseudogene_assessment_section(variants: List[Variant]) -> Optional[str]:
+    """
+    v0.6: Generate standalone pseudogene interference assessment section.
+    
+    Returns Markdown string with:
+      - Summary table of all variants with pseudogene warnings
+      - Score-based classification (0.0-1.0)
+      - Per-gene pseudogene list from lookup
+      - Recommendations (Sanger, long-read, etc.)
+    
+    Does NOT modify tier — only provides analytical assessment.
+    """
+    # Collect variants with pseudogene warnings
+    pg_variants = []
+    for v in variants:
+        if v.pseudogene_warning:
+            try:
+                pw = json.loads(v.pseudogene_warning)
+                if pw.get("score", 0) > 0:
+                    pg_variants.append((v, pw))
+            except (json.JSONDecodeError, TypeError):
+                continue
+    
+    if not pg_variants:
+        return None
+    
+    lines = []
+    lines.append("## 🧬 假基因干扰评估\n")
+    lines.append(f"*基于 v0.6 轻量版假基因数据库（{len(_load_pseudogene_lookup())} 个临床相关基因对）*\n")
+    lines.append(f"**检测到 {len(pg_variants)} 个变异存在假基因干扰风险**\n\n")
+    
+    # Summary table
+    lines.append("| 基因 | 位点 | 基因型 | 观察VAF | 预期VAF | 干扰评分 | 等级 | 假基因 | 建议 |\n")
+    lines.append("|------|------|--------|---------|---------|----------|------|--------|------|\n")
+    
+    # Severity classification
+    severity_map = {
+        "strong_interference": ("🔴", "高度干扰"),
+        "interference": ("🟠", "中度干扰"),
+        "suspected": ("🟡", "疑似干扰"),
+        "bias_suspected": ("🟡", "疑似偏倚"),
+    }
+    
+    for v, pw in pg_variants:
+        level = pw.get("level", "unknown")
+        icon, desc = severity_map.get(level, ("⚪", "未知"))
+        
+        pos = f"{v.chrom}:{v.pos}"
+        gt = v.gt or "N/A"
+        obs_vaf = pw.get("observed_vaf", v.vaf or "N/A")
+        exp_vaf = pw.get("expected_vaf", 0.5)
+        score = pw.get("score", 0)
+        pgs = ", ".join(pw.get("pseudogenes", []))
+        rec = pw.get("recommendation", "建议验证")
+        
+        # Truncate recommendation for table
+        rec_short = rec[:40] + "..." if len(rec) > 40 else rec
+        
+        lines.append(f"| {v.gene} | {pos} | {gt} | {obs_vaf} | {exp_vaf} | {score:.2f} | {icon} {desc} | {pgs} | {rec_short} |\n")
+    
+    lines.append("\n")
+    
+    # Detailed per-variant analysis
+    lines.append("### 详细分析\n\n")
+    for i, (v, pw) in enumerate(pg_variants, 1):
+        level = pw.get("level", "unknown")
+        icon, desc = severity_map.get(level, ("⚪", "未知"))
+        
+        lines.append(f"**{i}. {v.gene} ({v.chrom}:{v.pos})** {icon} {desc}\n\n")
+        lines.append(f"- **变异**: {v.hgvsp or v.hgvsc or 'N/A'}\n")
+        lines.append(f"- **基因型**: {v.gt or 'N/A'} | **观察VAF**: {pw.get('observed_vaf', v.vaf)} | **预期VAF**: {pw.get('expected_vaf', 0.5)}\n")
+        lines.append(f"- **干扰评分**: {pw.get('score', 0):.2f}/1.0\n")
+        lines.append(f"- **检测策略**: {pw.get('strategy', 'vaf_mismatch')}\n")
+        
+        pgs = pw.get("pseudogenes", [])
+        if pgs:
+            lines.append(f"- **相关假基因**: {', '.join(pgs)}\n")
+            # Add notes from lookup if available
+            lookup = _load_pseudogene_lookup()
+            entry = lookup.get(v.gene, {})
+            if entry.get("notes"):
+                lines.append(f"- **注释**: {entry['notes']}\n")
+        
+        lines.append(f"- **建议**: {pw.get('recommendation', '建议验证')}\n")
+        
+        # Tier impact note
+        lines.append(f"- **分级影响**: 本评估**不直接修改 Tier**，仅下调置信度。当前 Tier {v.tier or 'N/A'}，置信度 {v.tier_confidence or 'N/A'}\n")
+        
+        lines.append("\n")
+    
+    # Overall recommendation
+    strong_count = sum(1 for _, pw in pg_variants if pw.get("score", 0) >= 0.75)
+    if strong_count > 0:
+        lines.append(f"### ⚠️ 重点关注\n\n")
+        lines.append(f"检测到 **{strong_count} 个**高度假基因干扰变异（评分≥0.75）。")
+        lines.append("强烈建议使用 Sanger 测序或长读长测序验证以下位点：\n\n")
+        for v, pw in pg_variants:
+            if pw.get("score", 0) >= 0.75:
+                lines.append(f"- {v.gene}: {v.chrom}:{v.pos} ({v.hgvsp or v.hgvsc})\n")
+        lines.append("\n")
+    
+    return "".join(lines)
+
+
+# =============================================================================
+# Report Generation
+# =============================================================================
+
 def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                         tissue_profile: Dict, multi_hits: List[Dict],
                         cross_check: List[Dict]) -> str:
@@ -2889,6 +2997,12 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
         if len([v for v in variants if v.qc_flags]) > 5:
             report.append(f"\n*... 共 {len([v for v in variants if v.qc_flags])} 个变异有异常，详见 JSON 输出*\n")
         
+        report.append("\n")
+
+    # v0.6: Pseudogene interference assessment — independent section
+    pseudogene_assessment = _generate_pseudogene_assessment_section(variants)
+    if pseudogene_assessment:
+        report.append(pseudogene_assessment)
         report.append("\n")
 
     # Multi-hit warnings
