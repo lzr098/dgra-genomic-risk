@@ -1,5 +1,45 @@
 # DGRA 更新日志
 
+## [v0.6.1] - 2026-05-22
+
+### A-Layer：构建流程稳定性增强
+
+**目标**：长耗时构建任务（基因同步、假基因索引、VEP重注释）在弱网/限流环境中容易中断，增加三层防护。
+
+**1. 指数退避重试（`scripts/dgra_api.py`）**
+- 所有外部 API 统一通过 `_request_with_retry()` 收敛
+- 新增 HTTP 429 处理：读取 `Retry-After` header，按服务器建议等待
+- 新增 HTTP 502/503/504 处理：指数退避 1s→2s→4s
+- `asyncio.TimeoutError` / `ClientError` 同样触发指数退避
+- 日志格式：`[DGRA API] {api_name}: {error}, retrying in Xs (attempt N/M)`
+
+**2. 流式下载 + 断点续传（`scripts/dgra_pseudogene_sync.py`）**
+- 替换 `urllib.request.urlretrieve` → `_download_gtf_streaming()`
+- chunk_size = 8KB，每 10 MB 打印进度
+- HTTP `Range` header + `206 Partial Content` 断点续传
+- 状态集成：`sync_gencode_pseudogenes()` 完成后写入 `.dgra_build_state.json`
+
+**3. 全局构建状态持久化（`scripts/dgra_build_state.py`，新增）**
+- `.dgra_build_state.json` 记录每个步骤的 status/timestamp/data
+- `BuildStep` 上下文管理器：原子化 `in_progress → complete/failed` 记录
+- API：`save_state()` / `load_state()` / `get_step_status()` / `is_step_complete()` / `reset_state()`
+- 最佳努力：读写失败不阻塞主流程（`except Exception: pass`）
+
+**4. 回归测试（`tests/test_a_layer.py`，新增）**
+- 11 项测试覆盖：429 Retry-After、503 指数退避、超时重试链、断点续传、状态恢复、BuildStep 上下文、BuildStep 异常、save/load、get_step_status、is_step_complete、reset_state
+- 全部 PASS（17.0s）
+
+**新增文件**：
+- `scripts/dgra_build_state.py` — 全局构建状态持久化
+- `tests/test_a_layer.py` — A-Layer 回归测试套件
+
+**修改文件**：
+- `scripts/dgra_api.py` — `_request_with_retry()` 增强（429/502/503/504/timeout）
+- `scripts/dgra_pseudogene_sync.py` — `_download_gtf_streaming()` + 状态集成
+- `README.md` — 新增 "构建流程稳定性" 章节 + 版本历史更新
+
+---
+
 ## [v0.6.0] - 2026-05-22
 
 ### 假基因架构升级（Pseudogene Architecture）

@@ -14,6 +14,7 @@ Design principles:
 import json
 import asyncio
 import gzip
+import os
 import re
 import shutil
 import tempfile
@@ -21,6 +22,53 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+
+# =============================================================================
+# Streaming download helpers
+# =============================================================================
+
+def _download_gtf_streaming(url: str, output_path: Path, chunk_size: int = 8192) -> Path:
+    """
+    Stream-download GTF.gz with progress logging and resume support.
+    Uses small chunks to reduce memory pressure.
+    """
+    import urllib.request
+
+    # Check for partial download (resume)
+    existing_size = 0
+    headers = {}
+    if output_path.exists():
+        existing_size = output_path.stat().st_size
+        if existing_size > 0:
+            headers['Range'] = f'bytes={existing_size}-'
+            print(f"[DGRA] Resuming download from {existing_size / 1024 / 1024:.1f} MB")
+
+    req = urllib.request.Request(url, headers=headers)
+    downloaded = existing_size
+    last_mb = existing_size // (10 * 1024 * 1024)
+    mode = 'ab' if existing_size > 0 else 'wb'
+
+    with urllib.request.urlopen(req) as response:
+        # Handle 206 Partial Content (resume) or 200 OK (new)
+        if response.status not in (200, 206):
+            raise RuntimeError(f"HTTP {response.status}: download failed")
+
+        total_size = int(response.headers.get("Content-Length", 0)) + existing_size
+        with open(output_path, mode) as f:
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                mb = downloaded // (10 * 1024 * 1024)
+                if mb > last_mb:
+                    last_mb = mb
+                    total_mb = total_size / (1024 * 1024) if total_size else 0
+                    print(f"[DGRA] Downloaded {downloaded / 1024 / 1024:.1f} MB / {total_mb:.1f} MB")
+
+    return output_path
+
 
 # =============================================================================
 # Constants
@@ -130,6 +178,15 @@ async def sync_gencode_pseudogenes(
         except Exception:
             pass
 
+    # v0.6 A-layer: check build state for resume
+    try:
+        from dgra_build_state import is_step_complete
+        if is_step_complete("pseudogene_sync") and output_path.exists():
+            _log("STATE_RESUME", "pseudogene_sync already complete, skipping")
+            return output_path
+    except Exception:
+        pass  # Best-effort, don't fail on state read errors
+
     # Check TTL
     if not force and output_path.exists():
         mtime = datetime.fromtimestamp(output_path.stat().st_mtime)
@@ -140,17 +197,17 @@ async def sync_gencode_pseudogenes(
         else:
             _log("TTL_EXPIRED", f"age={age_days:.1f}d >= TTL={ttl_days}d, re-syncing")
 
-    # Download GTF
+    # Download GTF with streaming + resume support
     temp_dir = Path(tempfile.mkdtemp(prefix="dgra_gencode_"))
     gtf_gz_path = temp_dir / "gencode.v48.annotation.gtf.gz"
 
-    _log("DOWNLOAD_START", f"URL={GENCODE_GTF_URL}")
+    _log("DOWNLOAD_START", f"URL={GENCODE_GTF_URL}, output={gtf_gz_path}")
     try:
-        urllib.request.urlretrieve(GENCODE_GTF_URL, str(gtf_gz_path))
-        _log("DOWNLOAD_OK", f"size={gtf_gz_path.stat().st_size} bytes")
+        _download_gtf_streaming(GENCODE_GTF_URL, gtf_gz_path)
+        _log("DOWNLOAD_OK", f"path={gtf_gz_path}, size={gtf_gz_path.stat().st_size}")
     except Exception as e:
         _log("DOWNLOAD_FAILED", str(e))
-        # Fallback: keep existing JSON if present
+        # Fallback to existing JSON
         if output_path.exists():
             _log("FALLBACK", f"Using existing {output_path}")
             return output_path
@@ -236,6 +293,19 @@ async def sync_gencode_pseudogenes(
 
     _log("WRITE_OK", f"path={output_path}, total={len(pseudogenes)}")
     print(f"[DGRA] GENCODE pseudogene sync complete: {len(pseudogenes)} pseudogenes, {len(parent_map)} parent genes")
+
+    # v0.6 A-layer: persist build state
+    try:
+        from dgra_build_state import save_state
+        save_state("pseudogene_sync", {
+            "status": "complete",
+            "genes_synced": len(pseudogenes),
+            "parent_pairs": len(parent_map),
+            "file": str(output_path),
+            "release": GENCODE_RELEASE,
+        })
+    except Exception:
+        pass  # Build state is best-effort
 
     return output_path
 

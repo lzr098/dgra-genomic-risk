@@ -429,13 +429,65 @@ dgra-genomic-risk/
 
 ---
 
+## 构建流程稳定性（v0.6.1 A-Layer）
+
+长耗时构建任务（基因同步、假基因索引、VEP重注释）在弱网/限流环境中容易中断。A-Layer 提供三层防护：
+
+### 1. 指数退避重试（`dgra_api.py`）
+
+所有外部 API 调用统一通过 `_request_with_retry()` 收敛，支持：
+
+| 错误类型 | 策略 | 退避序列 |
+|:---|:---|:---|
+| HTTP 429 Rate Limited | 读取 `Retry-After` header，按服务器建议等待 | 服务器指定秒数 |
+| HTTP 502/503/504 Gateway 错误 | 指数退避 | 1s → 2s → 4s → ... |
+| HTTP 500+ 服务器错误 | 指数退避 | 1s → 2s → 4s → ... |
+| `asyncio.TimeoutError` / `ClientError` | 指数退避 | 1s → 2s → 4s → ... |
+
+**日志格式**：`[DGRA API] {api_name}: {error}, retrying in Xs (attempt N/M)`
+
+### 2. 流式下载 + 断点续传（`dgra_pseudogene_sync.py`）
+
+替换 `urllib.request.urlretrieve` 为 `_download_gtf_streaming()`：
+- chunk_size = 8KB，低内存压力
+- 支持 HTTP `Range` header + `206 Partial Content` 断点续传
+- 每 10 MB 打印进度
+- 本地文件已存在且完整 → 跳过下载
+
+### 3. 全局构建状态持久化（`dgra_build_state.py`）
+
+`.dgra_build_state.json` 记录每个构建步骤的状态，崩溃/重启后可恢复：
+
+```python
+# 上下文管理器：原子化步骤记录
+with BuildStep("pseudogene_sync") as step:
+    result = sync_gencode_pseudogenes(...)
+    step.complete(genes_synced=result["genes"], parent_pairs=result["pairs"])
+# 异常时自动标记 failed，不丢失进度
+```
+
+**API**：`save_state()` / `load_state()` / `get_step_status()` / `is_step_complete()` / `reset_state()`
+
+### 4. 回归测试覆盖（`tests/test_a_layer.py`）
+
+| # | 场景 | 验证 |
+|---|------|------|
+| 1 | HTTP 429 → Retry-After 等待 | mock 429 + `Retry-After: 2`，2s 后恢复 |
+| 2 | HTTP 503 → 指数退避 1→2→4s | mock 503 ×3，总 backoff ≥ 6s |
+| 3 | 网络超时 → 重试链 | `asyncio.TimeoutError` ×3，退避递增 |
+| 4 | 断点续传 | 截断文件 → resume → 大小 ≥ 原始 90% |
+| 5 | 状态恢复 | 删除单步状态 → 重新标记 → 可恢复 |
+
+---
+
 ## 版本历史
 
 详见 [CHANGELOG.md](CHANGELOG.md)
 
 | 版本 | 日期 | 主题 |
 |------|------|------|
-| **v0.6.0** | **2026-05-22** | **假基因干扰评估（Pseudogene Architecture）**：51个临床相关假基因对（VWF/GBA/PMS2/PTEN/CYP2D6/HBA等）、VAF模式检测（0-1评分，4级分类）、**Tier不变confidence降级原则**（不直接修改Tier，仅下调置信度）、独立Markdown报告章节（汇总表+详细分析+重点关注）、轻量版设计（本地JSON优先，GENCODE同步保留为扩展基础）、向后兼容legacy数据库 |
+| **v0.6.0** | **2026-05-22** | **假基因干扰评估（Pseudogene Architecture）**：51个临床相关假基因对、VAF模式检测、**Tier不变confidence降级原则**、独立Markdown报告章节、轻量版设计 |
+| v0.6.1 | 2026-05-22 | **A-Layer 构建流程稳定性**：指数退避重试（429/502/503/504/timeout）、GTF流式下载+断点续传、全局构建状态持久化（`.dgra_build_state.json`）、11项回归测试套件 |
 | **v0.5.2** | 2026-05-21 | **核心逻辑修正**：Multi-hit 不再升级变异（只标记基因）、ClinVar 中文注释支持（致病/良性）、统计格式改为"基因数/突变数"、新增 Priority 1c（ClinVar 致病+HIGH+造血相关→Tier 1）、**Transcript discrepancy 降级**（NR_/XM_非编码转录本→HIGH 降级为 MODERATE）、**VEP Canonical Reannotation**（Step 1.5：Ensembl VEP 用 canonical 重新注释 discrepancy 变异，CRIP2 chr14:105473030 案例验证） |
 | **v0.5.1** | 2026-05-21 | **假阳性大幅优化**：ClinVar 良性排除、X 连锁女性修正、同义排除、C 末端截短修正、基因家族冗余、HLA 排除（Tier-1 假阳性 ↓91%） |
 | **v0.5.0** | 2026-05-21 | **P0 统一输入层**（VCF/Excel/TSV/自由文本 + VEP/ANNOVAR/SnpEff 自动适配）+ **P1 核心引擎重构**（ACMG 评分、NMD 调制、Missense 分层、加权评分、置信度量化、结构化证据链、JSON 输出、多器官联合、增强 QC、基因名校验、分析版本化） |

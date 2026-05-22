@@ -187,10 +187,32 @@ class DGRAAPIClient:
                             "error": "Not found",
                         }
                     
+                    elif http_status == 429:
+                        # Rate limited - read Retry-After header and wait
+                        retry_after = response.headers.get("Retry-After")
+                        if retry_after:
+                            wait = int(retry_after)
+                        else:
+                            wait = cfg.retry_delay * (2 ** attempt)
+                        last_error = DGRAAPIError(api_name, f"Rate limited (429), retry after {wait}s", http_status)
+                        print(f"[DGRA API] {api_name}: Rate limited (429), waiting {wait}s before retry {attempt+1}/{cfg.max_retries}")
+                        await asyncio.sleep(wait)
+                        continue
+                    
+                    elif http_status in (502, 503, 504):
+                        # Gateway/server temporarily unavailable - retry
+                        last_error = DGRAAPIError(api_name, f"Server temporarily unavailable ({http_status})", http_status)
+                        wait = cfg.retry_delay * (2 ** attempt)
+                        print(f"[DGRA API] {api_name}: HTTP {http_status}, retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
+                        await asyncio.sleep(wait)
+                        continue
+                    
                     elif http_status >= 500:
-                        # Server error - retry
+                        # Other server errors - retry with backoff
                         last_error = DGRAAPIError(api_name, f"Server error {http_status}", http_status)
-                        await asyncio.sleep(cfg.retry_delay * (2 ** attempt))
+                        wait = cfg.retry_delay * (2 ** attempt)
+                        print(f"[DGRA API] {api_name}: HTTP {http_status}, retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
+                        await asyncio.sleep(wait)
                         continue
                     
                     else:
@@ -206,11 +228,17 @@ class DGRAAPIClient:
             
             except asyncio.TimeoutError:
                 last_error = DGRAAPIError(api_name, f"Timeout after {cfg.timeout}s")
-                await asyncio.sleep(cfg.retry_delay * (2 ** attempt))
+                wait = cfg.retry_delay * (2 ** attempt)
+                print(f"[DGRA API] {api_name}: Timeout, retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
+                await asyncio.sleep(wait)
+                continue
             
             except aiohttp.ClientError as e:
                 last_error = DGRAAPIError(api_name, f"Connection error: {e}")
-                await asyncio.sleep(cfg.retry_delay * (2 ** attempt))
+                wait = cfg.retry_delay * (2 ** attempt)
+                print(f"[DGRA API] {api_name}: Connection error ({e}), retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
+                await asyncio.sleep(wait)
+                continue
         
         # All retries exhausted
         return {
