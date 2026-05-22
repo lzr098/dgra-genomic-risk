@@ -352,79 +352,206 @@ _PSEUDOGENE_CONFIG_LEGACY = {
 }
 
 
+# =============================================================================
+# v0.6: Lightweight Pseudogene Lookup (manual curation + Ensembl REST)
+# =============================================================================
+
+_PSEUDOGENE_LOOKUP_PATH = Path(__file__).resolve().parent.parent / "references" / "pseudogene_lookup.json"
+_PSEUDOGENE_LOOKUP: Optional[Dict] = None
+
+
+def _load_pseudogene_lookup() -> Dict:
+    """
+    Load lightweight pseudogene lookup from JSON.
+    Returns dict keyed by functional gene symbol.
+    Falls back to empty dict if file missing.
+    """
+    global _PSEUDOGENE_LOOKUP
+    if _PSEUDOGENE_LOOKUP is not None:
+        return _PSEUDOGENE_LOOKUP
+
+    try:
+        with open(_PSEUDOGENE_LOOKUP_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _PSEUDOGENE_LOOKUP = data.get("pairs", {})
+        print(f"[DGRA] Loaded pseudogene lookup: {len(_PSEUDOGENE_LOOKUP)} genes")
+        return _PSEUDOGENE_LOOKUP
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"[DGRA] INFO: pseudogene_lookup.json not found ({e}). Using empty lookup.")
+        _PSEUDOGENE_LOOKUP = {}
+        return _PSEUDOGENE_LOOKUP
+
+
+def get_pseudogenes_for_gene(gene: str, offline_mode: bool = True) -> List[str]:
+    """
+    Return list of known pseudogenes for a given functional gene.
+
+    Resolution order:
+      1. Local pseudogene_lookup.json (manual curation)
+      2. Legacy pseudogene_database.json
+      3. (Future) Ensembl REST API — not yet implemented
+
+    Args:
+        gene: Functional gene symbol (e.g., "VWF")
+        offline_mode: If True, skip API calls (default for reliability)
+
+    Returns:
+        List of pseudogene names (deduplicated). Empty if none known.
+    """
+    pseudogenes: List[str] = []
+
+    # 1. v0.6 lookup
+    lookup = _load_pseudogene_lookup()
+    entry = lookup.get(gene)
+    if entry:
+        pseudogenes.extend(entry.get("pseudogenes", []))
+
+    # 2. Legacy database (v0.5.3)
+    legacy = _load_pseudogene_database()
+    legacy_cfg = legacy.get(gene) or _PSEUDOGENE_CONFIG_LEGACY.get(gene)
+    if legacy_cfg:
+        legacy_pgs = legacy_cfg.get("pseudogenes", [])
+        if isinstance(legacy_pgs, str):
+            legacy_pgs = [legacy_pgs]
+        pseudogenes.extend(legacy_pgs)
+
+    # 3. (Future) Ensembl REST query when offline_mode=False
+
+    # Deduplicate while preserving order
+    seen = set()
+    result = []
+    for pg in pseudogenes:
+        if pg and pg not in seen:
+            seen.add(pg)
+            result.append(pg)
+
+    return result
+
+
+def _calculate_pseudogene_score(
+    observed_vaf: float,
+    genotype: str,
+    pseudogenes: List[str],
+    gene: str,
+) -> Dict:
+    """
+    Calculate pseudogene interference score (0.0–1.0).
+
+    Scoring rules:
+      - Homozygous (1/1): score=0 (no pseudogene interference expected)
+      - Heterozygous (0/1) with VAF ~0.50: score=0
+      - Heterozygous with VAF <0.30: score=0.8+ (strong interference)
+      - Heterozygous with VAF 0.30–0.40: score=0.4–0.7 (suspected)
+      - Heterozygous with VAF >0.65: score=0.3 (possible read bias)
+
+    Returns dict with score, level, and recommendation.
+    """
+    if genotype in ["1/1", "1|1"]:
+        return {
+            "score": 0.0,
+            "level": "none",
+            "reason": "Homozygous variant — pseudogene interference unlikely",
+            "recommendation": None,
+        }
+
+    if genotype not in ["0/1", "0|1"]:
+        return {
+            "score": 0.0,
+            "level": "unknown_genotype",
+            "reason": f"Genotype {genotype} not evaluable",
+            "recommendation": None,
+        }
+
+    # Heterozygous scoring
+    if observed_vaf < 0.20:
+        return {
+            "score": 0.9,
+            "level": "strong_interference",
+            "reason": f"VAF={observed_vaf:.2f} far below expected 0.50",
+            "recommendation": "Strong evidence of pseudogene interference. Sanger validation or long-read sequencing strongly recommended.",
+        }
+    elif observed_vaf < 0.30:
+        return {
+            "score": 0.75,
+            "level": "interference",
+            "reason": f"VAF={observed_vaf:.2f} significantly below expected 0.50",
+            "recommendation": "Probable pseudogene interference. Consider Sanger validation.",
+        }
+    elif observed_vaf < 0.40:
+        return {
+            "score": 0.55,
+            "level": "suspected",
+            "reason": f"VAF={observed_vaf:.2f} below expected 0.50",
+            "recommendation": "Possible pseudogene interference. Caution advised.",
+        }
+    elif observed_vaf > 0.65:
+        return {
+            "score": 0.30,
+            "level": "bias_suspected",
+            "reason": f"VAF={observed_vaf:.2f} above expected 0.50",
+            "recommendation": "Possible read bias or allele-specific expression. Review alignment.",
+        }
+    else:
+        return {
+            "score": 0.0,
+            "level": "none",
+            "reason": f"VAF={observed_vaf:.2f} within expected heterozygous range",
+            "recommendation": None,
+        }
+
+
 def detect_pseudogene_artifact(variant: Variant) -> Optional[Dict]:
     """
-    Detect pseudogene interference using JSON database.
-    v0.5.3: Supports vaf_mismatch and sequence_homology strategies.
-    Returns PSEUDOGENE_INTERFERENCE (VAF < interference threshold)
-    or PSEUDOGENE_SUSPECTED (VAF < suspected threshold).
+    Detect pseudogene interference using v0.6 lookup system.
+
+    v0.6: Unified detection using pseudogene_lookup.json + legacy DB.
+    - Checks if gene has known pseudogenes
+    - Evaluates VAF against expected heterozygous ratio
+    - Returns structured score instead of binary flag
+
+    Does NOT modify tier directly. Only provides evidence for confidence adjustment.
     """
     gene = variant.gene
-    db = _load_pseudogene_database()
-    config = db.get(gene) or _PSEUDOGENE_CONFIG_LEGACY.get(gene)
-    if not config:
+    pseudogenes = get_pseudogenes_for_gene(gene)
+    if not pseudogenes:
         return None
-
-    strategy = config.get("detection_strategy", "vaf_mismatch")
-
-    if strategy == "sequence_homology":
-        # Sequence-homology genes: flag if VAF shows any deviation in heterozygous context
-        # but without hard thresholds — mainly informational
-        if variant.vaf is not None and variant.gt in ["0/1", "0|1"]:
-            if variant.vaf < 0.35 or variant.vaf > 0.65:
-                return {
-                    "type": "PSEUDOGENE_SUSPECTED",
-                    "gene": gene,
-                    "pseudogenes": config.get("pseudogenes", []),
-                    "strategy": strategy,
-                    "observed_vaf": variant.vaf,
-                    "notes": config.get("notes", ""),
-                    "recommendation": "Consider long-read sequencing or Sanger validation due to pseudogene homology.",
-                }
-        return None
-
-    # vaf_mismatch strategy
-    if variant.gt in ["1/1", "1|1"]:
-        expected_vaf = 1.0
-    else:
-        expected_vaf = config.get("vaf_expected_heterozygous", 0.5)
 
     observed_vaf = variant.vaf
-    if observed_vaf is None:
+    genotype = variant.gt
+
+    if observed_vaf is None or genotype is None:
         return None
 
-    # v0.5.3: Two-tier threshold system
-    vaf_min_interference = config.get("vaf_min_interference")
-    vaf_min_suspected = config.get("vaf_min_suspected", config.get("vaf_min", 0.25))
+    score_info = _calculate_pseudogene_score(observed_vaf, genotype, pseudogenes, gene)
 
-    if expected_vaf == 0.5 and observed_vaf < vaf_min_interference:
-        return {
-            "type": "PSEUDOGENE_INTERFERENCE",
-            "gene": gene,
-            "pseudogenes": config.get("pseudogenes", []),
-            "strategy": strategy,
-            "expected_vaf": expected_vaf,
-            "observed_vaf": observed_vaf,
-            "deviation": abs(observed_vaf - expected_vaf),
-            "threshold": vaf_min_interference,
-            "notes": config.get("notes", ""),
-            "recommendation": "VAF significantly below expected heterozygous ratio — strong evidence of pseudogene interference. Consider Sanger validation or long-read sequencing.",
-        }
-    elif expected_vaf == 0.5 and observed_vaf < vaf_min_suspected:
-        return {
-            "type": "PSEUDOGENE_SUSPECTED",
-            "gene": gene,
-            "pseudogenes": config.get("pseudogenes", []),
-            "strategy": strategy,
-            "expected_vaf": expected_vaf,
-            "observed_vaf": observed_vaf,
-            "deviation": abs(observed_vaf - expected_vaf),
-            "threshold": vaf_min_suspected,
-            "notes": config.get("notes", ""),
-            "recommendation": "VAF below expected heterozygous ratio — possible pseudogene interference.",
-        }
+    # Build evidence dict
+    if score_info["score"] >= 0.75:
+        artifact_type = "PSEUDOGENE_INTERFERENCE"
+    elif score_info["score"] >= 0.40:
+        artifact_type = "PSEUDOGENE_SUSPECTED"
+    else:
+        return None  # No meaningful interference detected
 
-    return None
+    # Fetch lookup entry for metadata
+    lookup = _load_pseudogene_lookup()
+    entry = lookup.get(gene, {})
+    strategy = entry.get("detection_strategy", "vaf_mismatch")
+    confidence = entry.get("confidence", "medium")
+    notes = entry.get("notes", "")
+
+    return {
+        "type": artifact_type,
+        "gene": gene,
+        "pseudogenes": pseudogenes,
+        "strategy": strategy,
+        "score": score_info["score"],
+        "level": score_info["level"],
+        "observed_vaf": observed_vaf,
+        "expected_vaf": 0.5,
+        "notes": notes,
+        "recommendation": score_info["recommendation"],
+        "confidence": confidence,
+    }
 
 # =============================================================================
 # Module C: gnomAD Frequency Handler
@@ -1515,6 +1642,19 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     def _add_evidence(source, rule, weight=1.0, confidence="high", raw_data=None):
         evidence_chain.append(Evidence(source=source, rule=rule, weight=weight, confidence=confidence, raw_data=raw_data))
     
+    # v0.6: Add pseudogene detection evidence (weight=0, does not affect tier directly)
+    if pseudogene_warning:
+        pg_score = pseudogene_warning.get("score", 0)
+        pg_level = pseudogene_warning.get("level", "unknown")
+        pg_conf = "low" if pg_score >= 0.75 else ("moderate" if pg_score >= 0.40 else "high")
+        _add_evidence(
+            source="PseudogeneDetection",
+            rule=f"Pseudogene_{pg_level}_score={pg_score:.2f}",
+            weight=0.0,  # Does not affect tier directly
+            confidence=pg_conf,
+            raw_data=pseudogene_warning,
+        )
+    
     def _confidence_from_data():
         """Determine confidence based on data quality."""
         if variant.missing_fields:
@@ -1557,10 +1697,21 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         if has_conflict or many_unknown:
             return "LOW"
         
-        # v0.5.3: QC flags and pseudogene interference force LOW confidence
+        # v0.6: Pseudogene interference scoring — does NOT change tier, only confidence
+        if pseudogene_warning:
+            pg_score = pseudogene_warning.get("score", 0)
+            if pg_score >= 0.75:
+                return "LOW"  # Strong interference: confidence drops
+            elif pg_score >= 0.40:
+                return "MEDIUM"  # Suspected interference: confidence downgraded
+            elif pg_score > 0:
+                return "MEDIUM"  # Minor bias: slight downgrade
+            # v0.5.3 legacy fallback (backward compatibility with old-format warnings)
+            elif pseudogene_warning.get("type") == "PSEUDOGENE_INTERFERENCE":
+                return "LOW"
+        
+        # v0.5.3: QC flags force LOW confidence
         if "VAF_GT_MISMATCH" in variant.qc_flags:
-            return "LOW"
-        if pseudogene_warning and pseudogene_warning.get("type") == "PSEUDOGENE_INTERFERENCE":
             return "LOW"
         
         if len(unique_sources) >= 3 and high_conf_count >= 3:
