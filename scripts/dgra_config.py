@@ -55,7 +55,7 @@ class DGRAGlobalConfig:
     vaf_deviation_threshold: float = 0.20
     
     # Tissue context profile name
-    tissue_profile: str = "hematopoietic"
+    tissue_profile: str = "general"
     
     # v0.5 P1-7: Multi-organ assessment — evaluate multiple profiles simultaneously
     # Each profile runs independently; joint report takes max tier across profiles

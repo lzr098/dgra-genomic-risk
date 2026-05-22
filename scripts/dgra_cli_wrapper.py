@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-DGRA CLI Wrapper - 简化供者基因组风险评估的调用接口
+GPA CLI Wrapper - 简化基因组表型关联分析的调用接口
 供 OpenClaw agent 直接使用。
 
 用法:
-    python3 scripts/dgra_cli_wrapper.py --variants '[{...}]' --tissue hematopoietic
-    python3 scripts/dgra_cli_wrapper.py --input-file donor_variants.tsv --tissue hematopoietic
+    python3 scripts/dgra_cli_wrapper.py --variants '[{...}]' --tissue general
+    python3 scripts/dgra_cli_wrapper.py --input-file variants.tsv --tissue general
 
 功能:
     1. 将 variant list (JSON) 写入临时 TSV 输入文件
@@ -26,9 +26,9 @@ from typing import List, Dict, Any, Optional
 from dgra_input_parsers import parse_input, FreeTextParser, auto_detect
 
 
-# DGRA core script path
+# GPA core script path
 SCRIPT_DIR = Path(__file__).resolve().parent
-DGRA_CORE = SCRIPT_DIR / "dgra_core.py"
+GPA_CORE = SCRIPT_DIR / "dgra_core.py"
 REFS_DIR = SCRIPT_DIR.parent / "references"
 
 # Required TSV columns
@@ -91,16 +91,9 @@ def _write_tsv(variants: List[Dict[str, Any]], tsv_path: Path) -> None:
             writer.writerow(row)
 
 
-def _write_patient_mutations(mutations: List[Dict[str, Any]], json_path: Path) -> None:
-    """将患者突变列表写入 JSON 文件。"""
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(mutations, f, indent=2, ensure_ascii=False)
-
-
-def run_dgra_from_file(
+def run_gpa_from_file(
     input_path: Path,
     tissue: str = "general",
-    patient_mutations: Optional[List[Dict[str, Any]]] = None,
     offline: bool = False,
     somatic: bool = False,
     fmt: Optional[str] = None,
@@ -113,7 +106,7 @@ def run_dgra_from_file(
     config_path: Optional[Path] = None,  # v0.5 P2-3
 ) -> Dict[str, Any]:
     """
-    v0.5 P0-1/P0-2/P1-1: Run DGRA from an input file (VCF, Excel, TSV, CSV, or free text).
+    v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
     Auto-detects format unless fmt is specified. Annotation adapter auto-detects
     unless annotation_fmt is specified.
     v0.5 P1-7: Supports multi_organ multi-organ assessment.
@@ -125,10 +118,9 @@ def run_dgra_from_file(
         variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
     except Exception as e:
         return {"success": False, "error": f"Failed to parse {input_path}: {e}"}
-    return run_dgra(
+    return run_gpa(
         variants=variants,
         tissue=tissue,
-        patient_mutations=patient_mutations,
         offline=offline,
         somatic=somatic,
         target_population=target_population,
@@ -140,10 +132,9 @@ def run_dgra_from_file(
     )
 
 
-def run_dgra(
+def run_gpa(
     variants: List[Dict[str, Any]],
     tissue: str = "general",
-    patient_mutations: Optional[List[Dict[str, Any]]] = None,
     offline: bool = False,
     somatic: bool = False,
     target_population: Optional[str] = None,
@@ -154,7 +145,7 @@ def run_dgra(
     config_path: Optional[Path] = None,  # v0.5 P2-3
 ) -> Dict[str, Any]:
     """
-    v0.5 P1-1: 运行 DGRA 分析管道。
+    v0.5 P1-1: 运行 GPA 分析管道。
     v0.5 P1-7: 支持 multi_organ 多器官联合评估。
     v0.5 P1-8: 支持 force_sync 强制同步基因列表。
     v0.5 P2-3: 支持 config_path YAML 配置文件。
@@ -162,7 +153,6 @@ def run_dgra(
     Args:
         variants: variant dict 列表,每个 dict 至少包含 CHROM, POS, REF, ALT, GENE
         tissue: 组织类型,默认 general (v0.5 P0-6)
-        patient_mutations: 可选,患者体细胞突变列表用于交叉比对
         offline: 是否离线模式(跳过 API)
         target_population: gnomAD 目标人群亚组 (EAS/AMR/AFR/NFE/SAS/ASJ/FIN/MID/OTH)
         multi_organ: 多器官评估 profile 列表(如 ["hematopoietic", "cardiovascular"]),
@@ -210,7 +200,7 @@ def run_dgra(
         # 构造命令行
         cmd = [
             sys.executable,
-            str(DGRA_CORE),
+            str(GPA_CORE),
             "--input", str(tsv_path),
             "--output", str(md_out),
             "--json", str(json_out),
@@ -234,13 +224,6 @@ def run_dgra(
         # v0.5 P2-3: YAML config file
         if config_path:
             cmd.extend(["--config", str(config_path)])
-
-        # 患者突变(可选)
-        patient_json = None
-        if patient_mutations:
-            patient_json = tmp / "patient_mutations.json"
-            _write_patient_mutations(patient_mutations, patient_json)
-            cmd.extend(["--patient-mutations", str(patient_json)])
 
         # 执行
         try:
@@ -293,7 +276,7 @@ def run_dgra(
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="DGRA CLI Wrapper v0.5")
+    parser = argparse.ArgumentParser(description="GPA CLI Wrapper v0.7")
     # v0.5 P0-1: --input-file and --format replace / augment --variants
     parser.add_argument(
         "--variants",
@@ -328,10 +311,9 @@ def main():
                         choices=["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN", "MID", "OTH"],
                         help="Target population for gnomAD subgroup AF classification (v0.5 P1-1). "
                              "When specified, uses that population's AF instead of overall AF.")
-    parser.add_argument("--patient-mutations", help="JSON array of patient mutations")
     parser.add_argument("--offline", action="store_true", help="Offline mode")
     parser.add_argument("--somatic", action="store_true",
-                        help="Somatic mode: tumor driver mutation analysis (not germline donor screening). "
+                        help="Somatic mode: tumor driver mutation analysis. "
                              "TSG truncating + oncogene hotspots = Tier 1")
     parser.add_argument("--sync-gene-lists", action="store_true",
                         help="Force sync special_gene_lists from external sources (Orphanet, OMIM) before analysis. "
@@ -374,21 +356,11 @@ def main():
         print(json.dumps({"success": False, "error": "No input provided. Use --variants, --input-file, or --free-text."}, indent=2))
         sys.exit(1)
 
-    # Parse patient mutations (common to all paths)
-    patient_mutations = None
-    if args.patient_mutations:
-        try:
-            patient_mutations = json.loads(args.patient_mutations)
-        except json.JSONDecodeError as e:
-            print(json.dumps({"success": False, "error": f"Invalid patient_mutations JSON: {e}"}, indent=2))
-            sys.exit(1)
-
     # Dispatch by input type
     if args.input_file:
-        result = run_dgra_from_file(
+        result = run_gpa_from_file(
             input_path=args.input_file,
             tissue=args.tissue,
-            patient_mutations=patient_mutations,
             offline=args.offline,
             somatic=args.somatic,
             fmt=args.format if args.format != "auto" else None,
@@ -407,10 +379,9 @@ def main():
         except Exception as e:
             print(json.dumps({"success": False, "error": f"Failed to parse free text: {e}"}, indent=2))
             sys.exit(1)
-        result = run_dgra(
+        result = run_gpa(
             variants=variants,
             tissue=args.tissue,
-            patient_mutations=patient_mutations,
             offline=args.offline,
             somatic=args.somatic,
             target_population=args.target_population,
@@ -427,10 +398,9 @@ def main():
         except json.JSONDecodeError as e:
             print(json.dumps({"success": False, "error": f"Invalid variants JSON: {e}"}, indent=2))
             sys.exit(1)
-        result = run_dgra(
+        result = run_gpa(
             variants=variants,
             tissue=args.tissue,
-            patient_mutations=patient_mutations,
             offline=args.offline,
             somatic=args.somatic,
             target_population=args.target_population,

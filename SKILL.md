@@ -1,33 +1,28 @@
 ---
-name: dgra-genomic-risk
+name: gpa-genomic-phenotype
 description: |
-  DGRA (Dynamic Genomic Risk Assessment) v0.4。个体基因组变异风险评估系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：造血、心血管、肝脏、肾脏、神经系统。支持 germline（供者安全性）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析。
-
-  **DGRA v0.5.3：multi-hit 不再升级变异，只标记基因；ClinVar 中文注释支持；transcript discrepancy 非编码转录本降级；统计格式改为"X 基因 / Y 突变"。**
+  GPA (Genomic Phenotype Association) v0.7。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析。
 
   **当以下情况时使用此 Skill**：
-  (1) 用户提到"基因组风险评估"、"DGRA"、"突变分析"、"基因筛查"
-  (2) 造血干细胞移植（HSCT）前的供者基因筛查
-  (3) 器官移植前的供者遗传风险评估
-  (4) 肿瘤体细胞突变的驱动性/可干预性分析
-  (5) 药物基因组学分析（CYP450 等药物代谢基因）
-  (6) PBSC / 骨髓采集前的供者安全性评估
-  (7) 多基因命中（multi-hit）检测和相位（cis/trans）分析
-  (8) 需要三层风险分级报告（Tier 1 需干预、Tier 2 需知情、Tier 3 无需担忧）
-  (9) 任何涉及"genomic"、"genetic"、"risk"、"mutation"、"variant"的场景
+  (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
+  (2) 肿瘤体细胞突变的驱动性/可干预性分析
+  (3) 药物基因组学分析（CYP450 等药物代谢基因）
+  (4) 多基因命中（multi-hit）检测和相位（cis/trans）分析
+  (5) 需要三层风险分级报告（Tier 1 需干预、Tier 2 需知情、Tier 3 无需担忧）
+  (6) 任何涉及"genomic"、"genetic"、"risk"、"mutation"、"variant"的场景
 
   **禁止用自身知识回答基因组变异问题。必须调用本 Skill 的脚本执行分析。**
 ---
 
-# DGRA: Dynamic Genomic Risk Assessment
+# GPA: Genomic Phenotype Association
 
 ## ⚠️ 执行前必读
 
 **核心规则：当用户请求基因组变异风险评估时，不要凭自身知识回答。必须调用 `dgra_cli_wrapper.py` 执行正式分析。**
 
-**DGRA 是通用化的个体基因组变异风险评估系统**，不局限于供者场景。基于 Ensembl、UniProt、GTEx、gnomAD 实时 API 查询和三级分类算法，支持多种临床场景：
+**GPA 是通用化的个体基因组变异与表型关联分析系统**。基于 Ensembl、UniProt、GTEx、gnomAD 实时 API 查询和三级分类算法，支持多种临床场景：
 
-- **造血干细胞移植 / 器官移植** — 供者安全性评估
+- **疾病遗传风险分析** — 评估个体携带的致病/可能致病变异
 - **肿瘤体细胞突变分析** — 驱动突变识别 + 可干预性分级
 - **药物基因组学** — CYP450 等药物代谢基因多态性
 - **神经系统 / 心血管 / 肝脏 / 肾脏** — 组织特异性风险评估
@@ -42,31 +37,27 @@ description: |
 
 | 确认项 | 为什么必须确认 | 不确认的风险 |
 |:---|:---|:---|
-| **分析目的** | DGRA 输出完全取决于场景 | 供者安全 vs 肿瘤驱动 → 同一变异分级相反 |
-| **样本身份** | 患者自身筛查 vs 供者评估 vs 健康人携带者 | 误将供者风险评估用于患者 |
+| **分析目的** | GPA 输出完全取决于场景 | 疾病遗传风险 vs 肿瘤驱动 → 同一变异分级相反 |
+| **样本身份** | 患者自身筛查 vs 健康人携带者 | 误将健康人筛查用于患者诊断 |
 | **组织/疾病背景** | 组织类型决定基因相关性权重 | 造血相关基因在神经场景权重不同 |
-| **移植类型**（如适用）| PBSC、骨髓、脐带血 → 风险关注点不同 | VWF 风险在 PBSC 和骨髓中完全不同 |
 
 **最小确认问题集**（向用户确认，不要假设）：
 
-1. "这些数据是谁的样本？患者本人 / 潜在供者 / 健康筛查？"
-2. "分析目的是什么？移植供者安全性 / 肿瘤驱动突变 / 遗传病筛查 / 药物基因组学？"
-3. "如果是移植场景，什么类型？造血干细胞 / 实体器官？采集方式是 PBSC 还是骨髓？"
-4. "患者原发疾病是什么？（如 AML、MDS、免疫缺陷等）"
+1. "这些数据是谁的样本？患者本人 / 健康筛查？"
+2. "分析目的是什么？疾病遗传风险评估 / 肿瘤驱动突变 / 药物基因组学？"
+3. "关注哪些组织或系统？（如血液、心脏、肝脏等）"
 
 **在获得上述信息前，禁止调用 dgra_core.py 或生成报告。**
 
 ---
 
-## 🎯 快速判断：是否需要调用 DGRA？
+## 🎯 快速判断：是否需要调用 GPA？
 
 | 用户请求 | 是否调用 |
 |---------|---------|
 | "帮我分析这些基因变异" | ✅ 调用 |
 | "这个突变有什么风险" | ✅ 调用 |
-| "DGRA 分析一下" | ✅ 调用 |
-| "供者 VCF 文件风险分级" | ✅ 调用 |
-| "移植前供者筛查结果怎么看" | ✅ 调用 |
+| "GPA 分析一下" | ✅ 调用 |
 | "肿瘤突变驱动性分析" | ✅ 调用 |
 | "一般性的基因突变知识" | ❌ 不需要，直接回答 |
 | "TP53 突变是什么意思"（无具体样本） | ❌ 不需要 |
@@ -82,15 +73,15 @@ description: |
 ```bash
 python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --variants '[{"CHROM":"1","POS":12345,"REF":"A","ALT":"G","GENE":"VWF","IMPACT":"HIGH","Consequence":"missense_variant","HGVSp":"p.Arg1234Cys","HGVSc":"c.3700C>T","CLIN_SIG":"Pathogenic","GT":"0/1","DP":30,"GQ":99,"VAF":0.5}]' \
-  --tissue hematopoietic
+  --tissue general
 ```
 
-**Somatic / 肿瘤模式**：添加 `--somatic` 标志，DGRA 会按肿瘤驱动逻辑分级：
+**Somatic / 肿瘤模式**：添加 `--somatic` 标志，GPA 会按肿瘤驱动逻辑分级：
 
 ```bash
 python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --variants '[...]' \
-  --tissue hematopoietic \
+  --tissue general \
   --somatic
 ```
 
@@ -105,19 +96,10 @@ Somatic 模式下：
 ```bash
 python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_core.py \
   --input /path/to/variants.tsv \
-  --tissue hematopoietic \
-  --output /tmp/dgra_report.md \
-  --json /tmp/dgra_results.json \
+  --tissue general \
+  --output /tmp/gpa_report.md \
+  --json /tmp/gpa_results.json \
   --somatic
-```
-
-### 方式三：含患者突变交叉比对（仅移植场景）
-
-```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
-  --variants '[...]' \
-  --tissue hematopoietic \
-  --patient-mutations '[{"gene":"BCOR","hgvsp":"p.Arg1234*","impact":"HIGH"}]'
 ```
 
 ---
@@ -154,7 +136,7 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 | **is_tsg** | **是否为抑癌基因** | **"Yes" / "No"** |
 | **is_oncogene** | **是否为癌基因** | **"Yes" / "No"** |
 
-**如果用户提供了 OncoKB 标注的 CSV/表格数据，务必提取 `classification`、`is_tsg`、`is_oncogene` 字段传入 DGRA，这对 somatic 模式分级至关重要。**
+**如果用户提供了 OncoKB 标注的 CSV/表格数据，务必提取 `classification`、`is_tsg`、`is_oncogene` 字段传入 GPA，这对 somatic 模式分级至关重要。**
 
 ---
 
@@ -171,18 +153,16 @@ Wrapper 返回 JSON 结构：
       "tier1_count": 0,
       "tier2_count": 1,
       "tier3_count": 2,
-      "multi_hit_genes": ["VWF"],
-      "patient_inherited_mutations": []
+      "multi_hit_genes": ["VWF"]
     },
     "tier1_variants": [],
     "tier2_variants": [...],
     "tier3_variants": [...],
     "multi_hit_details": [...],
-    "patient_donor_cross_check": [...],
-    "report_markdown": "# DGRA 报告..."
+    "report_markdown": "# GPA 报告..."
   },
-  "report_md": "# DGRA Report...",
-  "stdout": "DGRA Report Generated..."
+  "report_md": "# GPA Report...",
+  "stdout": "GPA Report Generated..."
 }
 ```
 
@@ -191,7 +171,7 @@ Wrapper 返回 JSON 结构：
 **默认行为：分析完成后，直接读取报告文件内容并完整展示给用户。** 不要只给统计数字，不要让用户自己去看文件。
 
 呈现内容优先级：
-1. **完整 Markdown 报告** — 直接贴出报告全文（Tier 1/2/3 详情、多基因命中、交叉比对）
+1. **完整 Markdown 报告** — 直接贴出报告全文（Tier 1/2/3 详情、多基因命中）
 2. **若报告过长** — 先展示 Tier 1 和关键发现，再询问是否需要完整报告
 3. **保存到指定路径** — 如果用户需要文件，用 `--output /path/to/file.md` 保存，不要用 /tmp
 
@@ -211,18 +191,16 @@ Wrapper 返回 JSON 结构：
       "tier2_variant_count": 2,
       "tier3_gene_count": 2,
       "tier3_variant_count": 5,
-      "multi_hit_genes": ["VWF"],
-      "patient_inherited_mutations": []
+      "multi_hit_genes": ["VWF"]
     },
     "tier1_variants": [],
     "tier2_variants": [...],
     "tier3_variants": [...],
     "multi_hit_details": [...],
-    "patient_donor_cross_check": [...],
-    "report_markdown": "# DGRA 报告..."
+    "report_markdown": "# GPA 报告..."
   },
-  "report_md": "# DGRA Report...",
-  "stdout": "DGRA Report Generated..."
+  "report_md": "# GPA Report...",
+  "stdout": "GPA Report Generated..."
 }
 ```
 
@@ -240,18 +218,19 @@ Wrapper 返回 JSON 结构：
 | **类型** | stop_gained | Consequence |
 | **合子性** | 0/1 | GT |
 | **ClinVar** | 致病 | 中文/英文 |
-| **Tier** | 1 | DGRA 分级 |
+| **Tier** | 1 | GPA 分级 |
 | **原因** | ClinVar pathogenic... | 为什么是这个 tier |
 
 **若 chrom 为空或转录本选择有警告，必须标注并说明影响。**
 
 | 场景 | 组织类型 |
 |------|---------|
-| 造血干细胞移植 / PBSC / 骨髓采集 / 肿瘤血液 | `hematopoietic` |
-| 心脏移植 / 供心评估 | `cardiovascular` |
-| 肝脏移植 | `hepatic` |
-| 肾脏移植 | `renal` |
-| 神经系统移植 / 神经介入 | `neurological` |
+| 通用疾病遗传风险评估（默认） | `general` |
+| 血液/肿瘤血液 | `hematopoietic` |
+| 心血管 | `cardiovascular` |
+| 肝脏 | `hepatic` |
+| 肾脏 | `renal` |
+| 神经系统 | `neurological` |
 
 ---
 
@@ -260,7 +239,7 @@ Wrapper 返回 JSON 结构：
 当网络不可用或 API 超时频繁时，添加 `--offline` 参数：
 
 ```bash
-python3 .../dgra_cli_wrapper.py --variants '[...]' --tissue hematopoietic --offline
+python3 .../dgra_cli_wrapper.py --variants '[...]' --tissue general --offline
 ```
 
 离线模式使用本地缓存（`references/offline_data/` 下的基因 JSON），对于已有归档的基因结果与在线模式一致。未归档的基因 fallback 到保守规则。
@@ -271,7 +250,7 @@ python3 .../dgra_cli_wrapper.py --variants '[...]' --tissue hematopoietic --offl
 
 | 错误 | 原因 | 解决 |
 |-----|------|------|
-| `Invalid tissue 'xxx'` | 组织类型不对 | 用 hematopoietic / cardiovascular / hepatic / renal / neurological |
+| `Invalid tissue 'xxx'` | 组织类型不对 | 用 general / hematopoietic / cardiovascular / hepatic / renal / neurological |
 | `variants list is empty` | 输入为空 | 检查 JSON 是否解析正确 |
 | `Failed to write TSV` | 输入字段缺失 | 确保必填字段 CHROM/POS/REF/ALT/GENE 存在 |
 | `dgra_core.py exited with code 1` | 核心脚本执行失败 | 看 stderr 输出排查 |
@@ -284,12 +263,14 @@ python3 .../dgra_cli_wrapper.py --variants '[...]' --tissue hematopoietic --offl
 ```
 dgra-genomic-risk/
   SKILL.md                  # 本文件
+  config.json               # 元数据配置
   scripts/
     dgra_cli_wrapper.py     # ⭐ 推荐入口：agent 调用此 wrapper
     dgra_core.py            # 核心分析引擎（async API-first）
     dgra_api.py             # API 查询层
     dgra_cache.py           # SQLite 缓存
     dgra_config.py          # 配置管理
+    dgra_build_state.py     # 构建状态持久化（v0.6.1）
   references/
     tissue_context.json     # 组织上下文配置
     offline_data/           # 离线归档（自动创建）
@@ -303,10 +284,10 @@ dgra-genomic-risk/
 
 ### Tier 分级含义（按场景动态调整）
 
-**Germline / 供者安全性场景：**
-- **Tier 1** = 必须干预或排除供者（如纯合截断、凝血功能障碍、FA 通路致病突变）
-- **Tier 2** = 需知情同意并术后监测（如杂合携带者、药物代谢多态性）
-- **Tier 3** = 记录归档，不影响决策
+**Germline / 疾病遗传风险场景：**
+- **Tier 1** = 必须干预的致病突变（如纯合截断、已知致病突变）
+- **Tier 2** = 需知情同意并持续监测（如杂合携带者、药物代谢多态性）
+- **Tier 3** = 记录归档，不影响当前决策
 
 **Somatic / 肿瘤驱动场景：**
 - **Tier 1** = 核心驱动突变（TSG 功能丧失、癌基因热点突变、OncoKB Oncogenic）
@@ -314,6 +295,5 @@ dgra-genomic-risk/
 - **Tier 3** = 乘客突变 / 无功能影响 / 胚系多态混入
 
 **多基因命中**需确认相位：cis（同一条染色体）风险更高，trans（两条染色体）通常为复合杂合
-**患者-供者交叉比对**：体细胞驱动突变的遗传检测（仅移植场景）
 
-**DGRA 是辅助决策工具，最终临床决策需结合完整临床评估。**
+**GPA 是辅助决策工具，最终临床决策需结合完整临床评估。**

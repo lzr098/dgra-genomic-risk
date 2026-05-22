@@ -102,7 +102,7 @@ tissue_profiles:
     - neurological
   
   # Default profile when none specified
-  default: hematopoietic
+  default: general
 
 # =============================================================================
 # Cache & Offline Settings

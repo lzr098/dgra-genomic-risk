@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DGRA Core Engine - Donor Genomic Risk Assessment
+GPA Core Engine - Genomic Phenotype Association
 v0.4 - 2026-05-19
 
 API-first pipeline with cache layer. Replaces hardcoded gene dictionaries
@@ -24,7 +24,7 @@ from typing import List, Dict, Optional, Tuple, Any
 import argparse
 
 # v0.5 P2-3: YAML config support
-from dgra_config import DGRAGlobalConfig, DGRAFileConfig, DEFAULT_CONFIG_PATH
+from dgra_config import DGRAGlobalConfig as GPAGlobalConfig, DGRAFileConfig as GPAFileConfig, DEFAULT_CONFIG_PATH
 from dgra_cache import DGRACache
 from dgra_api import DGRAAPIClient
 
@@ -190,8 +190,8 @@ class Variant:
     tier_confidence: str = "LOW"  # "HIGH" | "MEDIUM" | "LOW"
 
 @dataclass
-class DGRAConfig:
-    """User-facing config (kept simple). Maps to DGRAGlobalConfig internally.
+class GPAConfig:
+    """User-facing config (kept simple). Maps to GPAGlobalConfig internally.
     v0.4-fix: tissue_profile has NO default — must be specified by user.
     """
     min_dp: int = 20
@@ -210,8 +210,8 @@ class DGRAConfig:
     evidence_detail: str = "brief"  # v0.5 P1-9: "brief" | "full" — evidence chain detail level in report
     database_version: Optional[str] = None  # v0.5 P1-15: freeze analysis DB version for reproducibility
 
-    def to_global(self) -> DGRAGlobalConfig:
-        gc = DGRAGlobalConfig()
+    def to_global(self) -> GPAGlobalConfig:
+        gc = GPAGlobalConfig()
         gc.tissue_profile = self.tissue_profile or ""
         gc.target_population = self.target_population or ""
         gc.offline_mode = self.offline_mode
@@ -268,7 +268,7 @@ class DGRAConfig:
                 profile["special_gene_lists"] = merged_lists
         except Exception as e:
             # Non-blocking: if merge fails, keep static lists
-            print(f"[DGRA] Gene list sync warning: {e} — using static lists")
+            print(f"[GPA] Gene list sync warning: {e} — using static lists")
         
         return profile
 
@@ -335,10 +335,10 @@ def _load_pseudogene_database():
         with open(_PSEUDOGENE_DB_PATH, "r") as f:
             db = json.load(f)
         _PSEUDOGENE_CONFIG = db.get("genes", {})
-        print(f"[DGRA] Loaded pseudogene database: {len(_PSEUDOGENE_CONFIG)} genes")
+        print(f"[GPA] Loaded pseudogene database: {len(_PSEUDOGENE_CONFIG)} genes")
         return _PSEUDOGENE_CONFIG
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"[DGRA] WARNING: pseudogene_database.json not found or invalid ({e}). Using empty config.")
+        print(f"[GPA] WARNING: pseudogene_database.json not found or invalid ({e}). Using empty config.")
         _PSEUDOGENE_CONFIG = {}
         return _PSEUDOGENE_CONFIG
 
@@ -374,10 +374,10 @@ def _load_pseudogene_lookup() -> Dict:
         with open(_PSEUDOGENE_LOOKUP_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         _PSEUDOGENE_LOOKUP = data.get("pairs", {})
-        print(f"[DGRA] Loaded pseudogene lookup: {len(_PSEUDOGENE_LOOKUP)} genes")
+        print(f"[GPA] Loaded pseudogene lookup: {len(_PSEUDOGENE_LOOKUP)} genes")
         return _PSEUDOGENE_LOOKUP
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"[DGRA] INFO: pseudogene_lookup.json not found ({e}). Using empty lookup.")
+        print(f"[GPA] INFO: pseudogene_lookup.json not found ({e}). Using empty lookup.")
         _PSEUDOGENE_LOOKUP = {}
         return _PSEUDOGENE_LOOKUP
 
@@ -1415,7 +1415,7 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
                     "tier_suggestion": 2,
                     "relevance": relevance,
                     "reason": f"{gene} is not {profile_name}-relevant (GTEx TPM={tpm:.2f}) but ClinVar pathogenic.",
-                    "clinical_note": "Inform donor, record in medical history. Does not affect decision for this context.",
+                    "clinical_note": "Inform patient, record in medical history.",
                     "fast_track": False,
                     "rationale": rationale,
                     "gtex_tpm": tpm,
@@ -1490,7 +1490,7 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
                     "tier_suggestion": 2,
                     "relevance": relevance,
                     "reason": f"{gene} is not {profile_name}-relevant but ClinVar pathogenic.",
-                    "clinical_note": "Inform donor, record in medical history.",
+                    "clinical_note": "Inform patient, record in medical history.",
                     "fast_track": False,
                     "rationale": rationale,
                     "gtex_rpkm": gtex_rpkm_local,
@@ -1628,7 +1628,7 @@ def _x_linked_female_adjustment(tier: int, chrom: str, gt: str,
 def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment: Dict,
                           gnomad_info: Dict, transcript_warning: Optional[Dict],
                           pseudogene_warning: Optional[Dict], tissue_profile: Dict,
-                          config: Optional[DGRAConfig] = None) -> Tuple[int, str, List[str]]:
+                          config: Optional[GPAConfig] = None) -> Tuple[int, str, List[str]]:
     """
     Three-tier classification with dynamic tissue context.
     v0.4.5: Added somatic_mode support for tumor driver analysis.
@@ -1928,8 +1928,8 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         if gene in gene_list:
             if "coagulation" in list_name.lower() and _clinvar_pathogenic(variant.clinvar):
                 _add_evidence("ClinVar", f"Pathogenic in coagulation gene {gene} → Tier 1", weight=1.0, confidence="high", raw_data={"clinvar": variant.clinvar, "gene_list": list_name})
-                actions.append("Assess bleeding history and coagulation function before collection")
-                actions.append("Consider PBSC over BM to minimize bleeding risk")
+                actions.append("Assess bleeding history and coagulation function")
+                actions.append("Consider peripheral blood stem cell over bone marrow if applicable")
                 variant.evidence_chain = evidence_chain
                 upgrade_conditions = []  # Tier 1: no upgrade
                 variant.upgrade_conditions = upgrade_conditions
@@ -1938,8 +1938,8 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
 
                 return 1, f"{gene} pathogenic variant affects collection safety (coagulation gene)", actions
             if "fa_dna_repair" in list_name.lower() and _clinvar_pathogenic(variant.clinvar):
-                actions.append("Assess if donor has Fanconi anemia phenotype")
-                actions.append("Biallelic = ineligible donor; heterozygous = acceptable but monitor engraftment")
+                actions.append("Assess if patient has Fanconi anemia phenotype")
+                actions.append("Biallelic: high personal health risk; heterozygous: carrier status")
                 variant.evidence_chain = evidence_chain
                 upgrade_conditions = []  # Tier 1: no upgrade
                 variant.upgrade_conditions = upgrade_conditions
@@ -2042,7 +2042,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     reason += f" ({constraint_eval['reason']})"
                     reason += " — NMD uncertain, assumed sensitive"
                     actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
-                    actions.append("Non-tissue-relevant but LOF-intolerant — donor's own health risk")
+                    actions.append("Non-tissue-relevant but LOF-intolerant — patient's own health risk")
                     variant.evidence_chain = evidence_chain
                     upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
                     variant.upgrade_conditions = upgrade_conditions
@@ -2070,7 +2070,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 else:
                     reason = f"ClinVar pathogenic variant in LOF-intolerant gene {gene}"
                     reason += f" ({constraint_eval['reason']})"
-                    reason += " — NMD sensitive, donor's own health risk"
+                    reason += " — NMD sensitive, patient's own health risk"
                     actions.append(f"Gene constraint: pLI={constraint_eval['pLI']:.2f}, LOEUF={constraint_eval['loeuf']:.2f}")
                     actions.append("Non-tissue-relevant but LOF-intolerant — assess phenotypic impact")
                     variant.evidence_chain = evidence_chain
@@ -2089,7 +2089,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             reason = f"Heterozygous {variant.consequence} in tissue-relevant gene {gene}"
             if domain_info and domain_info.get("domain_integrity") in ["completely_destroyed", "partially_destroyed"]:
                 reason += f", {domain_info['domain']} domain disrupted"
-            actions.append("Inform donor of carrier status")
+            actions.append("Inform patient of carrier status")
             actions.append("Monitor post-intervention recovery/function")
             variant.evidence_chain = evidence_chain
             upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
@@ -2105,7 +2105,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             if missense_eval.get("tier_recommendation") == 2:
                 reason = f"Heterozygous missense in tissue-relevant gene {gene}"
                 reason += f" — {missense_eval['reason']}"
-                actions.append("Inform donor of carrier status")
+                actions.append("Inform patient of carrier status")
                 actions.append("Monitor post-intervention recovery/function")
                 variant.evidence_chain = evidence_chain
                 upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
@@ -2121,7 +2121,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     # 2b. Non-primary but ClinVar pathogenic
     if _clinvar_pathogenic(variant.clinvar) and tissue_assessment.get("relevance") == "none":
         _add_evidence("ClinVar", f"Pathogenic but non-tissue-relevant {gene} → Tier 2", weight=0.7, confidence="high", raw_data={"clinvar": variant.clinvar, "relevance": "none"})
-        actions.append("Inform donor of genetic finding")
+        actions.append("Inform patient of genetic finding")
         actions.append("Refer for relevant specialist evaluation if indicated")
         variant.evidence_chain = evidence_chain
         upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
@@ -2129,7 +2129,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
         upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
 
-        return 2, f"ClinVar pathogenic variant in {gene} - donor's own health may be affected", actions
+        return 2, f"ClinVar pathogenic variant in {gene} - patient's own health may be affected", actions
 
     # 2c. Drug metabolism genes (if applicable to this tissue context)
     drug_genes = special_lists.get("drug_metabolism", [])
@@ -2563,43 +2563,10 @@ def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = 
     return multi_hits
 
 # =============================================================================
-# Patient-Donor Cross-check
-# =============================================================================
-
-def cross_check_patient_donor(patient_mutations: List[Dict], donor_variants: List[Variant]) -> List[Dict]:
-    """
-    Check if patient somatic driver mutations are present in donor germline.
-    """
-    results = []
-    donor_genes = {v.gene: v for v in donor_variants}
-
-    for pm in patient_mutations:
-        gene = pm["gene"]
-        if gene in donor_genes:
-            dv = donor_genes[gene]
-            results.append({
-                "patient_mutation": pm,
-                "donor_status": "PRESENT",
-                "donor_variant": asdict(dv),
-                "clinical_significance": f"HIGH RISK: Patient's somatic driver mutation is in donor germline. "
-                                        f"If inherited, transplant may reintroduce leukemic clone.",
-                "action": "URGENT: Verify if exact same variant. If yes, consider alternative donor."
-            })
-        else:
-            results.append({
-                "patient_mutation": pm,
-                "donor_status": "NOT_PRESENT",
-                "clinical_significance": "Favorable: Donor did not inherit this driver mutation.",
-                "action": "No special action needed for this mutation."
-            })
-
-    return results
-
-# =============================================================================
 # Version & Provenance (v0.5 P1-15)
 # =============================================================================
 
-def _get_version_info(config: DGRAConfig) -> Dict:
+def _get_version_info(config: GPAConfig) -> Dict:
     """
     Gather analysis version and provenance metadata.
     v0.5 P1-15: Full version tracking for reproducibility.
@@ -2917,9 +2884,8 @@ def _generate_pseudogene_assessment_section(variants: List[Variant]) -> Optional
 # Report Generation
 # =============================================================================
 
-def generate_tier_report(variants: List[Variant], config: DGRAConfig,
-                        tissue_profile: Dict, multi_hits: List[Dict],
-                        cross_check: List[Dict]) -> str:
+def generate_tier_report(variants: List[Variant], config: GPAConfig,
+                        tissue_profile: Dict, multi_hits: List[Dict]) -> str:
     """
     Generate Markdown report with three-tier structure and dynamic tissue context.
     """
@@ -2931,7 +2897,7 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 
     report = []
-    report.append("# DGRA Report - Donor Genomic Risk Assessment v0.5\n")
+    report.append("# GPA Report - Genomic Phenotype Association v0.5\n")
     report.append(f"**Analysis Context**: {profile_name}\n")
     report.append(f"**Tissue Profile**: `{config.tissue_profile}`\n")
     report.append(f"**Offline Mode**: {'Yes' if config.offline_mode else 'No'}\n")
@@ -2940,7 +2906,7 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     
     # v0.5 P1-15: Version and provenance metadata
     version_info = _get_version_info(config)
-    report.append(f"**DGRA Version**: {version_info.get('dgra_version', '0.5.3')}\n")
+    report.append(f"**GPA Version**: {version_info.get('dgra_version', '0.5.3')}\n")
     if version_info.get('cache_version'):
         report.append(f"**Cache Version**: {version_info['cache_version']}\n")
     if version_info.get('offline_archive_date') and version_info['offline_archive_date'] not in ('no_archive', 'empty', 'unknown'):
@@ -3047,16 +3013,6 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             report.append(f"- **Trans hypothesis**: {mh['phases']['trans']}\n")
             report.append(f"- **Required evidence**: {', '.join(mh['required_evidence'])}\n")
             report.append(f"- **Action**: {mh['action']}\n\n")
-
-    # Patient-donor cross-check
-    if cross_check:
-        report.append("## Patient-Donor Cross-Check\n")
-        for cc in cross_check:
-            status_icon = "🔴" if cc['donor_status'] == "PRESENT" else "🟢"
-            report.append(f"### {status_icon} {cc['patient_mutation']['gene']}\n")
-            report.append(f"- **Donor status**: {cc['donor_status']}\n")
-            report.append(f"- **Significance**: {cc['clinical_significance']}\n")
-            report.append(f"- **Action**: {cc['action']}\n\n")
 
     # Tier 1
     if tier1:
@@ -3212,7 +3168,7 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     # Tier 2
     if tier2:
         report.append("---\n\n## 🟡 Tier 2: Inform & Monitor\n")
-        report.append(f"*Variants donors should be informed of for {profile_name} context*\n\n")
+        report.append(f"*Variants patients should be informed of for {profile_name} context*\n\n")
         
         # Group by gene
         from collections import OrderedDict
@@ -3376,7 +3332,7 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     report.append("4. **蛋白功能域映射**: UniProt REST API → DOMAIN/REGION 特征 → 本地回退\n")
     report.append("5. **组织相关性评估**: GTEx API → median TPM → 自动分级 + 本地回退\n")
     report.append("6. **三级分类**: Action (Tier 1) → Inform (Tier 2) → No concern (Tier 3)\n")
-    report.append("7. **患者-供者交叉核对**: 体细胞驱动突变的遗传检测\n")
+    report.append("7. **基因检测历史记录**: 保留变异信息用于后续分析\n")
     report.append("8. **缓存**: 所有 API 响应缓存 30 天 (SQLite); 离线模式仅用缓存\n")
 
     return "\n".join(report)
@@ -3385,9 +3341,9 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
 # JSON Structured Report Generation (v0.5 P1-12)
 # =============================================================================
 
-def generate_json_report(variants: List[Variant], config: DGRAConfig,
+def generate_json_report(variants: List[Variant], config: GPAConfig,
                          tissue_profile: Dict, multi_hits: List[Dict],
-                         cross_check: List[Dict], report_md: str,
+                         report_md: str,
                          qc_summary: Optional[Dict] = None) -> Dict:
     """
     Generate structured JSON report for downstream system consumption.
@@ -3424,10 +3380,6 @@ def generate_json_report(variants: List[Variant], config: DGRAConfig,
         "tier3_gene_count": len(tier3_genes),
         "tier3_variant_count": len([v for v in variants if v.tier == 3]),
         "multi_hit_genes": [mh["gene"] for mh in multi_hits],
-        "patient_inherited_drivers": [
-            cc["patient_mutation"]["gene"]
-            for cc in cross_check if cc.get("donor_status") == "PRESENT"
-        ],
     }
     
     # Variants array — structured per variant
@@ -3521,7 +3473,6 @@ def generate_json_report(variants: List[Variant], config: DGRAConfig,
         "summary": summary,
         "variants": variants_json,
         "multi_hit_details": multi_hits,
-        "patient_donor_cross_check": cross_check,
         "qc_summary": qc_summary,  # v0.5 P1-13: input QC flags
         "report_md": report_md,
     }
@@ -3532,22 +3483,21 @@ def generate_json_report(variants: List[Variant], config: DGRAConfig,
 # Main Pipeline  (v0.4: async + batch API queries)
 # =============================================================================
 
-async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[Dict] = None,
-                      config: Optional[DGRAConfig] = None) -> Dict:
+async def run_dgra_pipeline(variants_data: List[Dict],
+                      config: Optional[GPAConfig] = None) -> Dict:
     """
-    Main DGRA analysis pipeline with dynamic tissue context.
+    Main GPA analysis pipeline with dynamic tissue context.
     v0.4: Async, batch API queries with cache.
 
     Args:
         variants_data: List of variant dicts from VCF annotation
-        patient_mutations: List of patient somatic driver mutations
-        config: DGRA configuration (includes tissue_profile + offline_mode)
+        config: GPA configuration (includes tissue_profile + offline_mode)
 
     Returns:
         Dict with report and structured results
     """
     if config is None:
-        config = DGRAConfig()
+        config = GPAConfig()
 
     # Convert user config to global config
     global_config = config.to_global()
@@ -3639,8 +3589,8 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
 
     # Collect all unique genes for batch API queries
     unique_genes = list({v.gene for v in variants})
-    print(f"[DGRA] {len(variants)} variants across {len(unique_genes)} unique genes")
-    print(f"[DGRA] Tissue profile: {profile_name} | Offline: {config.offline_mode}")
+    print(f"[GPA] {len(variants)} variants across {len(unique_genes)} unique genes")
+    print(f"[GPA] Tissue profile: {profile_name} | Offline: {config.offline_mode}")
 
     # ------------------------------------------------------------------
     # Batch API queries (concurrent)
@@ -3652,8 +3602,8 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     gnomad_constraint_data = {}
 
     if not config.offline_mode and unique_genes:
-        cache = DGRACache(global_config.cache_db_path)
-        async with DGRAAPIClient(global_config, cache) as client:
+        cache = GPACache(global_config.cache_db_path)
+        async with GPAAPIClient(global_config, cache) as client:
             # v0.5 P1-6: Multi-tissue GTEx aggregation
             gtex_tissues = tissue_profile.get("gtex_tissues")
             gtex_single_tissue = tissue_profile.get("gtex_tissue")
@@ -3672,7 +3622,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
                         gtex_data[gene] = aggregate_gtex_expression(multi_result)
                     else:
                         gtex_data[gene] = multi_result if isinstance(multi_result, dict) else {}
-                print(f"[DGRA] GTEx multi-tissue query: {len(gtex_tissues)} tissues ({', '.join(gtex_tissues)})")
+                print(f"[GPA] GTEx multi-tissue query: {len(gtex_tissues)} tissues ({', '.join(gtex_tissues)})")
             else:
                 # Single tissue query (backward compatible)
                 gtex_raw = await client.batch_query_genes(
@@ -3692,11 +3642,11 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
             uniprot_data = {g: uniprot_raw.get(g, {}) for g in unique_genes}
             hgnc_data = {g: hgnc_raw.get(g, {}) for g in unique_genes}
             gnomad_constraint_data = {g: gnomad_constraint_raw.get(g, {}) for g in unique_genes}
-        print(f"[DGRA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
+        print(f"[GPA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
         # Persist successful API results for future offline use
         for gene in unique_genes:
             _save_offline_archive(gene, ensembl_data, uniprot_data, gtex_data, config.tissue_profile, gnomad_constraint_data)
-        print(f"[DGRA] Offline archive saved for {len(unique_genes)} genes to {OFFLINE_ARCHIVE_DIR}")
+        print(f"[GPA] Offline archive saved for {len(unique_genes)} genes to {OFFLINE_ARCHIVE_DIR}")
     else:
         # Offline mode: try to load archived data first, then fall back to local rules
         loaded = 0
@@ -3711,9 +3661,9 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
                 if gc and gc.get("status") == "CAPTURED":
                     gnomad_constraint_data[gene] = gc
                 loaded += 1
-        print(f"[DGRA] Offline mode: loaded archived data for {loaded}/{len(unique_genes)} genes from {OFFLINE_ARCHIVE_DIR}")
+        print(f"[GPA] Offline mode: loaded archived data for {loaded}/{len(unique_genes)} genes from {OFFLINE_ARCHIVE_DIR}")
         if loaded == 0:
-            print("[DGRA] Offline mode: no archive found, using local fallbacks only (conservative)")
+            print("[GPA] Offline mode: no archive found, using local fallbacks only (conservative)")
         hgnc_data = {}
         # gnomad_constraint_data already populated from archive above
         # No HGNC data in offline mode unless cached
@@ -3723,7 +3673,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     # ------------------------------------------------------------------
     hgnc_warnings = normalize_gene_symbols(variants, hgnc_data, offline_mode=config.offline_mode)
     if hgnc_warnings:
-        print(f"[DGRA] HGNC normalization: {len(hgnc_warnings)} warnings")
+        print(f"[GPA] HGNC normalization: {len(hgnc_warnings)} warnings")
         for w in hgnc_warnings[:5]:  # Print first 5
             print(f"  - {w}")
         if len(hgnc_warnings) > 5:
@@ -3751,7 +3701,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
             v.nmd_prediction = predict_nmd(v, ensembl_data.get(v.gene, {}) if ensembl_data else None)
             nmd_count += 1
     if nmd_count > 0:
-        print(f"[DGRA] NMD prediction computed for {nmd_count} truncating variants")
+        print(f"[GPA] NMD prediction computed for {nmd_count} truncating variants")
 
     # ------------------------------------------------------------------
     # Step 1: Transcript correction (v0.4: Ensembl API)
@@ -3779,7 +3729,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
                 discrepancy_variants.append(v)
 
     if discrepancy_variants and not config.offline_mode:
-        print(f"[DGRA] VEP reannotation: {len(discrepancy_variants)} variants with TRANSCRIPT_DISCREPANCY")
+        print(f"[GPA] VEP reannotation: {len(discrepancy_variants)} variants with TRANSCRIPT_DISCREPANCY")
         vep_inputs = []
         for v in discrepancy_variants:
             vep_inputs.append({
@@ -3790,8 +3740,8 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
                 "key": f"{v.chrom}:{v.pos}_{v.ref}>{v.alt}",
             })
 
-        cache = DGRACache(global_config.cache_db_path)
-        async with DGRAAPIClient(global_config, cache) as client:
+        cache = GPACache(global_config.cache_db_path)
+        async with GPAAPIClient(global_config, cache) as client:
             vep_results = await client.batch_query_vep_region(vep_inputs)
 
         updated_count = 0
@@ -3864,10 +3814,10 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
             v.transcript_warning = json.dumps(tw)
             updated_count += 1
 
-        print(f"[DGRA] VEP reannotation complete: {updated_count} updated, {failed_count} failed")
+        print(f"[GPA] VEP reannotation complete: {updated_count} updated, {failed_count} failed")
 
     elif discrepancy_variants and config.offline_mode:
-        print(f"[DGRA] VEP reannotation skipped: offline mode ({len(discrepancy_variants)} discrepancies)")
+        print(f"[GPA] VEP reannotation skipped: offline mode ({len(discrepancy_variants)} discrepancies)")
         for v in discrepancy_variants:
             try:
                 tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
@@ -3916,7 +3866,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     # v0.5 P1-13: Input QC checks — after parsing, before tier classification
     qc_summary = _run_qc_checks(variants)
     if qc_summary["flagged"] > 0:
-        print(f"[DGRA] QC: {qc_summary['flagged']}/{qc_summary['total']} variants flagged: {qc_summary['by_flag']}")
+        print(f"[GPA] QC: {qc_summary['flagged']}/{qc_summary['total']} variants flagged: {qc_summary['by_flag']}")
 
     # Step 7: Three-tier classification (with tissue context)
     for v in variants:
@@ -3960,7 +3910,7 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
     # The hla_multi_hits set can be used for reporting if needed
 
     # v0.5.1 OPT-P0-2: X-linked female heterozygous adjustment after all tier assignments
-    # Female XX donors with X-linked genes: random X-inactivation provides ~50% wild-type
+    # Female XX patients with X-linked genes: random X-inactivation may provide mosaic protection
     # If gene is haplosufficient, tier 1 -> tier 2, tier 2 -> tier 3
     for v in variants:
         adj_tier, adj_reason = _x_linked_female_adjustment(
@@ -3981,16 +3931,11 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
                 # Keep tier but add annotation
                 v.tier_reason += f" | NOTE: {redundancy['reason']} — partial compensation may mitigate risk"
 
-    # Step 8: Patient-donor cross-check (unchanged)
-    cross_check = []
-    if patient_mutations:
-        cross_check = cross_check_patient_donor(patient_mutations, variants)
-
-    # Step 9: Generate report (with tissue context)
-    report_md = generate_tier_report(variants, config, tissue_profile, multi_hits, cross_check)
+    # Step 8: Generate report (with tissue context)
+    report_md = generate_tier_report(variants, config, tissue_profile, multi_hits)
     
     # v0.5 P1-12: Generate structured JSON report
-    json_report = generate_json_report(variants, config, tissue_profile, multi_hits, cross_check, report_md, qc_summary)
+    json_report = generate_json_report(variants, config, tissue_profile, multi_hits, report_md, qc_summary)
 
     # Compile structured output
     def _count_valid(data_dict):
@@ -4018,13 +3963,11 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
             "tier3_gene_count": len(set(v.gene for v in variants if v.tier == 3)),
             "tier3_variant_count": len([v for v in variants if v.tier == 3]),
             "multi_hit_genes": [mh["gene"] for mh in multi_hits],
-            "patient_inherited_mutations": [cc["patient_mutation"]["gene"] for cc in cross_check if cc["donor_status"] == "PRESENT"]
         },
         "tier1_variants": [asdict(v) for v in variants if v.tier == 1],
         "tier2_variants": [asdict(v) for v in variants if v.tier == 2],
         "tier3_variants": [asdict(v) for v in variants if v.tier == 3],
         "multi_hit_details": multi_hits,
-        "patient_donor_cross_check": cross_check,
         "report_markdown": report_md,
         "json_report": json_report,  # v0.5 P1-12: structured JSON for downstream systems
         "qc_summary": qc_summary,  # v0.5 P1-13: input QC flags
@@ -4037,12 +3980,11 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
 # =============================================================================
 
 async def run_multi_organ_assessment(variants_data: List[Dict],
-                                      patient_mutations: List[Dict] = None,
-                                      config: Optional[DGRAConfig] = None) -> Dict:
+                                      config: Optional[GPAConfig] = None) -> Dict:
     """
     v0.5 P1-7: Multi-organ joint assessment.
     
-    Runs DGRA for each profile in config.multi_organ_profiles, then generates
+    Runs GPA for each profile in config.multi_organ_profiles, then generates
     a joint risk matrix taking the MAX tier across profiles per variant.
     
     API queries are performed per-profile (GTEx tissue-specific), but cached
@@ -4050,25 +3992,24 @@ async def run_multi_organ_assessment(variants_data: List[Dict],
     
     Args:
         variants_data: List of variant dicts from VCF annotation
-        patient_mutations: List of patient somatic driver mutations
-        config: DGRA configuration with multi_organ_profiles set
+        config: GPA configuration with multi_organ_profiles set
     
     Returns:
         Dict with per-profile results + joint report
     """
     if config is None:
-        config = DGRAConfig()
+        config = GPAConfig()
     
     if not config.multi_organ_profiles or len(config.multi_organ_profiles) == 0:
         raise ValueError("multi_organ_profiles must be set for multi-organ assessment")
     
     profiles = config.multi_organ_profiles
-    print(f"[DGRA] Multi-organ assessment: {len(profiles)} profiles — {', '.join(profiles)}")
+    print(f"[GPA] Multi-organ assessment: {len(profiles)} profiles — {', '.join(profiles)}")
     
     # Run each profile independently
     profile_results = {}
     for profile_name in profiles:
-        profile_config = DGRAConfig(
+        profile_config = GPAConfig(
             tissue_profile=profile_name,
             offline_mode=config.offline_mode,
             somatic_mode=config.somatic_mode,
@@ -4080,8 +4021,8 @@ async def run_multi_organ_assessment(variants_data: List[Dict],
             vaf_deviation_threshold=config.vaf_deviation_threshold,
             force_sync=config.force_sync,
         )
-        print(f"\n[DGRA] === Running profile: {profile_name} ===")
-        result = await run_dgra_pipeline(variants_data, patient_mutations, profile_config)
+        print(f"\n[GPA] === Running profile: {profile_name} ===")
+        result = await run_dgra_pipeline(variants_data, profile_config)
         profile_results[profile_name] = result
     
     # Build joint risk matrix: max tier across profiles per variant
@@ -4165,7 +4106,7 @@ def generate_multi_organ_report(profile_results: Dict[str, Dict],
     """
     report = []
     
-    report.append("# DGRA 多器官联合风险评估报告\n")
+    report.append("# GPA 多器官联合关联分析报告\n")
     report.append(f"**评估器官**: {', '.join(profiles)}\n")
     report.append(f"**分析日期**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     report.append(f"**联合策略**: 跨器官取最高 Tier（最保守）\n\n")
@@ -4228,12 +4169,11 @@ def generate_multi_organ_report(profile_results: Dict[str, Dict],
 
 def main():
     parser = argparse.ArgumentParser(
-        description="DGRA - Donor Genomic Risk Assessment (v0.4 API-first with cache)",
+        description="GPA - Genomic Phenotype Association (v0.4 API-first with cache)",
         epilog="Available tissue profiles: hematopoietic (default), cardiovascular, hepatic, renal, neurological. "
                "Define custom profiles in references/tissue_context.json"
     )
     parser.add_argument("--input", "-i", required=True, help="Input CSV/TSV with annotated variants")
-    parser.add_argument("--patient-mutations", "-p", help="JSON file with patient somatic mutations")
     parser.add_argument("--output", "-o", default="dgra_report.md", help="Output report file")
     parser.add_argument("--json", "-j", help="Output JSON file with full structured results (backward compatible)")
     parser.add_argument("--output-json", dest="output_json",
@@ -4250,7 +4190,7 @@ def main():
     parser.add_argument("--offline", action="store_true",
                         help="Offline mode: skip all API calls, use cache + local references only")
     parser.add_argument("--somatic", action="store_true",
-                        help="Somatic mode: tumor driver mutation analysis (not germline donor screening). "
+                        help="Somatic mode: tumor driver mutation analysis. "
                              "TSG truncating + oncogene hotspots = Tier 1")
     parser.add_argument("--sync-gene-lists", action="store_true",
                         help="Force sync special_gene_lists from external sources (Orphanet, OMIM) before analysis. "
@@ -4280,12 +4220,12 @@ def main():
     
     if config_path:
         try:
-            file_config = DGRAFileConfig.from_yaml(config_path)
-            print(f"[DGRA] Loaded configuration from {config_path}")
+            file_config = GPAFileConfig.from_yaml(config_path)
+            print(f"[GPA] Loaded configuration from {config_path}")
         except FileNotFoundError:
-            print(f"[DGRA] Config file not found: {config_path}, using built-in defaults")
+            print(f"[GPA] Config file not found: {config_path}, using built-in defaults")
         except Exception as e:
-            print(f"[DGRA] Warning: Failed to load config {config_path}: {e}")
+            print(f"[GPA] Warning: Failed to load config {config_path}: {e}")
 
     # v0.5 P1-7: Validate --multi-organ vs --tissue mutual exclusion
     multi_organ = None
@@ -4313,13 +4253,9 @@ def main():
             variants_data.append(dict(row))
 
     # Read patient mutations if provided
-    patient_mutations = None
-    if args.patient_mutations:
-        with open(args.patient_mutations, 'r') as f:
-            patient_mutations = json.load(f)
 
     # Run async pipeline with tissue context
-    config = DGRAConfig(
+    config = GPAConfig(
         tissue_profile=args.tissue,
         offline_mode=args.offline,
         somatic_mode=args.somatic,
@@ -4342,13 +4278,13 @@ def main():
 
     # v0.5 P1-7: Multi-organ path
     if multi_organ:
-        results = asyncio.run(run_multi_organ_assessment(variants_data, patient_mutations, config))
+        results = asyncio.run(run_multi_organ_assessment(variants_data, config))
         
         # Write joint report
         with open(args.output, 'w') as f:
             f.write(results["joint_report_markdown"])
         
-        print(f"DGRA Multi-Organ Report Generated: {args.output}")
+        print(f"GPA Multi-Organ Report Generated: {args.output}")
         print(f"Profiles assessed: {', '.join(multi_organ)}")
         print(f"Joint Summary: Tier 1={results['joint_summary']['tier1_gene_count']} genes / {results['joint_summary']['tier1_variant_count']} variants, "
               f"Tier 2={results['joint_summary']['tier2_gene_count']} genes / {results['joint_summary']['tier2_variant_count']} variants, "
@@ -4373,14 +4309,14 @@ def main():
         return
     
     # Single-organ path (original behavior)
-    results = asyncio.run(run_dgra_pipeline(variants_data, patient_mutations, config))
+    results = asyncio.run(run_dgra_pipeline(variants_data, config))
 
     # Write report
     with open(args.output, 'w') as f:
         f.write(results["report_markdown"])
 
     profile_name = results["meta"]["profile_display_name"]
-    print(f"DGRA Report Generated: {args.output}")
+    print(f"GPA Report Generated: {args.output}")
     print(f"Tissue Context: {profile_name} ({args.tissue})")
     print(f"Summary: Tier 1={results['summary']['tier1_gene_count']} genes / {results['summary']['tier1_variant_count']} variants, "
           f"Tier 2={results['summary']['tier2_gene_count']} genes / {results['summary']['tier2_variant_count']} variants, "
