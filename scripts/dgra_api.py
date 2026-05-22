@@ -13,6 +13,7 @@ leaves full response parsing for Phase 2.
 
 import asyncio
 import aiohttp
+import hashlib
 import json
 import time
 from typing import Optional, Dict, Any, List
@@ -318,6 +319,221 @@ class DGRAAPIClient:
             "raw": None,
         }
     
+
+    async def query_ensembl_vep_region(self, chrom: str, pos: int, ref: str, alt: str) -> Dict[str, Any]:
+        """
+        Query Ensembl VEP for canonical transcript annotation of a specific variant.
+
+        Endpoint: POST /vep/human/region
+        Body: ["{chrom} {pos} . {ref} {alt} . . ."]
+        Params: canonical=1&domains=1&protein=1&hgvs=1&mane_select=1
+
+        Parses VEP JSON response to extract canonical transcript's:
+        - consequence_terms
+        - impact
+        - hgvsc
+        - hgvsp
+        - transcript_id
+        - protein_domains
+
+        Returns structured dict with these fields.
+        """
+        variant_string = f"{chrom} {pos} . {ref} {alt} . . ."
+        # Include body hash in params for cache key uniqueness (server ignores unknown params)
+        body_hash = hashlib.md5(json.dumps([variant_string], sort_keys=True).encode()).hexdigest()[:16]
+        params = {
+            "canonical": "1",
+            "domains": "1",
+            "protein": "1",
+            "hgvs": "1",
+            "mane_select": "1",
+            "_body_hash": body_hash,
+        }
+        result = await self._request_with_retry(
+            api_name="ensembl",
+            endpoint="/vep/human/region",
+            method="POST",
+            json_body=[variant_string],
+            params=params,
+        )
+
+        if result["data"] and result["http_status"] == 200:
+            data = result["data"]
+            if not data or not isinstance(data, list):
+                return {
+                    "consequence_terms": [],
+                    "impact": None,
+                    "hgvsc": None,
+                    "hgvsp": None,
+                    "transcript_id": None,
+                    "protein_domains": [],
+                    "source": "failed",
+                    "confidence": "low",
+                    "error": "Invalid VEP response format (expected list)",
+                }
+
+            parsed = self._parse_vep_batch_response(data, [{"chrom": chrom, "pos": pos, "ref": ref, "alt": alt}])
+            if parsed:
+                return parsed[0]
+
+        return {
+            "consequence_terms": [],
+            "impact": None,
+            "hgvsc": None,
+            "hgvsp": None,
+            "transcript_id": None,
+            "protein_domains": [],
+            "source": "failed",
+            "confidence": "low",
+            "error": result.get("error"),
+        }
+
+    def _parse_vep_batch_response(self, data: List[Dict], variants: List[Dict]) -> List[Dict]:
+        """Parse VEP batch response, matching results to input variants.
+
+        For each variant result, finds the canonical transcript consequence
+        (prioritizing: canonical=1 > MANE Select > protein_coding > first).
+        """
+        results = []
+        for idx, variant_result in enumerate(data):
+            if not isinstance(variant_result, dict):
+                results.append({
+                    "error": "Invalid VEP response format",
+                    "source": "failed",
+                    "confidence": "low",
+                })
+                continue
+
+            tx_consequences = variant_result.get("transcript_consequences", [])
+            canonical_tx = None
+            # Priority 1: canonical=1
+            for tx in tx_consequences:
+                if tx.get("canonical") == 1:
+                    canonical_tx = tx
+                    break
+            # Priority 2: MANE Select
+            if not canonical_tx:
+                for tx in tx_consequences:
+                    if tx.get("mane_select"):
+                        canonical_tx = tx
+                        break
+            # Priority 3: protein_coding biotype
+            if not canonical_tx:
+                for tx in tx_consequences:
+                    if tx.get("biotype") == "protein_coding":
+                        canonical_tx = tx
+                        break
+            # Priority 4: first available
+            if not canonical_tx and tx_consequences:
+                canonical_tx = tx_consequences[0]
+
+            if canonical_tx:
+                # Parse protein_domains
+                # VEP returns protein_domains as list of strings: "Db:ID:Name" or dicts
+                domains = []
+                raw_domains = canonical_tx.get("protein_domains", [])
+                for d in raw_domains:
+                    if isinstance(d, dict):
+                        domains.append({
+                            "name": d.get("name", d.get("description", "unnamed")),
+                            "start": d.get("start", d.get("beg")),
+                            "end": d.get("end"),
+                            "db": d.get("db"),
+                        })
+                    elif isinstance(d, str):
+                        parts = d.split(":")
+                        if len(parts) >= 3:
+                            domains.append({
+                                "name": parts[2],
+                                "db": parts[0],
+                                "interpro_id": parts[1] if len(parts) > 1 else None,
+                            })
+                        elif len(parts) == 2:
+                            domains.append({
+                                "name": parts[1],
+                                "db": parts[0],
+                            })
+
+                results.append({
+                    "consequence_terms": canonical_tx.get("consequence_terms", []),
+                    "impact": canonical_tx.get("impact"),
+                    "hgvsc": canonical_tx.get("hgvsc"),
+                    "hgvsp": canonical_tx.get("hgvsp"),
+                    "transcript_id": canonical_tx.get("transcript_id"),
+                    "gene_symbol": canonical_tx.get("gene_symbol"),
+                    "protein_domains": domains,
+                    "source": "ensembl",
+                    "confidence": "medium",
+                    "raw": variant_result,
+                })
+            else:
+                results.append({
+                    "error": "No transcript consequences found",
+                    "source": "ensembl",
+                    "confidence": "low",
+                })
+
+        return results
+
+    async def batch_query_vep_region(self, variants: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch query Ensembl VEP for multiple variants with controlled concurrency.
+
+        VEP API accepts multiple variants per POST request.
+        Strategy: chunk variants (max 50 per request) + semaphore (max 5 concurrent).
+
+        Args:
+            variants: List of dicts with keys chrom, pos, ref, alt, and optionally key.
+
+        Returns:
+            Dict mapping variant key -> VEP result dict.
+        """
+        if not variants:
+            return {}
+
+        CHUNK_SIZE = 50
+        MAX_CONCURRENT = 5
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+        async def _query_chunk(chunk: List[Dict]) -> List[Dict]:
+            async with semaphore:
+                body = [f"{v['chrom']} {v['pos']} . {v['ref']} {v['alt']} . . ." for v in chunk]
+                # Body hash for cache key uniqueness
+                body_hash = hashlib.md5(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
+                params = {
+                    "canonical": "1",
+                    "domains": "1",
+                    "protein": "1",
+                    "hgvs": "1",
+                    "mane_select": "1",
+                    "_body_hash": body_hash,
+                }
+                result = await self._request_with_retry(
+                    api_name="ensembl",
+                    endpoint="/vep/human/region",
+                    method="POST",
+                    json_body=body,
+                    params=params,
+                )
+                if result["data"] and result["http_status"] == 200:
+                    return self._parse_vep_batch_response(result["data"], chunk)
+                else:
+                    return [{"error": result.get("error"), "source": "failed", "confidence": "low"} for _ in chunk]
+
+        all_results = {}
+        total = len(variants)
+        for i in range(0, total, CHUNK_SIZE):
+            chunk = variants[i:i + CHUNK_SIZE]
+            chunk_results = await _query_chunk(chunk)
+            for v, r in zip(chunk, chunk_results):
+                key = v.get("key", f"{v['chrom']}:{v['pos']}_{v['ref']}>{v['alt']}")
+                all_results[key] = r
+            # Brief pause between chunks
+            if i + CHUNK_SIZE < total:
+                await asyncio.sleep(0.5)
+
+        return all_results
+
     # =====================================================================
     # UniProt REST API
     # =====================================================================

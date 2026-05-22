@@ -2546,6 +2546,39 @@ def _run_qc_checks(variants: List[Variant]) -> Dict:
 # Report Generation
 # =============================================================================
 
+def _format_vep_reannotation_note(v: Variant) -> Optional[str]:
+    """Format a human-readable VEP reannotation note for report display.
+
+    Returns None if the variant was not VEP-reannotated.
+    """
+    if not v.transcript_warning:
+        return None
+    try:
+        tw = json.loads(v.transcript_warning)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    vep = tw.get("vep_reannotation")
+    if not vep or vep.get("status") != "success":
+        return None
+
+    original = vep.get("original", {})
+    canonical = vep.get("canonical", {})
+    orig_tx = original.get("transcript", "N/A")
+    orig_consq = original.get("consequence", "N/A")
+    orig_impact = original.get("impact", "N/A")
+    new_tx = canonical.get("transcript_id", v.transcript or "N/A")
+    new_consq = v.consequence or canonical.get("consequence", "N/A")
+    new_impact = v.impact or canonical.get("impact", "N/A")
+
+    note = (
+        f"⚠️ 后果已按 canonical transcript ({new_tx}) 重新注释："
+        f"原 {orig_tx} {orig_consq}/{orig_impact} → "
+        f"VEP 结果 {new_consq}/{new_impact}"
+    )
+    return note
+
+
 def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                         tissue_profile: Dict, multi_hits: List[Dict],
                         cross_check: List[Dict]) -> str:
@@ -2766,6 +2799,9 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             report.append(f"\n**详细说明**:\n")
             for i, v in enumerate(var_list, 1):
                 report.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}):\n")
+                vep_note = _format_vep_reannotation_note(v)
+                if vep_note:
+                    report.append(f"   - **{vep_note}**\n")
                 report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
                 if v.domain_info:
                     di = v.domain_info
@@ -2872,6 +2908,9 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             report.append(f"\n**详细说明**:\n")
             for i, v in enumerate(var_list, 1):
                 report.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}):\n")
+                vep_note = _format_vep_reannotation_note(v)
+                if vep_note:
+                    report.append(f"   - **{vep_note}**\n")
                 report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
                 if v.domain_info:
                     di = v.domain_info
@@ -2935,7 +2974,17 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                     conf_icon = "⚠️" if conf == "LOW" else ""
                     reason = v.tier_reason[:50] + "..." if len(v.tier_reason) > 50 else v.tier_reason
                     reason = reason.replace("|", "/")
+                    # v0.5.2: VEP reannotation note in table
+                    vep_note = _format_vep_reannotation_note(v)
+                    if vep_note:
+                        reason = f"⚠️ VEP reannotated | {reason}"
                     report.append(f"| {pos} | {var_name} | {domain} | {conf_icon} {conf} | {reason} |\n")
+                report.append(f"\n")
+                # v0.5.2: VEP reannotation detail for Tier 3 short-list
+                for v in var_list:
+                    vep_note = _format_vep_reannotation_note(v)
+                    if vep_note:
+                        report.append(f"   *{v.hgvsp or v.hgvsc}*: {vep_note}\n")
                 report.append(f"\n")
             else:
                 # Many variants: just count
@@ -3344,6 +3393,129 @@ async def run_dgra_pipeline(variants_data: List[Dict], patient_mutations: List[D
         v, warning = await correct_transcript_priority(v, ensembl_data)
         if warning:
             v.transcript_warning = json.dumps(warning)
+
+    # ------------------------------------------------------------------
+    # Step 1.5: VEP canonical reannotation for TRANSCRIPT_DISCREPANCY variants
+    # ------------------------------------------------------------------
+    # Collect variants where annotator selected non-canonical isoform.
+    # Query Ensembl VEP for canonical transcript consequence, impact, and HGVSp.
+    # This ensures downstream domain mapping (Step 4) and tier classification
+    # use the canonical protein-coding transcript annotation.
+    discrepancy_variants = []
+    for v in variants:
+        if v.transcript_warning:
+            try:
+                tw = json.loads(v.transcript_warning)
+            except (json.JSONDecodeError, TypeError):
+                tw = {}
+            if tw.get("type") == "TRANSCRIPT_DISCREPANCY":
+                discrepancy_variants.append(v)
+
+    if discrepancy_variants and not config.offline_mode:
+        print(f"[DGRA] VEP reannotation: {len(discrepancy_variants)} variants with TRANSCRIPT_DISCREPANCY")
+        vep_inputs = []
+        for v in discrepancy_variants:
+            vep_inputs.append({
+                "chrom": v.chrom,
+                "pos": v.pos,
+                "ref": v.ref,
+                "alt": v.alt,
+                "key": f"{v.chrom}:{v.pos}_{v.ref}>{v.alt}",
+            })
+
+        cache = DGRACache(global_config.cache_db_path)
+        async with DGRAAPIClient(global_config, cache) as client:
+            vep_results = await client.batch_query_vep_region(vep_inputs)
+
+        updated_count = 0
+        failed_count = 0
+        for v in discrepancy_variants:
+            key = f"{v.chrom}:{v.pos}_{v.ref}>{v.alt}"
+            vep_result = vep_results.get(key, {})
+
+            if vep_result.get("error"):
+                failed_count += 1
+                try:
+                    tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
+                except (json.JSONDecodeError, TypeError):
+                    tw = {}
+                tw["vep_reannotation"] = {
+                    "status": "failed",
+                    "error": vep_result.get("error"),
+                    "fallback": "Using annotator's original annotation",
+                }
+                tw["vep_reannotation_failed"] = True
+                v.transcript_warning = json.dumps(tw)
+                # v0.5.2: Fallback confidence downgrade
+                v.quality_confidence = "LOW"
+                v.tier_confidence = "LOW"
+                continue
+
+            # Capture original values for comparison record
+            original = {
+                "consequence": v.consequence,
+                "impact": v.impact,
+                "hgvsc": v.hgvsc,
+                "hgvsp": v.hgvsp,
+                "transcript": v.transcript,
+            }
+
+            # Update variant with canonical VEP annotation
+            consequence_terms = vep_result.get("consequence_terms", [])
+            if consequence_terms:
+                # Use first (most severe) consequence term; convert underscores to spaces
+                v.consequence = consequence_terms[0].replace("_", " ")
+            if vep_result.get("impact"):
+                v.impact = vep_result["impact"]
+            if vep_result.get("hgvsc"):
+                v.hgvsc = vep_result["hgvsc"]
+            if vep_result.get("hgvsp"):
+                v.hgvsp = vep_result["hgvsp"]
+            if vep_result.get("transcript_id"):
+                v.transcript = vep_result["transcript_id"]
+
+            # Update transcript_warning with reannotation record
+            try:
+                tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
+            except (json.JSONDecodeError, TypeError):
+                tw = {}
+            tw["vep_reannotation"] = {
+                "status": "success",
+                "original": original,
+                "canonical": {
+                    "consequence": v.consequence,
+                    "impact": v.impact,
+                    "hgvsc": v.hgvsc,
+                    "hgvsp": v.hgvsp,
+                    "transcript": v.transcript,
+                    "transcript_id": vep_result.get("transcript_id"),
+                    "protein_domains": vep_result.get("protein_domains", []),
+                },
+                "source": vep_result.get("source", "ensembl"),
+                "confidence": vep_result.get("confidence", "medium"),
+            }
+            v.transcript_warning = json.dumps(tw)
+            updated_count += 1
+
+        print(f"[DGRA] VEP reannotation complete: {updated_count} updated, {failed_count} failed")
+
+    elif discrepancy_variants and config.offline_mode:
+        print(f"[DGRA] VEP reannotation skipped: offline mode ({len(discrepancy_variants)} discrepancies)")
+        for v in discrepancy_variants:
+            try:
+                tw = json.loads(v.transcript_warning) if v.transcript_warning else {}
+            except (json.JSONDecodeError, TypeError):
+                tw = {}
+            tw["vep_reannotation"] = {
+                "status": "skipped",
+                "reason": "offline_mode",
+                "fallback": "Using annotator's original annotation",
+            }
+            tw["vep_reannotation_failed"] = True
+            v.transcript_warning = json.dumps(tw)
+            # v0.5.2: Offline fallback confidence downgrade
+            v.quality_confidence = "LOW"
+            v.tier_confidence = "LOW"
 
     # Step 2: Pseudogene detection (unchanged)
     for v in variants:

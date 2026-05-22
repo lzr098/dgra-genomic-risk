@@ -245,7 +245,7 @@ json_data = results["json"]
 ### 配置文件示例（`dgra.yaml`）
 
 ```yaml
-dgra_version: "0.5.0"
+dgra_version: "0.5.2"
 
 api_endpoints:
   ensembl:
@@ -300,6 +300,61 @@ evidence:
 | `hepatic` | 肝移植 | Liver, Small Intestine, Stomach | 胆红素代谢、CYP450、胆汁淤积、血色病 |
 | `renal` | 肾移植 | Kidney - Cortex, Medulla, Bladder | 肾小球、肾小管、囊肿、补体 |
 | `neurological` | 神经系统评估 | Brain - Cortex, Cerebellum, Hippocampus | 三核苷酸重复、运动神经元、帕金森、周围神经病 |
+
+---
+
+## 转录本校正与 VEP Canonical Reannotation（v0.5.2 新增）
+
+### 问题：Transcript Discrepancy
+
+注释工具（VEP/ANNOVAR/SnpEff）选择的 "首选转录本" 不一定等于 Ensembl 标注的 **canonical transcript** 或 **MANE Select**。典型错误：
+
+- 使用 **NR_**（非编码转录本）标注 `splice_donor_variant` → `HIGH`
+- 但 canonical 是 **NM_** / **ENST**（蛋白编码转录本）→ 同一变异实为 `upstream_gene_variant` → `MODIFIER`
+
+**后果**：`HIGH` 被错误地送入 `classify_variant_tier()`，可能触发 Priority 1b（纯合截短→Tier 1），产生假阳性。
+
+### 新旧行为对比
+
+| 步骤 | 旧行为（≤v0.5.1） | 新行为（v0.5.2） |
+|:---|:---|:---|
+| **Step 1** 转录本校正 | 仅比对 Ensembl canonical 存 warning | 保留，继续比对 |
+| **Step 1.5** VEP reannotation | **无** | **新增**： discrepancy 变异 → Ensembl VEP API 用 canonical 参数重新注释 |
+| Step 4 Domain mapping | 使用原始 HGVSp → 可能落在错误功能域 | 使用 VEP 修正后的 HGVSp → 正确功能域 |
+| Tier 分级 | 基于原始 impact=HIGH | 基于修正后 impact=MODIFIER |
+
+### Pipeline 步骤更新
+
+```
+Step 1:  correct_transcript_priority()   → TRANSCRIPT_DISCREPANCY warning
+Step 1.5: batch_query_vep_region()      → Ensembl VEP canonical reannotation  ← 新增
+Step 2:  detect_pseudogene_risks()       → VAF deviation
+Step 3:  classify_gnomad_frequency()     → AF threshold
+Step 4:  map_variant_to_domain()          → UniProt domain mapping (使用修正后 HGVSp)
+Step 5:  assess_tissue_relevance()        → GTEx TPM
+Step 6:  classify_variant_tier()          → Tier 1/2/3 + confidence
+```
+
+### VEP Reannotation 逻辑
+
+| 条件 | 处理 |
+|:---|:---|
+| annotator transcript ≠ canonical / MANE / protein_coding | 加入 discrepancy 列表 |
+| 批量查询 Ensembl VEP（50/批，5并发） | `canonical=1&domains=1&protein=1&hgvs=1&mane_select=1` |
+| 解析优先级 | **canonical** → MANE → protein_coding |
+| 成功 | 覆盖 `consequence`/`impact`/`hgvsc`/`hgvsp`/`transcript`，`transcript_warning.vep_reannotation` 记录 original vs canonical |
+| 失败/离线 | 保留原始注释，`quality_confidence="LOW"`, `tier_confidence="LOW"`, `vep_reannotation_failed=True` |
+
+### CRIP2 典型案例
+
+**位点**：`chr14:105473030 G>A`
+
+| 阶段 | 转录本 | 后果 | 影响 | 分级 |
+|:---|:---|:---|:---|:---|
+| 原始注释（ANNOVAR） | `NR_073082` | `splice_donor_variant` | **HIGH** | 可能 Tier 1（Priority 1b 纯合截短）|
+| VEP Reannotation（canonical） | `NM_001312` | `upstream_gene_variant` | **MODIFIER** | **Tier 3**（无 ClinVar 证据 + MODIFIER）|
+
+**验证**：E2E 测试 `test_vep_reannotation_e2e.py` 覆盖此案例，确认修正后无功能域、无致病性证据，最终 Tier 3。
 
 ---
 
@@ -380,7 +435,7 @@ dgra-genomic-risk/
 
 | 版本 | 日期 | 主题 |
 |------|------|------|
-| **v0.5.2** | 2026-05-21 | **核心逻辑修正**：Multi-hit 不再升级变异（只标记基因）、ClinVar 中文注释支持（致病/良性）、统计格式改为"基因数/突变数"、新增 Priority 1c（ClinVar 致病+HIGH+造血相关→Tier 1）、**Transcript discrepancy 降级**（NR_/XM_非编码转录本→HIGH 降级为 MODERATE） |
+| **v0.5.2** | 2026-05-21 | **核心逻辑修正**：Multi-hit 不再升级变异（只标记基因）、ClinVar 中文注释支持（致病/良性）、统计格式改为"基因数/突变数"、新增 Priority 1c（ClinVar 致病+HIGH+造血相关→Tier 1）、**Transcript discrepancy 降级**（NR_/XM_非编码转录本→HIGH 降级为 MODERATE）、**VEP Canonical Reannotation**（Step 1.5：Ensembl VEP 用 canonical 重新注释 discrepancy 变异，CRIP2 chr14:105473030 案例验证） |
 | **v0.5.1** | 2026-05-21 | **假阳性大幅优化**：ClinVar 良性排除、X 连锁女性修正、同义排除、C 末端截短修正、基因家族冗余、HLA 排除（Tier-1 假阳性 ↓91%） |
 | **v0.5.0** | 2026-05-21 | **P0 统一输入层**（VCF/Excel/TSV/自由文本 + VEP/ANNOVAR/SnpEff 自动适配）+ **P1 核心引擎重构**（ACMG 评分、NMD 调制、Missense 分层、加权评分、置信度量化、结构化证据链、JSON 输出、多器官联合、增强 QC、基因名校验、分析版本化） |
 | v0.4.5 | 2026-05-20 | 相位分析系统（Phase Analysis） |

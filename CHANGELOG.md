@@ -1,5 +1,45 @@
 # DGRA 更新日志
 
+## [v0.5.2] - 2026-05-22
+
+### 核心功能 — VEP Canonical Reannotation (Transcript Discrepancy Fix)
+
+**问题**：ANNOVAR/VEP/SnpEff 选择的 "首选转录本" 与 Ensembl canonical 不一致，导致非编码转录本（NR_/XM_）被标注为 `splice_donor_variant`/`HIGH`，但 canonical 蛋白编码转录本（NM_/ENST_）下同一变异实为 `upstream_gene_variant`/`MODIFIER`。`HIGH` 被错误送入 `classify_variant_tier()`，产生假阳性 Tier 1。
+
+**解决方案**：
+- **Step 1.5 新增 `batch_query_vep_region()`**：收集 Step 1 中 `TRANSCRIPT_DISCREPANCY` 变异，用 Ensembl VEP API 以 `canonical=1&domains=1&protein=1&hgvs=1&mane_select=1` 重新注释
+- **解析优先级**：canonical → MANE Select → protein_coding
+- **覆盖字段**：`consequence`, `impact`, `hgvsc`, `hgvsp`, `transcript`
+- **`transcript_warning.vep_reannotation`**：记录 original vs canonical 对比，Markdown 报告中加 ⚠️ 标注
+- **失败/离线降级**：`quality_confidence="LOW"`, `tier_confidence="LOW"`, `vep_reannotation_failed=True`
+- **Domain mapping 顺序修正**：Step 1.5 在 Step 4 之前，修正后的 HGVSp 自动流入 UniProt 功能域映射
+
+**典型案例 — CRIP2 chr14:105473030**：
+| 阶段 | 转录本 | 后果 | 影响 | 最终分级 |
+|:---|:---|:---|:---|:---|
+| 原始（ANNOVAR） | `NR_073082` | `splice_donor_variant` | **HIGH** | 可能 Tier 1 |
+| VEP reannotation | `NM_001312` | `upstream_gene_variant` | **MODIFIER** | **Tier 3** |
+
+**验证**：`test_vep_reannotation_e2e.py` 端到端测试通过（9 步 Pipeline 验证）。
+
+**相关文件**：
+- `scripts/dgra_api.py` — 新增 `query_ensembl_vep_region()`, `_parse_vep_batch_response()`, `batch_query_vep_region()` (+216 行)
+- `scripts/dgra_core.py` — Step 1.5 插入 `run_dgra_pipeline()` (+104 行)，`transcript_warning` fallback confidence 降级，`_format_vep_reannotation_note()` 报告增强 (+~50 行)
+- `scripts/test_vep_reannotation.py` — 3 个单元测试（canonical/MANE/protein_coding fallback）
+- `scripts/test_vep_reannotation_e2e.py` — CRIP2 端到端测试（9 步验证）
+
+### 核心逻辑修正（v0.5.2 同时包含）
+- **Multi-hit 不再升级变异**：只标记 multi-hit 基因，各变异独立分级（Tier 1: 301→4 突变）
+- **ClinVar 中文注释支持**：`_clinvar_pathogenic` 同时匹配 "Pathogenic" 和 "致病"
+- **新增 Priority 1c**：ClinVar 致病 + HIGH + 组织相关无路可走 → Tier 1（CD36 正确分级）
+- **Transcript discrepancy 降级**：NR_/XM_ 非编码转录本标注 HIGH，若 canonical 为 ENST 蛋白编码 → 降级为 MODERATE
+- **统计格式**："X 基因 / Y 突变" 双维度
+- **报告位点格式**：强制包含 `CHROM:POS:REF>ALT`
+
+**提交信息**：`485b851` v0.5.2 - VEP canonical reannotation + transcript discrepancy fix
+
+---
+
 ## [v0.4.4] - 2026-05-20
 
 ### 重大改进 - Multi-hit 致病性证据过滤
