@@ -322,49 +322,108 @@ async def correct_transcript_priority(variant: Variant,
 # Module B: Pseudogene Interference Detection  (unchanged in v0.4)
 # =============================================================================
 
-PSEUDOGENE_CONFIG = {
+# Load pseudogene database from JSON (v0.5.3)
+_PSEUDOGENE_DB_PATH = Path(__file__).resolve().parent.parent / "references" / "pseudogene_database.json"
+_PSEUDOGENE_CONFIG = {}
+
+def _load_pseudogene_database():
+    """Load pseudogene database from JSON. Falls back to empty if missing."""
+    global _PSEUDOGENE_CONFIG
+    if _PSEUDOGENE_CONFIG:
+        return _PSEUDOGENE_CONFIG
+    try:
+        with open(_PSEUDOGENE_DB_PATH, "r") as f:
+            db = json.load(f)
+        _PSEUDOGENE_CONFIG = db.get("genes", {})
+        print(f"[DGRA] Loaded pseudogene database: {len(_PSEUDOGENE_CONFIG)} genes")
+        return _PSEUDOGENE_CONFIG
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"[DGRA] WARNING: pseudogene_database.json not found or invalid ({e}). Using empty config.")
+        _PSEUDOGENE_CONFIG = {}
+        return _PSEUDOGENE_CONFIG
+
+
+# Legacy hardcoded config — kept as fallback if JSON missing
+_PSEUDOGENE_CONFIG_LEGACY = {
     "SETBP1": {"pseudogene": "VWFP1", "vaf_expected": 0.5, "vaf_min": 0.30, "notes": "VWFP1 on chr1 shares homology"},
     "VWF": {"pseudogene": "VWFP1", "vaf_expected": 0.5, "vaf_min": 0.25, "notes": "VWFP1 exon 23-34 homology"},
     "GBA": {"pseudogene": "GBAP1", "vaf_expected": 0.5, "vaf_min": 0.20, "notes": "GBAP1 on chr1"},
     "PMS2": {"pseudogene": "PMS2CL", "vaf_expected": 0.5, "vaf_min": 0.25, "notes": "PMS2CL on chr7"},
 }
 
+
 def detect_pseudogene_artifact(variant: Variant) -> Optional[Dict]:
     """
-    Detect if VAF deviation suggests pseudogene interference.
+    Detect pseudogene interference using JSON database.
+    v0.5.3: Supports vaf_mismatch and sequence_homology strategies.
+    Returns PSEUDOGENE_INTERFERENCE (VAF < interference threshold)
+    or PSEUDOGENE_SUSPECTED (VAF < suspected threshold).
     """
     gene = variant.gene
-    if gene not in PSEUDOGENE_CONFIG:
+    db = _load_pseudogene_database()
+    config = db.get(gene) or _PSEUDOGENE_CONFIG_LEGACY.get(gene)
+    if not config:
         return None
-    
-    config = PSEUDOGENE_CONFIG[gene]
-    
-    # Determine expected VAF
+
+    strategy = config.get("detection_strategy", "vaf_mismatch")
+
+    if strategy == "sequence_homology":
+        # Sequence-homology genes: flag if VAF shows any deviation in heterozygous context
+        # but without hard thresholds — mainly informational
+        if variant.vaf is not None and variant.gt in ["0/1", "0|1"]:
+            if variant.vaf < 0.35 or variant.vaf > 0.65:
+                return {
+                    "type": "PSEUDOGENE_SUSPECTED",
+                    "gene": gene,
+                    "pseudogenes": config.get("pseudogenes", []),
+                    "strategy": strategy,
+                    "observed_vaf": variant.vaf,
+                    "notes": config.get("notes", ""),
+                    "recommendation": "Consider long-read sequencing or Sanger validation due to pseudogene homology.",
+                }
+        return None
+
+    # vaf_mismatch strategy
     if variant.gt in ["1/1", "1|1"]:
         expected_vaf = 1.0
     else:
-        expected_vaf = config["vaf_expected"]
-    
+        expected_vaf = config.get("vaf_expected_heterozygous", 0.5)
+
     observed_vaf = variant.vaf
     if observed_vaf is None:
-        # Try to estimate from DP if available
         return None
-    
-    deviation = abs(observed_vaf - expected_vaf)
-    
-    # For heterozygous, check if VAF is too low
-    if expected_vaf == 0.5 and observed_vaf < config["vaf_min"]:
+
+    # v0.5.3: Two-tier threshold system
+    vaf_min_interference = config.get("vaf_min_interference")
+    vaf_min_suspected = config.get("vaf_min_suspected", config.get("vaf_min", 0.25))
+
+    if expected_vaf == 0.5 and observed_vaf < vaf_min_interference:
+        return {
+            "type": "PSEUDOGENE_INTERFERENCE",
+            "gene": gene,
+            "pseudogenes": config.get("pseudogenes", []),
+            "strategy": strategy,
+            "expected_vaf": expected_vaf,
+            "observed_vaf": observed_vaf,
+            "deviation": abs(observed_vaf - expected_vaf),
+            "threshold": vaf_min_interference,
+            "notes": config.get("notes", ""),
+            "recommendation": "VAF significantly below expected heterozygous ratio — strong evidence of pseudogene interference. Consider Sanger validation or long-read sequencing.",
+        }
+    elif expected_vaf == 0.5 and observed_vaf < vaf_min_suspected:
         return {
             "type": "PSEUDOGENE_SUSPECTED",
             "gene": gene,
-            "pseudogene": config["pseudogene"],
+            "pseudogenes": config.get("pseudogenes", []),
+            "strategy": strategy,
             "expected_vaf": expected_vaf,
             "observed_vaf": observed_vaf,
-            "deviation": deviation,
-            "notes": config["notes"],
-            "recommendation": "Consider long-read sequencing or Sanger validation."
+            "deviation": abs(observed_vaf - expected_vaf),
+            "threshold": vaf_min_suspected,
+            "notes": config.get("notes", ""),
+            "recommendation": "VAF below expected heterozygous ratio — possible pseudogene interference.",
         }
-    
+
     return None
 
 # =============================================================================
@@ -1498,6 +1557,12 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         if has_conflict or many_unknown:
             return "LOW"
         
+        # v0.5.3: QC flags and pseudogene interference force LOW confidence
+        if "VAF_GT_MISMATCH" in variant.qc_flags:
+            return "LOW"
+        if pseudogene_warning and pseudogene_warning.get("type") == "PSEUDOGENE_INTERFERENCE":
+            return "LOW"
+        
         if len(unique_sources) >= 3 and high_conf_count >= 3:
             return "HIGH"
         elif len(unique_sources) >= 2:
@@ -2392,7 +2457,7 @@ def _get_version_info(config: DGRAConfig) -> Dict:
     import subprocess
     
     version_info = {
-        "dgra_version": "0.5.0",
+        "dgra_version": "0.5.3",
         "analysis_date": datetime.now().isoformat(),
     }
     
@@ -2527,6 +2592,20 @@ def _run_qc_checks(variants: List[Variant]) -> Dict:
             except (json.JSONDecodeError, AttributeError):
                 pass
         
+        # 5. VAF-GT consistency check (v0.5.3)
+        if v.vaf is not None and v.gt:
+            gt = v.gt.replace("|", "/")
+            vaf = v.vaf
+            if gt == "0/1":
+                if vaf < 0.20 or vaf > 0.80:
+                    flags.append("VAF_GT_MISMATCH")
+            elif gt == "1/1":
+                if vaf < 0.70:
+                    flags.append("VAF_GT_MISMATCH")
+            elif gt == "0/0":
+                if vaf > 0.10:
+                    flags.append("VAF_GT_MISMATCH")
+        
         v.qc_flags = flags
         
         if flags:
@@ -2602,7 +2681,7 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
     
     # v0.5 P1-15: Version and provenance metadata
     version_info = _get_version_info(config)
-    report.append(f"**DGRA Version**: {version_info.get('dgra_version', '0.5.0')}\n")
+    report.append(f"**DGRA Version**: {version_info.get('dgra_version', '0.5.3')}\n")
     if version_info.get('cache_version'):
         report.append(f"**Cache Version**: {version_info['cache_version']}\n")
     if version_info.get('offline_archive_date') and version_info['offline_archive_date'] not in ('no_archive', 'empty', 'unknown'):
@@ -2636,6 +2715,7 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
             "LOW_DEPTH": "测序深度 < 10x",
             "LOW_COMPLEXITY_REGION": "位于低复杂度/重复区域",
             "INVALID_GENE_SYMBOL": "基因名格式不符合 HGNC 规范",
+            "VAF_GT_MISMATCH": "VAF 与基因型不一致（杂合 35-65%，纯合 85-100%，野生型 0-5%）",
         }
         
         # Show top 5 most frequent flags
@@ -2802,6 +2882,17 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                 vep_note = _format_vep_reannotation_note(v)
                 if vep_note:
                     report.append(f"   - **{vep_note}**\n")
+                # v0.5.3: VAF-GT mismatch warning
+                if "VAF_GT_MISMATCH" in v.qc_flags:
+                    report.append(f"   - ⚠️ **VAF 与基因型不一致**（GT={v.gt}, VAF={v.vaf:.2f}），提示可能存在假基因干扰、CNV 或比对错误\n")
+                # v0.5.3: Pseudogene interference warning
+                if v.pseudogene_warning:
+                    try:
+                        pw = json.loads(v.pseudogene_warning)
+                        if pw.get("type") == "PSEUDOGENE_INTERFERENCE":
+                            report.append(f"   - ⚠️ **假基因干扰**: {pw.get('gene')} 观察 VAF={pw.get('observed_vaf', 'N/A')}，远低于预期杂合 0.5，疑似 {', '.join(pw.get('pseudogenes', []))} 假基因读取\n")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
                 if v.domain_info:
                     di = v.domain_info
@@ -2911,6 +3002,17 @@ def generate_tier_report(variants: List[Variant], config: DGRAConfig,
                 vep_note = _format_vep_reannotation_note(v)
                 if vep_note:
                     report.append(f"   - **{vep_note}**\n")
+                # v0.5.3: VAF-GT mismatch warning
+                if "VAF_GT_MISMATCH" in v.qc_flags:
+                    report.append(f"   - ⚠️ **VAF 与基因型不一致**（GT={v.gt}, VAF={v.vaf:.2f}），提示可能存在假基因干扰、CNV 或比对错误\n")
+                # v0.5.3: Pseudogene interference warning
+                if v.pseudogene_warning:
+                    try:
+                        pw = json.loads(v.pseudogene_warning)
+                        if pw.get("type") == "PSEUDOGENE_INTERFERENCE":
+                            report.append(f"   - ⚠️ **假基因干扰**: {pw.get('gene')} 观察 VAF={pw.get('observed_vaf', 'N/A')}，远低于预期杂合 0.5，疑似 {', '.join(pw.get('pseudogenes', []))} 假基因读取\n")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
                 if v.domain_info:
                     di = v.domain_info

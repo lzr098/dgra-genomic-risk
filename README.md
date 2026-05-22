@@ -1,6 +1,6 @@
 # DGRA - Dynamic Genomic Risk Assessment
 
-**DGRA (Dynamic Genomic Risk Assessment)** v0.5.2 是一个用于个体基因组变异致病性评估的自动化分析系统。基于多源注释数据（VEP/ANNOVAR/SnpEff）进行多维度注释、分级和风险评估，帮助识别可能影响特定组织/器官功能的遗传变异。
+**DGRA (Dynamic Genomic Risk Assessment)** v0.5.3 是一个用于个体基因组变异致病性评估的自动化分析系统。基于多源注释数据（VEP/ANNOVAR/SnpEff）进行多维度注释、分级和风险评估，帮助识别可能影响特定组织/器官功能的遗传变异。
 
 ---
 
@@ -245,7 +245,7 @@ json_data = results["json"]
 ### 配置文件示例（`dgra.yaml`）
 
 ```yaml
-dgra_version: "0.5.2"
+dgra_version: "0.5.3"
 
 api_endpoints:
   ensembl:
@@ -303,7 +303,7 @@ evidence:
 
 ---
 
-## 转录本校正与 VEP Canonical Reannotation（v0.5.2 新增）
+## 转录本校正与 VEP Canonical Reannotation（v0.5.2 新增，v0.5.3 延续）
 
 ### 问题：Transcript Discrepancy
 
@@ -316,7 +316,7 @@ evidence:
 
 ### 新旧行为对比
 
-| 步骤 | 旧行为（≤v0.5.1） | 新行为（v0.5.2） |
+| 步骤 | 旧行为（≤v0.5.1） | 新行为（≥v0.5.2） |
 |:---|:---|:---|
 | **Step 1** 转录本校正 | 仅比对 Ensembl canonical 存 warning | 保留，继续比对 |
 | **Step 1.5** VEP reannotation | **无** | **新增**： discrepancy 变异 → Ensembl VEP API 用 canonical 参数重新注释 |
@@ -482,5 +482,5 @@ MIT License
 ---
 
 **维护者**：[@lzr098](https://github.com/lzr098)  
-**当前版本**：v0.5.2  
+**当前版本**：v0.5.3  
 **最后更新**：2026-05-21

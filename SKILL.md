@@ -3,7 +3,7 @@ name: dgra-genomic-risk
 description: |
   DGRA (Dynamic Genomic Risk Assessment) v0.4。个体基因组变异风险评估系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：造血、心血管、肝脏、肾脏、神经系统。支持 germline（供者安全性）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析。
 
-  **DGRA v0.5.2 关键修正：multi-hit 不再升级变异，只标记基因；ClinVar 中文注释支持；transcript discrepancy 非编码转录本降级；统计格式改为"X 基因 / Y 突变"。**
+  **DGRA v0.5.3：multi-hit 不再升级变异，只标记基因；ClinVar 中文注释支持；transcript discrepancy 非编码转录本降级；统计格式改为"X 基因 / Y 突变"。**
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"DGRA"、"突变分析"、"基因筛查"

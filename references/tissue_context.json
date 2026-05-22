@@ -10,7 +10,7 @@
       "special_gene_lists": {
         "cancer_predisposition": ["BRCA1", "BRCA2", "TP53", "PTEN", "APC", "MLH1", "MSH2", "MSH6", "PMS2", "ATM", "CHEK2", "PALB2", "NBN", "BARD1", "RAD51C", "RAD51D", "BRIP1", "CDH1", "STK11", "CDKN2A", "CDKN2B"],
         "cardiac_safety": ["SCN5A", "KCNQ1", "KCNH2", "KCNE1", "KCNE2", "RYR2", "CASQ2", "CALM1", "CALM2", "CALM3", "TRDN", "DSP", "PKP2", "DSG2", "DSC2", "JUP", "TMEM43", "DES", "LMNA", "PLN", "RANGRF", "TGFB3", "TTN"],
-        "drug_metabolism": ["CYP2D6", "CYP2C19", "CYP3A4", "CYP3A5", "ABCB1", "SLC22A1", "SLC22A2", "TPMT", "DPYD", "UGT1A1", "CYP2C9", "CYP2B6", "CYP2E1", "CYP1A2", "NAT2", "G6PD", "VKORC1", "SLCO1B1"],
+        "drug_metabolism": ["CYP2D6", "CYP2C19", "CYP3A4", "CYP3A5", "ABCB1", "SLC22A1", "SLC22A2", "TPMT", "DPYD", "UGT1A1", "CYP2C9", "CYP2B6", "CYP2E1", "CYP1A2", "NAT2", "G6PD", "VKORC1", "SLCO1B1", "CYP2C8", "CYP3A7", "CYP4F2", "CYP2A6", "CYP2J2", "CYP2S1", "CYP3A43", "CYP4A11", "CYP4A22", "CYP17A1"],
         "coagulation": ["VWF", "F8", "F9", "F7", "F10", "F11", "F12", "F13A1", "F13B", "PROC", "PROS1", "SERPINC1", "SERPIND1", "PLG", "THBD", "SERPINA10"],
         "immunodeficiency": ["IL2RG", "JAK3", "RAG1", "RAG2", "DCLRE1C", "PRKDC", "LIG4", "NHEJ1", "AK2", "RMRP", "ADA", "PNP", "CD3G", "CD3D", "CD3E", "ZAP70", "CORO1A", "CIITA", "RFX5", "RFXAP", "RFXANK", "TAP1", "TAP2", "TAPBP"]
       },

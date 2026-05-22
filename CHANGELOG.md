@@ -1,5 +1,20 @@
 # DGRA 更新日志
 
+## [v0.5.3] - 2026-05-22
+
+### 版本号统一升级
+
+- 全仓库版本号对齐：v0.5.2 → **v0.5.3**
+- 修改位置：
+  - `scripts/dgra_core.py` — `_get_version_info()` 返回 `"0.5.3"`
+  - `scripts/dgra_core.py` — Markdown 报告 fallback `'0.5.3'`
+  - `README.md` — 标题、YAML 示例、当前版本声明
+  - `SKILL.md` — 描述头
+  - `references/dgra.yaml` — 配置模板
+- 无功能变更，纯版本号对齐，为后续 v0.5.3 功能开发准备基线
+
+---
+
 ## [v0.5.2] - 2026-05-22
 
 ### 核心功能 — VEP Canonical Reannotation (Transcript Discrepancy Fix)
