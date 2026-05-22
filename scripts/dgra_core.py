@@ -1221,11 +1221,12 @@ def evaluate_missense_tier(variant: Variant, domain_info: Optional[Dict],
                 "reason": f"Missense in conserved domain (mis_z={mis_z:.2f}) — likely damaging",
             }
         else:
+            mis_z_fmt = f"{mis_z:.2f}" if mis_z is not None else "N/A"
             return {
                 "score": 0.4,
                 "tier_recommendation": 2,
                 "category": "possibly_damaging",
-                "reason": f"Missense partially disrupts domain (mis_z={mis_z:.2f if mis_z else 'N/A'})",
+                "reason": f"Missense partially disrupts domain (mis_z={mis_z_fmt})",
             }
     elif domain_integrity == "tolerated":
         if mis_z is not None and mis_z < 2.0:
@@ -1633,6 +1634,33 @@ def _x_linked_female_adjustment(tier: int, chrom: str, gt: str,
     return tier, ""
 
 
+# v0.7 Phase 3: Rare disease gene list (from gene_phenotype_map.json)
+_RARE_DISEASE_GENES: Optional[set] = None
+
+def _load_rare_disease_genes() -> set:
+    """Load rare disease gene list from gene_phenotype_map.json.
+    Genes with OMIM/ClinVar phenotypes are considered rare disease-related.
+    """
+    global _RARE_DISEASE_GENES
+    if _RARE_DISEASE_GENES is not None:
+        return _RARE_DISEASE_GENES
+    
+    map_path = Path(__file__).parent.parent / "references" / "gene_phenotype_map.json"
+    try:
+        with open(map_path, 'r') as f:
+            data = json.load(f)
+        _RARE_DISEASE_GENES = set(data.keys())
+        return _RARE_DISEASE_GENES
+    except Exception:
+        _RARE_DISEASE_GENES = set()
+        return _RARE_DISEASE_GENES
+
+
+def _is_rare_disease_gene(gene: str) -> bool:
+    """Check if gene is in the rare disease gene list."""
+    return gene in _load_rare_disease_genes()
+
+
 def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment: Dict,
                           gnomad_info: Dict, transcript_warning: Optional[Dict],
                           pseudogene_warning: Optional[Dict], tissue_profile: Dict,
@@ -1974,8 +2002,23 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     # v0.5.2 FIX: Heterozygous pathogenic truncating variants in tissue-relevant genes
     # were incorrectly falling to Tier 2. ClinVar Pathogenic + HIGH + relevant tissue
     # should be Tier 1 regardless of zygosity (heterozygous pathogenic = actionable).
+    # v0.7 Phase 3: If phenotype_match_score is provided and < 0.6 → Tier 2 (phenotype mismatch)
     if _clinvar_pathogenic(variant.clinvar) and _impact_high(variant.impact):
         if tissue_assessment.get("relevance") in ["primary", "secondary"]:
+            # v0.7 Phase 3: Check phenotype match score
+            pms = getattr(variant, 'phenotype_match_score', None)
+            if pms is not None and pms < 0.6:
+                # Phenotype mismatch → Tier 2 (not Tier 3)
+                _add_evidence("ClinVar", f"Pathogenic + HIGH + tissue-relevant but phenotype mismatch (score={pms:.2f}) → Tier 2", weight=0.30, confidence="medium", raw_data={"clinvar": variant.clinvar, "impact": variant.impact, "phenotype_match_score": pms})
+                actions.append("Confirm variant via secondary method")
+                actions.append("Assess phenotypic severity and clinical relevance")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                upgrade_conditions.append(f"若表型验证与 {gene} 已知疾病匹配，可升级为 Tier 1")
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                return 2, f"ClinVar pathogenic {variant.consequence} in tissue-relevant gene {gene} — phenotype mismatch (score={pms:.2f})", actions
+            # Phenotype match or no phenotype provided → Tier 1 (original logic)
             _add_evidence("ClinVar", f"Pathogenic + HIGH + tissue-relevant → Tier 1 for {gene}", weight=1.0, confidence="high", raw_data={"clinvar": variant.clinvar, "impact": variant.impact, "relevance": tissue_assessment.get("relevance")})
             actions.append("Confirm variant via secondary method")
             actions.append("Assess phenotypic severity and clinical relevance")
@@ -2154,6 +2197,16 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     # Priority 3: Tier 3 - everything else
     reason_parts = []
     if gnomad_info.get("status") == "common_polymorphism":
+        # v0.7 Phase 3: Rare disease genes with AF>1% — do NOT auto Tier 3
+        if _is_rare_disease_gene(gene) and not _clinvar_benign(variant.clinvar):
+            _add_evidence("Frequency", f"AF>1% but rare disease gene {gene} → Tier 2 (not auto Tier 3)", weight=0.2, confidence="medium", raw_data={"gnomad_status": gnomad_info.get("status"), "af": gnomad_info.get("af"), "gene": gene, "rare_disease": True})
+            variant.qc_flags.append("COMMON_POLYMORPHISM_BUT_RARE_DISEASE_GENE")
+            actions.append(f"Rare disease gene {gene} with common polymorphism — monitor for phenotype correlation")
+            variant.evidence_chain = evidence_chain
+            upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+            variant.upgrade_conditions = upgrade_conditions
+            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+            return 2, f"Common polymorphism in rare disease gene {gene}", actions
         reason_parts.append(f"Common polymorphism (AF={gnomad_info.get('af')})")
     if _clinvar_benign(variant.clinvar):
         reason_parts.append("ClinVar benign")
@@ -3907,6 +3960,20 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     if qc_summary["flagged"] > 0:
         print(f"[GPA] QC: {qc_summary['flagged']}/{qc_summary['total']} variants flagged: {qc_summary['by_flag']}")
 
+    # Step 6.5: Phenotype association analysis (v0.7 Phase 3, pre-tier)
+    # Run BEFORE tier classification so phenotype_match_score is available for tier logic.
+    if user_phenotypes:
+        from gpa_phenotype_match import PhenotypeMatcher
+        matcher = PhenotypeMatcher()
+        gene_symbols = [v.gene for v in variants]
+        match_results = await matcher.match_batch(gene_symbols, user_phenotypes)
+        for v, mr in zip(variants, match_results):
+            v.phenotype_match_score = mr.get("score")
+            v.phenotype_match_explanation = mr.get("explanation", "")
+            v.phenotype_match_confidence = mr.get("confidence", "")
+            v.phenotype_matched_pairs = mr.get("matched_pairs", [])
+            v.phenotype_known_list = mr.get("known_phenotypes", [])
+
     # Step 7: Three-tier classification (with tissue context)
     for v in variants:
         tissue = tissue_assessments[v.gene]
@@ -3969,22 +4036,6 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             elif redundancy.get("compensation_level") == "partial":
                 # Keep tier but add annotation
                 v.tier_reason += f" | NOTE: {redundancy['reason']} — partial compensation may mitigate risk"
-
-    # Step 7.5: Phenotype association analysis (v0.7, optional)
-    # Only for Tier 1/2 variants when user provides phenotypes
-    if user_phenotypes:
-        tier12_variants = [v for v in variants if v.tier in (1, 2)]
-        if tier12_variants:
-            from gpa_phenotype_match import PhenotypeMatcher
-            matcher = PhenotypeMatcher()
-            gene_symbols = [v.gene for v in tier12_variants]
-            match_results = await matcher.match_batch(gene_symbols, user_phenotypes)
-            for v, mr in zip(tier12_variants, match_results):
-                v.phenotype_match_score = mr.get("score")
-                v.phenotype_match_explanation = mr.get("explanation", "")
-                v.phenotype_match_confidence = mr.get("confidence", "")
-                v.phenotype_matched_pairs = mr.get("matched_pairs", [])
-                v.phenotype_known_list = mr.get("known_phenotypes", [])
 
     # Step 8: Generate report (with tissue context)
     report_md = generate_tier_report(variants, config, tissue_profile, multi_hits)
