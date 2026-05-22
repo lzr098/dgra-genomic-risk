@@ -94,6 +94,7 @@ def _write_tsv(variants: List[Dict[str, Any]], tsv_path: Path) -> None:
 def run_gpa_from_file(
     input_path: Path,
     tissue: str = "general",
+    user_phenotypes: Optional[str] = None,
     offline: bool = False,
     somatic: bool = False,
     fmt: Optional[str] = None,
@@ -121,6 +122,7 @@ def run_gpa_from_file(
     return run_gpa(
         variants=variants,
         tissue=tissue,
+        user_phenotypes=user_phenotypes,
         offline=offline,
         somatic=somatic,
         target_population=target_population,
@@ -135,24 +137,27 @@ def run_gpa_from_file(
 def run_gpa(
     variants: List[Dict[str, Any]],
     tissue: str = "general",
+    user_phenotypes: Optional[str] = None,
     offline: bool = False,
     somatic: bool = False,
     target_population: Optional[str] = None,
     multi_organ: Optional[List[str]] = None,
     force_sync: bool = False,
-    evidence_detail: str = "brief",  # v0.5 P1-9
-    database_version: Optional[str] = None,  # v0.5 P1-15
-    config_path: Optional[Path] = None,  # v0.5 P2-3
+    evidence_detail: str = "brief",
+    database_version: Optional[str] = None,
+    config_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
     v0.5 P1-7: 支持 multi_organ 多器官联合评估。
     v0.5 P1-8: 支持 force_sync 强制同步基因列表。
     v0.5 P2-3: 支持 config_path YAML 配置文件。
+    v0.7: 支持 user_phenotypes 表型关联分析。
 
     Args:
         variants: variant dict 列表,每个 dict 至少包含 CHROM, POS, REF, ALT, GENE
         tissue: 组织类型,默认 general (v0.5 P0-6)
+        user_phenotypes: 用户临床表型描述，用于基因-表型关联分析
         offline: 是否离线模式(跳过 API)
         target_population: gnomAD 目标人群亚组 (EAS/AMR/AFR/NFE/SAS/ASJ/FIN/MID/OTH)
         multi_organ: 多器官评估 profile 列表(如 ["hematopoietic", "cardiovascular"]),
@@ -221,6 +226,8 @@ def run_gpa(
             cmd.extend(["--evidence-detail", evidence_detail])
         if database_version:
             cmd.extend(["--database-version", database_version])
+        if user_phenotypes:
+            cmd.extend(["--phenotypes", user_phenotypes])
         # v0.5 P2-3: YAML config file
         if config_path:
             cmd.extend(["--config", str(config_path)])
@@ -323,6 +330,14 @@ def main():
     parser.add_argument("--database-version",
                         help="Freeze analysis to a specific database version for reproducibility "
                              "(e.g., 'gnomAD v4.1'). Recorded in output meta. (v0.5 P1-15)")
+    # v0.7: Phenotype association
+    parser.add_argument("--phenotypes", default=None,
+                        help="Clinical phenotype description for phenotype-gene association analysis. "
+                             "e.g. 'distal muscle weakness, myopathic damage, slow progression'. "
+                             "Only applied to Tier 1/2 variants. Requires LLM API key for best accuracy.")
+    parser.add_argument("--llm-model", default="gpt-4o-mini",
+                        help="LLM model for phenotype semantic matching. Default: gpt-4o-mini. "
+                             "Alternative: gpt-4o, claude-3-haiku.")
     # v0.5 P2-3: YAML config file support
     parser.add_argument("--config", "-c", type=Path, default=None,
                         help="Path to dgra.yaml configuration file. Overrides built-in defaults. (v0.5 P2-3)")
@@ -361,6 +376,7 @@ def main():
         result = run_gpa_from_file(
             input_path=args.input_file,
             tissue=args.tissue,
+            user_phenotypes=args.phenotypes,
             offline=args.offline,
             somatic=args.somatic,
             fmt=args.format if args.format != "auto" else None,
@@ -370,7 +386,7 @@ def main():
             force_sync=args.sync_gene_lists,
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
-            config_path=args.config,  # v0.5 P2-3
+            config_path=args.config,
         )
     elif args.free_text:
         try:
@@ -382,6 +398,7 @@ def main():
         result = run_gpa(
             variants=variants,
             tissue=args.tissue,
+            user_phenotypes=args.phenotypes,
             offline=args.offline,
             somatic=args.somatic,
             target_population=args.target_population,
@@ -389,7 +406,7 @@ def main():
             force_sync=args.sync_gene_lists,
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
-            config_path=args.config,  # v0.5 P2-3
+            config_path=args.config,
         )
     else:
         # Inline JSON variants
@@ -401,6 +418,7 @@ def main():
         result = run_gpa(
             variants=variants,
             tissue=args.tissue,
+            user_phenotypes=args.phenotypes,
             offline=args.offline,
             somatic=args.somatic,
             target_population=args.target_population,
@@ -408,7 +426,7 @@ def main():
             force_sync=args.sync_gene_lists,
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
-            config_path=args.config,  # v0.5 P2-3
+            config_path=args.config,
         )
     
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)

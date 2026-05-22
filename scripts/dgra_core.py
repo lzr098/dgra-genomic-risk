@@ -16,6 +16,7 @@ import json
 import sys
 import csv
 import re
+import os
 import asyncio
 from datetime import datetime
 from pathlib import Path
@@ -188,6 +189,13 @@ class Variant:
 
     # v0.5 P1-10: Tier confidence classification
     tier_confidence: str = "LOW"  # "HIGH" | "MEDIUM" | "LOW"
+
+    # v0.7: Phenotype association fields
+    phenotype_match_score: Optional[float] = None
+    phenotype_match_explanation: str = ""
+    phenotype_match_confidence: str = ""
+    phenotype_matched_pairs: List = field(default_factory=list)
+    phenotype_known_list: List[str] = field(default_factory=list)
 
 @dataclass
 class GPAConfig:
@@ -3142,6 +3150,20 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     if parts:
                         report.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
                 report.append(f"   - 分级原因: {v.tier_reason}\n")
+                # v0.7: Phenotype association
+                if v.phenotype_match_score is not None:
+                    score = v.phenotype_match_score
+                    conf = v.phenotype_match_confidence
+                    conf_icon = "🟢" if conf == "high" else "🟡" if conf == "medium" else "🔴"
+                    report.append(f"   - **表型关联**: {conf_icon} Score={score:.2f} (置信度: {conf})\n")
+                    if v.phenotype_match_explanation:
+                        report.append(f"     - 解释: {v.phenotype_match_explanation}\n")
+                    if v.phenotype_matched_pairs:
+                        pairs_str = ", ".join([f"'{u}'→'{k}'" for u, k in v.phenotype_matched_pairs[:3]])
+                        report.append(f"     - 匹配对: {pairs_str}{'...' if len(v.phenotype_matched_pairs) > 3 else ''}\n")
+                    if v.phenotype_known_list:
+                        known_str = ", ".join(v.phenotype_known_list[:3])
+                        report.append(f"     - 基因已知表型: {known_str}{'...' if len(v.phenotype_known_list) > 3 else ''}\n")
                 # v0.5 P1-9: Structured evidence chain
                 if v.evidence_chain:
                     report.append(f"   - **证据链** ({len(v.evidence_chain)} 条):\n")
@@ -3262,6 +3284,20 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     if parts:
                         report.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
                 report.append(f"   - 分级原因: {v.tier_reason}\n")
+                # v0.7: Phenotype association
+                if v.phenotype_match_score is not None:
+                    score = v.phenotype_match_score
+                    conf = v.phenotype_match_confidence
+                    conf_icon = "🟢" if conf == "high" else "🟡" if conf == "medium" else "🔴"
+                    report.append(f"   - **表型关联**: {conf_icon} Score={score:.2f} (置信度: {conf})\n")
+                    if v.phenotype_match_explanation:
+                        report.append(f"     - 解释: {v.phenotype_match_explanation}\n")
+                    if v.phenotype_matched_pairs:
+                        pairs_str = ", ".join([f"'{u}'→'{k}'" for u, k in v.phenotype_matched_pairs[:3]])
+                        report.append(f"     - 匹配对: {pairs_str}{'...' if len(v.phenotype_matched_pairs) > 3 else ''}\n")
+                    if v.phenotype_known_list:
+                        known_str = ", ".join(v.phenotype_known_list[:3])
+                        report.append(f"     - 基因已知表型: {known_str}{'...' if len(v.phenotype_known_list) > 3 else ''}\n")
                 if v.tier_actions:
                     report.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
                 # v0.5 P1-11: Upgrade conditions for forward-looking assessment
@@ -3484,13 +3520,16 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
 # =============================================================================
 
 async def run_dgra_pipeline(variants_data: List[Dict],
+                      user_phenotypes: Optional[str] = None,
                       config: Optional[GPAConfig] = None) -> Dict:
     """
     Main GPA analysis pipeline with dynamic tissue context.
     v0.4: Async, batch API queries with cache.
+    v0.7: Optional phenotype association for Tier 1/2 variants.
 
     Args:
         variants_data: List of variant dicts from VCF annotation
+        user_phenotypes: Optional clinical phenotype description (e.g., "肌无力、肌源性损害")
         config: GPA configuration (includes tissue_profile + offline_mode)
 
     Returns:
@@ -3602,8 +3641,8 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     gnomad_constraint_data = {}
 
     if not config.offline_mode and unique_genes:
-        cache = GPACache(global_config.cache_db_path)
-        async with GPAAPIClient(global_config, cache) as client:
+        cache = DGRACache(global_config.cache_db_path)
+        async with DGRAAPIClient(global_config, cache) as client:
             # v0.5 P1-6: Multi-tissue GTEx aggregation
             gtex_tissues = tissue_profile.get("gtex_tissues")
             gtex_single_tissue = tissue_profile.get("gtex_tissue")
@@ -3740,8 +3779,8 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                 "key": f"{v.chrom}:{v.pos}_{v.ref}>{v.alt}",
             })
 
-        cache = GPACache(global_config.cache_db_path)
-        async with GPAAPIClient(global_config, cache) as client:
+        cache = DGRACache(global_config.cache_db_path)
+        async with DGRAAPIClient(global_config, cache) as client:
             vep_results = await client.batch_query_vep_region(vep_inputs)
 
         updated_count = 0
@@ -3931,6 +3970,22 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                 # Keep tier but add annotation
                 v.tier_reason += f" | NOTE: {redundancy['reason']} — partial compensation may mitigate risk"
 
+    # Step 7.5: Phenotype association analysis (v0.7, optional)
+    # Only for Tier 1/2 variants when user provides phenotypes
+    if user_phenotypes:
+        tier12_variants = [v for v in variants if v.tier in (1, 2)]
+        if tier12_variants:
+            from gpa_phenotype_match import PhenotypeMatcher
+            matcher = PhenotypeMatcher()
+            gene_symbols = [v.gene for v in tier12_variants]
+            match_results = await matcher.match_batch(gene_symbols, user_phenotypes)
+            for v, mr in zip(tier12_variants, match_results):
+                v.phenotype_match_score = mr.get("score")
+                v.phenotype_match_explanation = mr.get("explanation", "")
+                v.phenotype_match_confidence = mr.get("confidence", "")
+                v.phenotype_matched_pairs = mr.get("matched_pairs", [])
+                v.phenotype_known_list = mr.get("known_phenotypes", [])
+
     # Step 8: Generate report (with tissue context)
     report_md = generate_tier_report(variants, config, tissue_profile, multi_hits)
     
@@ -3980,6 +4035,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
 # =============================================================================
 
 async def run_multi_organ_assessment(variants_data: List[Dict],
+                                      user_phenotypes: Optional[str] = None,
                                       config: Optional[GPAConfig] = None) -> Dict:
     """
     v0.5 P1-7: Multi-organ joint assessment.
@@ -4022,7 +4078,7 @@ async def run_multi_organ_assessment(variants_data: List[Dict],
             force_sync=config.force_sync,
         )
         print(f"\n[GPA] === Running profile: {profile_name} ===")
-        result = await run_dgra_pipeline(variants_data, profile_config)
+        result = await run_dgra_pipeline(variants_data, user_phenotypes=user_phenotypes, config=profile_config)
         profile_results[profile_name] = result
     
     # Build joint risk matrix: max tier across profiles per variant
@@ -4178,11 +4234,11 @@ def main():
     parser.add_argument("--json", "-j", help="Output JSON file with full structured results (backward compatible)")
     parser.add_argument("--output-json", dest="output_json",
                         help="Output P1-12 structured JSON report for downstream systems (v0.5 P1-12)")
-    parser.add_argument("--tissue", "-t", default="hematopoietic",
+    parser.add_argument("--tissue", "-t", default="general",
                         help="Tissue/organ context profile. "
                              "Controls which genes are considered relevant for tier classification. "
                              "Available: general, hematopoietic, cardiovascular, hepatic, renal, neurological. "
-                             "Default: hematopoietic. Mutually exclusive with --multi-organ.")
+                             "Default: general. Mutually exclusive with --multi-organ.")
     parser.add_argument("--multi-organ", default=None,
                         help="Multi-organ assessment: comma-separated profiles, e.g. 'hematopoietic,cardiovascular'. "
                              "Runs independent assessment for each profile and generates a joint risk matrix. "
@@ -4210,6 +4266,15 @@ def main():
                              "If not specified, uses references/dgra.yaml if it exists, "
                              "otherwise falls back to built-in defaults. (v0.5 P2-3)")
 
+    # v0.7: Phenotype association
+    parser.add_argument("--phenotypes", default=None,
+                        help="Clinical phenotype description for phenotype-gene association analysis. "
+                             "e.g. 'distal muscle weakness, myopathic damage, slow progression'. "
+                             "Only applied to Tier 1/2 variants. Requires LLM API key for best accuracy.")
+    parser.add_argument("--llm-model", default="gpt-4o-mini",
+                        help="LLM model for phenotype semantic matching. Default: gpt-4o-mini. "
+                             "Alternative: gpt-4o, claude-3-haiku.")
+
     args = parser.parse_args()
 
     # v0.5 P2-3: Load YAML config if provided or default exists
@@ -4230,7 +4295,7 @@ def main():
     # v0.5 P1-7: Validate --multi-organ vs --tissue mutual exclusion
     multi_organ = None
     if args.multi_organ:
-        if args.tissue != "hematopoietic":
+        if args.tissue != "general":
             # tissue was explicitly set (not default)
             print("Error: --tissue and --multi-organ are mutually exclusive. Use one or the other.")
             sys.exit(1)
@@ -4252,7 +4317,9 @@ def main():
         for row in reader:
             variants_data.append(dict(row))
 
-    # Read patient mutations if provided
+    # v0.7: Set LLM model env var if specified
+    if args.llm_model:
+        os.environ.setdefault("GPA_LLM_MODEL", args.llm_model)
 
     # Run async pipeline with tissue context
     config = GPAConfig(
@@ -4278,7 +4345,7 @@ def main():
 
     # v0.5 P1-7: Multi-organ path
     if multi_organ:
-        results = asyncio.run(run_multi_organ_assessment(variants_data, config))
+        results = asyncio.run(run_multi_organ_assessment(variants_data, user_phenotypes=args.phenotypes, config=config))
         
         # Write joint report
         with open(args.output, 'w') as f:
@@ -4309,7 +4376,7 @@ def main():
         return
     
     # Single-organ path (original behavior)
-    results = asyncio.run(run_dgra_pipeline(variants_data, config))
+    results = asyncio.run(run_dgra_pipeline(variants_data, user_phenotypes=args.phenotypes, config=config))
 
     # Write report
     with open(args.output, 'w') as f:
