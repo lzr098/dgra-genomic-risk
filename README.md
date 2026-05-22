@@ -435,6 +435,7 @@ dgra-genomic-risk/
 
 | 版本 | 日期 | 主题 |
 |------|------|------|
+| **v0.6.0** | **2026-05-22** | **假基因干扰评估（Pseudogene Architecture）**：51个临床相关假基因对（VWF/GBA/PMS2/PTEN/CYP2D6/HBA等）、VAF模式检测（0-1评分，4级分类）、**Tier不变confidence降级原则**（不直接修改Tier，仅下调置信度）、独立Markdown报告章节（汇总表+详细分析+重点关注）、轻量版设计（本地JSON优先，GENCODE同步保留为扩展基础）、向后兼容legacy数据库 |
 | **v0.5.2** | 2026-05-21 | **核心逻辑修正**：Multi-hit 不再升级变异（只标记基因）、ClinVar 中文注释支持（致病/良性）、统计格式改为"基因数/突变数"、新增 Priority 1c（ClinVar 致病+HIGH+造血相关→Tier 1）、**Transcript discrepancy 降级**（NR_/XM_非编码转录本→HIGH 降级为 MODERATE）、**VEP Canonical Reannotation**（Step 1.5：Ensembl VEP 用 canonical 重新注释 discrepancy 变异，CRIP2 chr14:105473030 案例验证） |
 | **v0.5.1** | 2026-05-21 | **假阳性大幅优化**：ClinVar 良性排除、X 连锁女性修正、同义排除、C 末端截短修正、基因家族冗余、HLA 排除（Tier-1 假阳性 ↓91%） |
 | **v0.5.0** | 2026-05-21 | **P0 统一输入层**（VCF/Excel/TSV/自由文本 + VEP/ANNOVAR/SnpEff 自动适配）+ **P1 核心引擎重构**（ACMG 评分、NMD 调制、Missense 分层、加权评分、置信度量化、结构化证据链、JSON 输出、多器官联合、增强 QC、基因名校验、分析版本化） |
@@ -456,6 +457,7 @@ dgra-genomic-risk/
 | **P1** | ✅ 完成（14/15）| 核心引擎重构（ACMG、NMD、Missense、加权评分、置信度、证据链、JSON、多器官、QC、基因名校验、版本化） |
 | **P1-6** | ⏸️ 最后做 | 多 GTEx 组织聚合 |
 | **P2** | 🔄 进行中 | VRS 格式支持、组织特异性剪接注释、配置文件驱动（dgra.yaml）、动态组织注册 |
+| **P2.5** | ✅ 完成 | **假基因架构升级**（v0.6：轻量版假基因评估、51个临床基因对、VAF模式检测、报告增强） |
 | **P3** | ⏳ 待启动 | 多基因上位效应、贝叶斯置信模型 |
 
 ---
@@ -482,5 +484,5 @@ MIT License
 ---
 
 **维护者**：[@lzr098](https://github.com/lzr098)  
-**当前版本**：v0.5.3  
-**最后更新**：2026-05-21
+**当前版本**：v0.6.0  
+**最后更新**：2026-05-22

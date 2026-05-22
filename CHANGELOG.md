@@ -1,5 +1,38 @@
 # DGRA 更新日志
 
+## [v0.6.0] - 2026-05-22
+
+### 假基因架构升级（Pseudogene Architecture）
+
+**问题**：VWF p.Gln1311Ter 在女儿供者分析中 VAF=13.3%（预期杂合~50%），疑似 VWFP1 假基因干扰。原有硬编码5基因检查不足以覆盖临床场景。
+
+**解决方案**：
+- **轻量版假基因数据库**：`references/pseudogene_lookup.json`，51个临床相关假基因对（VWF/GBA/PMS2/PTEN/CYP2D6/HBA/GUSB/SETBP1等）
+- **VAF模式检测**：0-1评分，4级分类：
+  - `strong_interference` (≥0.75)：VAF < 0.20，confidence → LOW
+  - `interference` (≥0.40)：VAF < 0.30，confidence → MEDIUM
+  - `suspected` (≥0.40)：VAF < 0.40，confidence → MEDIUM
+  - `bias_suspected` (>0)：VAF > 0.65，confidence → MEDIUM
+- **Tier不变confidence降级原则**：不直接修改Tier，仅下调置信度，保持原有分类框架
+- **独立Markdown报告章节**：汇总表、详细分析、重点关注（评分≥0.75强烈建议验证）
+- **查询函数**：`get_pseudogenes_for_gene()`，解析顺序：本地lookup → legacy DB → (未来) Ensembl REST
+- **向后兼容**：`pseudogene_database.json`仍作为fallback
+- **GENCODE同步保留**：`scripts/dgra_pseudogene_sync.py`为未来大规模自动同步预留
+
+**新增文件**：
+- `references/pseudogene_lookup.json` — 51个假基因对（含notes、chromosome、detection_strategy、confidence）
+- `scripts/dgra_pseudogene_sync.py` — GENCODE v48流式同步+查询API
+
+**修改文件**：
+- `scripts/dgra_core.py` — 新增 `_calculate_pseudogene_score()`、`get_pseudogenes_for_gene()`、重写 `detect_pseudogene_artifact()`、集成证据链(weight=0)、新增 `_generate_pseudogene_assessment_section()`、报告自动插入
+
+**设计决策**：
+- 放弃下载整份56MB GENCODE GTF（EBI速度慢），改用轻量版本地JSON
+- 协调者手动录入Top 50临床相关对，精确控制
+- 未来可扩展：Ensembl REST API按需查询、GENCODE完整同步
+
+---
+
 ## [v0.5.3] - 2026-05-22
 
 ### 版本号统一升级
