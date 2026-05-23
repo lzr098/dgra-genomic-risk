@@ -105,6 +105,11 @@ def run_gpa_from_file(
     evidence_detail: str = "brief",  # v0.5 P1-9
     database_version: Optional[str] = None,  # v0.5 P1-15
     config_path: Optional[Path] = None,  # v0.5 P2-3
+    # v0.7.1: Auto-batch parameters
+    auto_batch: bool = True,
+    batch_size: int = 500,
+    timeout_per_batch: int = 300,
+    max_batch_retries: int = 1,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -131,6 +136,11 @@ def run_gpa_from_file(
         evidence_detail=evidence_detail,
         database_version=database_version,
         config_path=config_path,
+        # v0.7.1: batch control
+        auto_batch=auto_batch,
+        batch_size=batch_size,
+        timeout_per_batch=timeout_per_batch,
+        max_batch_retries=max_batch_retries,
     )
 
 
@@ -146,6 +156,11 @@ def run_gpa(
     evidence_detail: str = "brief",
     database_version: Optional[str] = None,
     config_path: Optional[Path] = None,
+    # v0.7.1: Auto-batch parameters
+    auto_batch: bool = True,
+    batch_size: int = 500,
+    timeout_per_batch: int = 300,
+    max_batch_retries: int = 1,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
@@ -169,6 +184,23 @@ def run_gpa(
         dict: {"success": True, "results": {...}, "report_md": "..."}
         或 {"success": False, "error": "..."}
     """
+    # v0.7.1: Auto-batch for large variant sets
+    if auto_batch and len(variants) > batch_size:
+        from dgra_batch_runner import run_gpa_batched
+        return run_gpa_batched(
+            variants=variants,
+            tissue=tissue,
+            user_phenotypes=user_phenotypes,
+            offline=offline,
+            somatic=somatic,
+            target_population=target_population,
+            evidence_detail=evidence_detail,
+            config_path=config_path,
+            batch_size=batch_size,
+            timeout_per_batch=timeout_per_batch,
+            max_retries=max_batch_retries,
+        )
+    
     if not variants:
         return {"success": False, "error": "variants list is empty"}
 
@@ -332,12 +364,16 @@ def main():
                              "(e.g., 'gnomAD v4.1'). Recorded in output meta. (v0.5 P1-15)")
     # v0.7: Phenotype association
     parser.add_argument("--phenotypes", default=None,
-                        help="Clinical phenotype description for phenotype-gene association analysis. "
-                             "e.g. 'distal muscle weakness, myopathic damage, slow progression'. "
-                             "Only applied to Tier 1/2 variants. Requires LLM API key for best accuracy.")
+                        help="Clinical phenotype description for phenotype-gene association analysis.")
     parser.add_argument("--llm-model", default="gpt-4o-mini",
-                        help="LLM model for phenotype semantic matching. Default: gpt-4o-mini. "
-                             "Alternative: gpt-4o, claude-3-haiku.")
+                        help="LLM model for phenotype semantic matching. Default: gpt-4o-mini.")
+    # v0.7.1: Batch control
+    parser.add_argument("--no-auto-batch", action="store_true",
+                        help="Disable automatic batching for large variant sets (default: auto-batch enabled)")
+    parser.add_argument("--batch-size", type=int, default=500,
+                        help="Variants per batch when auto-batching (default: 500)")
+    parser.add_argument("--timeout", type=int, default=300,
+                        help="Timeout per batch in seconds (default: 300)")
     # v0.5 P2-3: YAML config file support
     parser.add_argument("--config", "-c", type=Path, default=None,
                         help="Path to dgra.yaml configuration file. Overrides built-in defaults. (v0.5 P2-3)")
@@ -387,6 +423,11 @@ def main():
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
             config_path=args.config,
+            # v0.7.1: batch control
+            auto_batch=not args.no_auto_batch,
+            batch_size=args.batch_size,
+            timeout_per_batch=args.timeout,
+            max_batch_retries=0,
         )
     elif args.free_text:
         try:
@@ -407,6 +448,11 @@ def main():
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
             config_path=args.config,
+            # v0.7.1: batch control
+            auto_batch=not args.no_auto_batch,
+            batch_size=args.batch_size,
+            timeout_per_batch=args.timeout,
+            max_batch_retries=0,
         )
     else:
         # Inline JSON variants
@@ -427,6 +473,11 @@ def main():
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
             config_path=args.config,
+            # v0.7.1: batch control
+            auto_batch=not args.no_auto_batch,
+            batch_size=args.batch_size,
+            timeout_per_batch=args.timeout,
+            max_batch_retries=0,
         )
     
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)

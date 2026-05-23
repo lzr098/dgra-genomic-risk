@@ -66,6 +66,35 @@ description: |
 
 ## 🚀 调用方式
 
+### 自动分批（v0.7.1 新增，默认启用）
+
+当变异数 > 500 时，wrapper **自动分批**处理，每批500个变异，每批有独立的5分钟超时。
+
+**不需要任何额外参数**——只要数据量大，自动生效：
+
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --input-file variants.tsv \
+  --tissue neurological
+```
+
+### 控制分批行为
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--batch-size` | 每批变异数 | 500 |
+| `--timeout` | 每批超时（秒） | 300 |
+| `--no-auto-batch` | 禁用自动分批 | 否 |
+
+**示例：肌病基因子集（2638个变异），分6批处理**
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --input-file myopathy_subset.tsv \
+  --tissue neurological \
+  --batch-size 500 \
+  --output-json result.json
+```
+
 ### 方式一：直接调用 wrapper（推荐）
 
 用 `exec` 运行 `dgra_cli_wrapper.py`，传入 variant JSON 数组：

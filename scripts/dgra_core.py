@@ -3786,11 +3786,38 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         missing = []
         
         raw_impact = vd.get("IMPACT", "").strip()
+        # v0.7.1: Chinese impact mapping
+        _IMPACT_CN_MAP = {"高": "HIGH", "中等": "MODERATE", "低": "LOW", "修饰": "MODIFIER"}
+        if raw_impact in _IMPACT_CN_MAP:
+            raw_impact = _IMPACT_CN_MAP[raw_impact]
         if not raw_impact:
             raw_impact = _UNKNOWN
             missing.append("IMPACT")
         
         raw_consequence = vd.get("Consequence", "").strip()
+        # v0.7.1: Chinese consequence mapping
+        _CONSEQUENCE_CN_MAP = {
+            "错义变异": "missense_variant",
+            "无义变异": "stop_gained",
+            "获得终止密码子": "stop_gained",
+            "移码变异": "frameshift_variant",
+            "框内插入": "inframe_insertion",
+            "剪接位点变异": "splice_donor_variant",
+            "剪接区域变异": "splice_region_variant",
+            "剪接供体区域变异": "splice_donor_variant",
+            "剪接供体第5位碱基变异": "splice_donor_variant",
+            "剪接多嘧啶束变异": "splice_polypyrimidine_tract_variant",
+            "内含子变异": "intron_variant",
+            "基因上游变异": "upstream_gene_variant",
+            "基因下游变异": "downstream_gene_variant",
+            "同义变异": "synonymous_variant",
+            "非翻译区变异": "UTR_variant",
+            "3'非翻译区变异": "3_prime_UTR_variant",
+            "5'非翻译区变异": "5_prime_UTR_variant",
+            "非编码转录本外显子变异": "non_coding_transcript_exon_variant",
+        }
+        if raw_consequence in _CONSEQUENCE_CN_MAP:
+            raw_consequence = _CONSEQUENCE_CN_MAP[raw_consequence]
         if not raw_consequence:
             raw_consequence = _UNKNOWN
             missing.append("Consequence")
