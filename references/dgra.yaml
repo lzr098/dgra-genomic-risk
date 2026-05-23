@@ -3,6 +3,58 @@
 # Place at references/dgra.yaml or pass via --config <path>
 
 # =============================================================================
+# VCF Annotation & Transcript Selection (v0.9.0)
+# =============================================================================
+vcf_annotation:
+  # Annotator backend for raw VCF files (default: auto)
+  #   auto   — detect and use available annotator (VEP REST API)
+  #   vep    — Ensembl VEP REST API
+  annotator: "auto"
+
+  # VEP REST API parameters (used when annotator=vep or auto)
+  vep_params:
+    canonical: 1
+    domains: 1
+    protein: 1
+    hgvs: 1
+    mane_select: 1
+    mane_plus_clinical: 1
+
+  # Local VEP cache directory (optional)
+  # If set, enables offline-mode VEP annotation without REST API calls
+  vep_cache: null
+
+  # Max variants per VEP batch request
+  batch_size: 100
+
+  # Timeout per VEP request (seconds)
+  timeout: 30
+
+  # Max retries for VEP API failures
+  max_retries: 3
+
+  # Retry delay base (seconds), doubles each attempt
+  retry_delay: 1.0
+
+transcript_selection:
+  # Ambiguity threshold: if top-two transcript scores differ by ≤ this value,
+  # the case is marked ambiguous and LLM may be invoked (if configured).
+  ambiguity_threshold: 10
+
+  # Disease description for LLM-assisted transcript selection (optional)
+  # Example: "hereditary breast cancer" or "acute myeloid leukemia"
+  disease_description: null
+
+  # LLM API key for disease-aware transcript selection (optional)
+  # If both disease_description and llm_api_key are set, ambiguous cases
+  # trigger an LLM call to pick the most disease-relevant transcript.
+  llm_api_key: null
+
+  # Tissue profile for tissue-expression bonus in transcript scoring
+  # Must match a profile in tissue_context.json
+  tissue_profile: "general"
+
+# =============================================================================
 # SpliceAI Settings (v0.8.0)
 # =============================================================================
 spliceai:
@@ -31,7 +83,7 @@ spliceai:
 # =============================================================================
 # DGRA Version & Metadata
 # =============================================================================
-dgra_version: "0.8.0"
+dgra_version: "0.9.0"
 
 # =============================================================================
 # API Endpoints (override defaults in dgra_config.py)

@@ -1,5 +1,89 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.9.0] - 2026-05-23
+
+### Raw VCF 注释 + 疾病感知转录本选择（P7-P9）
+
+**目标**：支持原始未注释 VCF 输入，通过 VEP REST API 实时注释 + 疾病感知转录本选择，解决 raw VCF → annotated table 的端到端缺口。
+
+#### 1. 输入类型自动检测（`detect_input_type()`）
+- 新增 `InputType` 枚举：`RAW_VCF`, `ANNOTATED_VCF`, `ANNOTATED_TABLE`, `FREE_TEXT`, `UNKNOWN`
+- `RAW_VCF`：VCF 无 `CSQ`/`ANN` INFO 字段，需先经 VEP 注释
+- `ANNOTATED_VCF`：VCF 已含 `INFO/CSQ`（VEP 注释）
+- `ANNOTATED_TABLE`：TSV/CSV/Excel 已有注释列
+
+#### 2. VCF 实时注释（`scripts/gpa_vcf_annotator.py`）
+- `VCFAnnotator` 类：读取 raw VCF → 调用 Ensembl VEP REST API → 返回结构化注释
+- 并发控制：`asyncio.Semaphore(5)`，每批最多 100 个 variant
+- 指数退避重试：HTTP 429/502/503/504，1s→2s→4s
+- 缓存：同分析内重复查询去重，失败 graceful fallback
+- 注释参数：`canonical=1&domains=1&protein=1&hgvs=1&mane_select=1&mane_plus_clinical=1`
+
+#### 3. 转录本选择器（`scripts/gpa_transcript_selector.py`）
+- `TranscriptSelector` 类：从多个 VEP consequence 中选出最相关的转录本
+- **四层评分**：
+  1. `tissue_expression_bonus`：目标组织高表达基因 → 额外加分
+  2. `consequence_bonus`：HIGH > MODERATE > LOW，按影响等级排序
+  3. `canonical_bonus`：canonical / MANE Select / MANE Plus Clinical 优先
+  4. `location_bonus`：外显子 > UTR > 内含子
+- **歧义处理**：顶部分数差距 ≤ `ambiguity_threshold`（默认 10 分）→ 标记 `is_ambiguous=True`
+- **LLM 辅助选择**（可选）：当歧义时，用 disease_description 调用 LLM 选择最相关转录本
+  - 需 `llm_api_key` + `disease_description` 同时提供
+  - LLM 失败 → fallback 到 rule-based 最高分
+
+#### 4. 输出字段扩展（`Variant` dataclass）
+- `primary_transcript` / `primary_consequence` / `primary_hgvsc` / `primary_hgvsp` / `primary_impact`
+- `alternative_transcripts`：JSON 列表，含未选中的候选转录本
+- `transcript_selection_method`：`canonical` / `tissue_expression` / `ambiguous` / `llm_disease_match` / `single`
+- `transcript_ambiguity_flag`：`True` 当歧义或 LLM 介入
+- `transcript_selection_log`：选择理由文本
+
+#### 5. `dgra_core.py` 集成
+- `main()` 入口：检测到 `InputType.RAW_VCF` → 启动 `VCFAnnotator` → `variants_from_vep_annotation()` → `run_dgra_pipeline()`
+- `variants_from_vep_annotation()`：将 VEP 输出解析为 dgra 内部 dict，支持 selector 可选
+- 报告新增 **转录本选择评估章节**（`_generate_transcript_selection_section()`）
+  - 仅当存在 `transcript_ambiguity_flag=True` 或 `alternative_transcripts` 时显示
+  - 列出 primary transcript、selection method、alternatives
+  - 歧义案例标 ⚠️
+  - LLM 选择案例标注 "已通过 LLM 结合疾病背景辅助选择"
+
+#### 6. CLI 扩展
+- `dgra_cli_wrapper.py` 新增参数透传：
+  - `--disease-description`：疾病描述，触发 disease-aware 转录本选择
+  - `--annotator auto|vep`：注释器选择（默认 auto）
+  - `--vep-cache`：本地 VEP cache 路径（可选）
+- 参数链：`main()` → `run_gpa_from_file()` → `run_gpa()` → `GPAConfig` → `run_dgra_pipeline()`
+
+#### 7. 测试套件（`tests/test_v09.py`）
+| 测试 | 场景 | 结果 |
+|------|------|------|
+| Raw VCF detect | 无 CSQ 的 VCF | `InputType.RAW_VCF` ✅ |
+| VEP with selector | 多转录本 + selector | primary + alternatives ✅ |
+| VEP without selector | 多转录本，无 selector | canonical fallback ✅ |
+| Annotated TSV detect | 有注释列的 TSV | `InputType.ANNOTATED_TABLE` ✅ |
+| Annotated VCF detect | 有 CSQ 的 VCF | `InputType.ANNOTATED_VCF` ✅ |
+| GPA regression | 传入 variant dict | 正常分级 ✅ |
+| LLM ambiguous | 歧义 + mock LLM | LLM 被调用 ✅ |
+| LLM fallback | LLM API 失败 | rule-based fallback ✅ |
+| No disease desc | 无 disease_description | canonical / tissue_expression ✅ |
+| Single transcript | 仅一个转录本 | single 方法 ✅ |
+| Report section | ambiguity flag=True | 章节生成 ✅ |
+| Report hidden | 无 ambiguity | 章节隐藏 ✅ |
+| LLM in report | llm_disease_match | 标注 LLM ✅ |
+| A-Layer import | dgra_build_state | 正常导入 ✅ |
+| A-Layer smoke | BuildStep | 状态持久化 ✅ |
+
+**15/15 通过**
+
+**版本更新**：
+- `dgra_core.py` 报告标题：v0.8.0 → v0.9.0
+- `_get_version_info()`: 0.8.0 → 0.9.0
+- `config.json`: 0.8.0 → 0.9.0
+- `SKILL.md`: 0.8.0 → 0.9.0
+- `references/dgra.yaml`: 0.8.0 → 0.9.0
+
+---
+
 ## [v0.8.0] - 2026-05-23
 
 ### SpliceAI 剪接预测集成（P5）

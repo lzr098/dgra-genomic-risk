@@ -1,7 +1,7 @@
 ---
 name: gpa-genomic-phenotype
 description: |
-  GPA (Genomic Phenotype Association) v0.8.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx/gnomAD 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + SpliceAI 剪接预测集成 + gnomAD 频率自动查询。
+  GPA (Genomic Phenotype Association) v0.9.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx/gnomAD 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + SpliceAI 剪接预测集成 + gnomAD 频率自动查询 + Raw VCF 实时注释 + 疾病感知转录本选择。
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
@@ -172,6 +172,46 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 - delta=0（无剪接变化）→ 降级：HIGH 剪接过调用 → Tier 下调
 - delta≥0.5（强剪接变化）→ 升级：MODERATE 剪接区 → Tier 上调
 - API 失败 / 不在数据库 → graceful fallback，不阻断分析
+
+---
+
+### Raw VCF 注释 + 疾病感知转录本选择（v0.9.0）
+
+GPA 支持原始未注释 VCF 输入。当检测到 raw VCF（无 `CSQ`/`ANN` INFO 字段）时，自动调用 Ensembl VEP REST API 实时注释，并通过 disease-aware 转录本选择器从多个候选转录本中挑选最相关的一条。
+
+**必须显式提供疾病描述才能触发 disease-aware 选择**：
+
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --input-file raw_variants.vcf \
+  --tissue hematopoietic \
+  --disease-description "acute myeloid leukemia"  # 触发 disease-aware 转录本选择
+```
+
+**输入类型自动检测**：
+
+| 输入特征 | 检测类型 | 处理方式 |
+|---------|---------|---------|
+| VCF 无 CSQ/ANN | `RAW_VCF` | VEP REST API 注释 → 转录本选择 → 分析 |
+| VCF 有 CSQ | `ANNOTATED_VCF` | 直接解析，走原有 pipeline |
+| TSV/CSV/Excel 有注释列 | `ANNOTATED_TABLE` | 直接解析，走原有 pipeline |
+
+**转录本选择四层评分**：
+
+1. **tissue_expression_bonus**：目标组织高表达基因额外加分
+2. **consequence_bonus**：HIGH > MODERATE > LOW
+3. **canonical_bonus**：canonical / MANE Select / MANE Plus Clinical 优先
+4. **location_bonus**：外显子 > UTR > 内含子
+
+**歧义处理**：
+- 顶部分数差距 ≤ 10 分 → `is_ambiguous=True`
+- 提供 `disease_description` + `llm_api_key` → LLM 辅助选择最相关转录本
+- 未提供 → fallback 到 rule-based 最高分
+
+**报告输出**：
+- 当存在歧义或 LLM 介入时，Markdown 报告新增 **转录本选择评估章节**
+- 列出 primary transcript、selection method、alternatives
+- 歧义案例标 ⚠️
 
 ---
 

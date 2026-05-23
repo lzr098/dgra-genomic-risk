@@ -210,6 +210,23 @@ class Variant:
     # v0.8.0: SpliceAI lookup result (pre-computed in pipeline)
     spliceai_result: Optional[Dict[str, Any]] = None
 
+    # v0.9.0: Transcript selection (disease-aware, multi-transcript保留)
+    primary_transcript: Optional[str] = None
+    primary_consequence: Optional[str] = None
+    primary_hgvsc: Optional[str] = None
+    primary_hgvsp: Optional[str] = None
+    primary_impact: Optional[str] = None
+    alternative_transcripts: List[Dict[str, Any]] = field(default_factory=list)
+    transcript_selection_method: str = "canonical"  # canonical / tissue_expression / llm_disease_match / ambiguous / user_specified
+    transcript_ambiguity_flag: bool = False
+    transcript_selection_log: str = ""
+
+    # VCF原始信息保留
+    vcf_filter: Optional[str] = None
+    vcf_info: Dict[str, Any] = field(default_factory=dict)
+    vcf_format: Optional[str] = None
+    vcf_sample: Dict[str, str] = field(default_factory=dict)
+
 @dataclass
 class GPAConfig:
     """User-facing config (kept simple). Maps to GPAGlobalConfig internally.
@@ -235,6 +252,10 @@ class GPAConfig:
     # v0.8.0: SpliceAI splice-prediction integration (default OFF - must be explicitly enabled)
     spliceai_enabled: bool = False
     spliceai_concurrency: int = 5
+    # v0.9.0: VCF annotation + disease-aware transcript selection
+    disease_description: Optional[str] = None
+    annotator: str = "auto"
+    vep_cache: Optional[str] = None
 
     def to_global(self) -> GPAGlobalConfig:
         gc = GPAGlobalConfig()
@@ -2779,7 +2800,7 @@ def _get_version_info(config: GPAConfig) -> Dict:
     import subprocess
 
     version_info = {
-        "dgra_version": "0.8.0",
+        "dgra_version": "0.9.0",
         "analysis_date": datetime.now().isoformat(),
     }
 
@@ -3091,6 +3112,121 @@ def _generate_pseudogene_assessment_section(variants: List[Variant]) -> Optional
 # Phenotype Association Assessment Section (v0.7 Phase 4)
 # =============================================================================
 
+def _generate_transcript_selection_section(variants: List[Variant]) -> Optional[str]:
+    """
+    v0.9.0: Generate transcript selection assessment section.
+
+    Only appears when there are variants with transcript_ambiguity_flag=True
+    or variants with alternative_transcripts.
+
+    Lists primary transcript, selection method, and alternatives.
+    Flags ambiguous cases with ⚠️.
+    """
+    # Collect variants with transcript selection info
+    tx_variants = []
+    for v in variants:
+        if v.transcript_ambiguity_flag or v.alternative_transcripts:
+            tx_variants.append(v)
+
+    if not tx_variants:
+        return None
+
+    lines = []
+    lines.append("## 🧬 转录本选择评估\n")
+    lines.append(f"*检测到 {len(tx_variants)} 个变异存在多转录本注释，展示主转录本选择结果*\n\n")
+
+    # Summary table
+    lines.append("### 汇总表\n\n")
+    lines.append("| 基因 | 位点 | 主转录本 | 选择方法 | 后果 | 影响 | 歧义标记 | 备选转录本数 |\n")
+    lines.append("|------|------|----------|----------|------|------|----------|--------------|\n")
+
+    for v in tx_variants:
+        pos = f"{v.chrom}:{v.pos}"
+        primary_tx = v.primary_transcript or v.transcript or "N/A"
+        method = v.transcript_selection_method or "canonical"
+        primary_consequence = v.primary_consequence or v.consequence or "N/A"
+        primary_impact = v.primary_impact or v.impact or "N/A"
+
+        # Ambiguity flag
+        if v.transcript_ambiguity_flag:
+            ambiguity = "⚠️ 歧义"
+        else:
+            ambiguity = "✅ 明确"
+
+        alt_count = len(v.alternative_transcripts) if v.alternative_transcripts else 0
+
+        lines.append(
+            f"| {v.gene} | {pos} | {primary_tx} | {method} | {primary_consequence} | {primary_impact} | {ambiguity} | {alt_count} |\n"
+        )
+
+    lines.append("\n")
+
+    # Detailed per-variant analysis
+    lines.append("### 逐变异详细分析\n\n")
+    for i, v in enumerate(tx_variants, 1):
+        pos = f"{v.chrom}:{v.pos}"
+        primary_tx = v.primary_transcript or v.transcript or "N/A"
+        method = v.transcript_selection_method or "canonical"
+
+        if v.transcript_ambiguity_flag:
+            lines.append(f"**{i}. {v.gene} ({pos})** ⚠️ **转录本选择存在歧义**\n\n")
+        else:
+            lines.append(f"**{i}. {v.gene} ({pos})**\n\n")
+
+        lines.append(f"- **主转录本**: {primary_tx}\n")
+        lines.append(f"- **选择方法**: {method}\n")
+
+        if v.primary_consequence:
+            lines.append(f"- **主转录本后果**: {v.primary_consequence}\n")
+        if v.primary_hgvsc:
+            lines.append(f"- **cDNA 变化 (HGVS.c)**: {v.primary_hgvsc}\n")
+        if v.primary_hgvsp:
+            lines.append(f"- **蛋白变化 (HGVS.p)**: {v.primary_hgvsp}\n")
+        if v.primary_impact:
+            lines.append(f"- **主转录本影响等级**: {v.primary_impact}\n")
+
+        if v.transcript_selection_log:
+            lines.append(f"- **选择日志**: {v.transcript_selection_log}\n")
+
+        # List alternative transcripts
+        if v.alternative_transcripts:
+            lines.append(f"- **备选转录本** ({len(v.alternative_transcripts)} 个):\n")
+            for alt in v.alternative_transcripts[:5]:
+                tx_id = alt.get("transcript_id", "N/A")
+                tx_consequence = ", ".join(alt.get("consequence_terms", [])) if isinstance(alt.get("consequence_terms"), list) else alt.get("consequence_terms", "N/A")
+                tx_impact = alt.get("impact", "N/A")
+                is_canonical = "canonical" if alt.get("canonical") else ""
+                is_mane = "MANE" if alt.get("mane_select") else ""
+                flags = ", ".join(filter(None, [is_canonical, is_mane]))
+                flag_str = f" ({flags})" if flags else ""
+                lines.append(f"  - {tx_id}{flag_str}: {tx_consequence} | {tx_impact}\n")
+            if len(v.alternative_transcripts) > 5:
+                lines.append(f"  - ... 共 {len(v.alternative_transcripts)} 个备选转录本\n")
+
+        # Flag ambiguous cases
+        if v.transcript_ambiguity_flag:
+            lines.append(
+                f"- ⚠️ **歧义警告**: 该变异的主转录本选择存在不确定性，"
+                f"top candidates 分数差距小于阈值。"
+            )
+            if v.transcript_selection_method == "llm_disease_match":
+                lines.append("已通过 LLM 疾病描述辅助选择，但仍建议人工复核。\n")
+            else:
+                lines.append("建议结合临床表现和文献进一步验证。\n")
+
+        lines.append(f"- **当前分级**: Tier {v.tier or 'N/A'} | 置信度: {v.tier_confidence or 'N/A'}\n")
+        lines.append("\n")
+
+    return "".join(lines)
+
+
+
+
+
+# =============================================================================
+# Phenotype Association Assessment Section (v0.7 Phase 4)
+# =============================================================================
+
 def _generate_phenotype_assessment_section(variants: List[Variant]) -> Optional[str]:
     """
     v0.7 Phase 4: Generate standalone phenotype association assessment section.
@@ -3233,6 +3369,7 @@ def _generate_phenotype_assessment_section(variants: List[Variant]) -> Optional[
     return "".join(lines)
 
 
+
 # =============================================================================
 # Report Generation
 # =============================================================================
@@ -3250,7 +3387,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 
     report = []
-    report.append("# GPA Report - Genomic Phenotype Association v0.7\n")
+    report.append("# GPA Report - Genomic Phenotype Association v0.9.0\n")
     report.append(f"**Analysis Context**: {profile_name}\n")
     report.append(f"**Tissue Profile**: `{config.tissue_profile}`\n")
     report.append(f"**Offline Mode**: {'Yes' if config.offline_mode else 'No'}\n")
@@ -3285,7 +3422,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
 
     # v0.5 P1-15: Version and provenance metadata
     version_info = _get_version_info(config)
-    report.append(f"**GPA Version**: {version_info.get('dgra_version', '0.5.3')}\n")
+    report.append(f"**GPA Version**: {version_info.get('dgra_version', '0.9.0')}\n")
     if version_info.get('cache_version'):
         report.append(f"**Cache Version**: {version_info['cache_version']}\n")
     if version_info.get('offline_archive_date') and version_info['offline_archive_date'] not in ('no_archive', 'empty', 'unknown'):
@@ -3397,6 +3534,12 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     phenotype_assessment = _generate_phenotype_assessment_section(variants)
     if phenotype_assessment:
         report.append(phenotype_assessment)
+        report.append("\n")
+
+    # v0.9.0: Transcript selection assessment - independent section
+    tx_selection = _generate_transcript_selection_section(variants)
+    if tx_selection:
+        report.append(tx_selection)
         report.append("\n")
 
     # Tier 1
@@ -3767,7 +3910,7 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
 
     # Meta section - v0.5 P1-15: include full version metadata
     meta = {
-        "dgra_version": "0.7.0",
+        "dgra_version": "0.9.0",
         "analysis_date": datetime.now().isoformat(),
         "input_format": "vcf",
         "tissue_profile": config.tissue_profile,
@@ -3919,6 +4062,155 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
     }
 
     return json_report
+
+# =============================================================================
+# Input Detection  (v0.9.0: Raw VCF support)
+# =============================================================================
+
+from enum import Enum
+
+class InputType(Enum):
+    RAW_VCF = "raw_vcf"
+    ANNOTATED_VCF = "annotated_vcf"
+    ANNOTATED_TABLE = "annotated_table"
+    FREE_TEXT = "free_text"
+    UNKNOWN = "unknown"
+
+
+def detect_input_type(input_path: str) -> InputType:
+    """Detect input file type: raw VCF, annotated VCF, or annotated table."""
+    path_lower = input_path.lower()
+
+    if path_lower.endswith(('.vcf', '.vcf.gz', '.bcf')):
+        if _has_vcf_annotation(input_path):
+            return InputType.ANNOTATED_VCF
+        else:
+            return InputType.RAW_VCF
+    elif path_lower.endswith(('.tsv', '.csv', '.xlsx', '.xls', '.xlsm')):
+        return InputType.ANNOTATED_TABLE
+    elif path_lower.endswith(('.txt', '.md')):
+        return InputType.FREE_TEXT
+    else:
+        # Try reading content to determine
+        try:
+            with open(input_path, 'r', encoding='utf-8') as f:
+                first_lines = [f.readline() for _ in range(5)]
+                content = ''.join(first_lines)
+                if '##fileformat=VCF' in content or '#CHROM\tPOS' in content:
+                    if _has_vcf_annotation_from_content(content):
+                        return InputType.ANNOTATED_VCF
+                    else:
+                        return InputType.RAW_VCF
+                elif 'CHROM' in content or 'Gene' in content or 'Consequence' in content:
+                    return InputType.ANNOTATED_TABLE
+                else:
+                    return InputType.FREE_TEXT
+        except Exception:
+            return InputType.UNKNOWN
+
+
+def _has_vcf_annotation(vcf_path: str) -> bool:
+    """Check if VCF has CSQ or ANN annotation in INFO."""
+    import gzip
+    opener = gzip.open if vcf_path.endswith('.gz') else open
+    try:
+        with opener(vcf_path, 'rt', encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                if i > 1000:
+                    break
+                if line.startswith('##INFO=<ID=CSQ'):
+                    return True
+                if line.startswith('##INFO=<ID=ANN'):
+                    return True
+                if not line.startswith('#') and 'CSQ=' in line:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _has_vcf_annotation_from_content(content: str) -> bool:
+    """Check VCF annotation from content string."""
+    return '##INFO=<ID=CSQ' in content or '##INFO=<ID=ANN' in content
+
+
+def variants_from_vep_annotation(
+    annotated_variants: List[Dict[str, Any]],
+    selector: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Convert VCFAnnotator output (with transcript_consequences) into dgra_core variants_data format.
+    If selector is provided, perform disease-aware transcript selection.
+    """
+    variants_data = []
+    for v in annotated_variants:
+        tx_consequences = v.get("transcript_consequences", [])
+        if not tx_consequences:
+            # No transcript consequences — still include with minimal info
+            variants_data.append({
+                "CHROM": v.get("chrom", ""),
+                "POS": str(v.get("pos", "")),
+                "REF": v.get("ref", ""),
+                "ALT": v.get("alt", ""),
+                "Gene": "",
+                "Consequence": "",
+                "IMPACT": "",
+                "HGVSc": "",
+                "HGVSp": "",
+                "DP": str(v.get("dp", "")),
+                "QUAL": str(v.get("qual", "")),
+                "GT": v.get("gt", ""),
+            })
+            continue
+
+        # Group by gene
+        gene_txs: Dict[str, List[Dict]] = {}
+        for tx in tx_consequences:
+            gene = tx.get("gene_symbol", "")
+            if not gene:
+                continue
+            gene_txs.setdefault(gene, []).append(tx)
+
+        # For each gene, select primary transcript
+        for gene, txs in gene_txs.items():
+            if selector:
+                result = selector.select(gene, txs)
+                primary = result.primary
+                alternatives = result.alternatives
+            else:
+                # Fallback: pick canonical or first
+                primary = next((t for t in txs if t.get("canonical")), txs[0])
+                alternatives = [t for t in txs if t != primary]
+
+            # Build variant dict in dgra_core expected format
+            vd = {
+                "CHROM": v.get("chrom", ""),
+                "POS": str(v.get("pos", "")),
+                "REF": v.get("ref", ""),
+                "ALT": v.get("alt", ""),
+                "Gene": gene,
+                "Feature": primary.get("transcript_id", ""),
+                "Consequence": ",".join(primary.get("consequence_terms", [])),
+                "IMPACT": primary.get("impact", ""),
+                "HGVSc": primary.get("hgvsc", ""),
+                "HGVSp": primary.get("hgvsp", ""),
+                "DP": str(v.get("dp", "")),
+                "QUAL": str(v.get("qual", "")),
+                "GT": v.get("gt", ""),
+                # v0.9.0 transcript selection metadata
+                "primary_transcript": primary.get("transcript_id", ""),
+                "primary_hgvsc": primary.get("hgvsc", ""),
+                "primary_hgvsp": primary.get("hgvsp", ""),
+                "primary_consequence": ",".join(primary.get("consequence_terms", [])),
+                "primary_impact": primary.get("impact", ""),
+                "alternative_transcripts": json.dumps(alternatives) if alternatives else "",
+                "transcript_selection_method": getattr(selector, "method", "canonical") if selector else "canonical",
+                "transcript_ambiguity_flag": "",
+            }
+            variants_data.append(vd)
+
+    return variants_data
+
 
 # =============================================================================
 # Main Pipeline  (v0.4: async + batch API queries)
@@ -4777,6 +5069,17 @@ def main():
     parser.add_argument("--spliceai-concurrency", type=int, default=5,
                         help="Max concurrent SpliceAI API requests (default: 5). (v0.8.0)")
 
+    # v0.9.0: VCF annotation + transcript selection
+    parser.add_argument("--disease-description", default=None,
+                        help="Clinical disease description for disease-aware transcript selection. "
+                             "e.g. 'limb-girdle muscular dystrophy, proximal muscle weakness'. "
+                             "Only used for raw VCF input; optional — falls back to canonical/MANE if not provided.")
+    parser.add_argument("--annotator", default="auto", choices=["auto", "vep_api", "vep_local"],
+                        help="Variant annotator for raw VCF: auto (default, zero-config VEP API), "
+                             "vep_api (Ensembl REST), vep_local (local VEP command). (v0.9.0)")
+    parser.add_argument("--vep-cache", default=None,
+                        help="Path to local VEP cache directory. Required for --annotator vep_local. (v0.9.0)")
+
     args = parser.parse_args()
 
     # v0.5 P2-3: Load YAML config if provided or default exists
@@ -4812,12 +5115,51 @@ def main():
             sys.exit(1)
         print(f"Multi-organ assessment: {', '.join(multi_organ)}")
 
-    # Read variants from CSV/TSV
+    # v0.9.0: Input type detection
+    input_type = detect_input_type(args.input)
+    print(f"[GPA] Input type detected: {input_type.value}")
+
     variants_data = []
-    with open(args.input, 'r') as f:
-        reader = csv.DictReader(f, delimiter='\t' if args.input.endswith('.tsv') else ',')
-        for row in reader:
-            variants_data.append(dict(row))
+    if input_type == InputType.RAW_VCF:
+        # v0.9.0: Annotate raw VCF
+        print("[GPA] Raw VCF detected — starting annotation pipeline...")
+        from gpa_vcf_annotator import VCFAnnotator
+        from gpa_transcript_selector import TranscriptSelector
+
+        annotator = VCFAnnotator(
+            annotator=config.annotator if hasattr(config, 'annotator') else "auto",
+            genome="auto",
+            max_concurrency=5,
+            timeout=30,
+            vep_cache=config.vep_cache if hasattr(config, 'vep_cache') else None,
+        )
+        annotated = asyncio.run(annotator.annotate(args.input))
+        annotator.close()
+
+        # Disease-aware transcript selection
+        selector = None
+        if args.disease_description:
+            selector = TranscriptSelector(
+                tissue_profile=args.tissue,
+                disease_description=args.disease_description,
+            )
+
+        variants_data = variants_from_vep_annotation(annotated, selector)
+        print(f"[GPA] Annotation complete: {len(variants_data)} variant-gene entries from VCF")
+
+    elif input_type == InputType.ANNOTATED_VCF:
+        # v0.9.0: Parse annotated VCF (CSQ in INFO)
+        print("[GPA] Annotated VCF detected — parsing CSQ fields...")
+        # For v0.9.0, annotated VCF parsing is simplified; full support in future
+        raise NotImplementedError("Annotated VCF input parsing not yet implemented in v0.9.0. "
+                                  "Please convert to TSV/CSV or use raw VCF.")
+
+    else:
+        # Default: CSV/TSV (existing behavior)
+        with open(args.input, 'r') as f:
+            reader = csv.DictReader(f, delimiter='\t' if args.input.endswith('.tsv') else ',')
+            for row in reader:
+                variants_data.append(dict(row))
 
     # v0.7: Set LLM model env var if specified
     if args.llm_model:
@@ -4845,6 +5187,10 @@ def main():
         # v0.8.0: SpliceAI
         spliceai_enabled=getattr(args, 'spliceai', False),
         spliceai_concurrency=getattr(args, 'spliceai_concurrency', 5),
+        # v0.9.0: VCF annotation + transcript selection
+        disease_description=args.disease_description,
+        annotator=args.annotator,
+        vep_cache=args.vep_cache,
     )
 
     # v0.5 P2-3: Apply YAML config overrides to user config

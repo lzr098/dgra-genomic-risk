@@ -116,6 +116,10 @@ def run_gpa_from_file(
     # v0.8.0: SpliceAI
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    # v0.9.0: VCF annotation + disease-aware transcript selection
+    disease_description: Optional[str] = None,
+    annotator: str = "auto",
+    vep_cache: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -125,6 +129,7 @@ def run_gpa_from_file(
     v0.5 P1-8: Supports force_sync for gene list sync.
     v0.5 P1-9: Supports evidence_detail for evidence chain detail level.
     v0.5 P2-3: Supports config_path for YAML config file.
+    v0.9.0: Supports raw VCF annotation with disease-aware transcript selection.
     """
     try:
         variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
@@ -152,6 +157,10 @@ def run_gpa_from_file(
         # v0.8.0: SpliceAI
         spliceai_enabled=spliceai_enabled,
         spliceai_concurrency=spliceai_concurrency,
+        # v0.9.0: VCF annotation + transcript selection
+        disease_description=disease_description,
+        annotator=annotator,
+        vep_cache=vep_cache,
     )
 
 
@@ -178,6 +187,10 @@ def run_gpa(
     # v0.8.0: SpliceAI splice-prediction integration (default OFF)
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    # v0.9.0: VCF annotation + disease-aware transcript selection
+    disease_description: Optional[str] = None,
+    annotator: str = "auto",
+    vep_cache: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
@@ -427,6 +440,16 @@ def main():
                              "(v0.8.0)")
     parser.add_argument("--spliceai-concurrency", type=int, default=5,
                         help="Max concurrent SpliceAI API requests (default: 5). (v0.8.0)")
+    # v0.9.0: VCF annotation + disease-aware transcript selection
+    parser.add_argument("--disease-description", default=None,
+                        help="Clinical disease description for disease-aware transcript selection. "
+                             "e.g. 'limb-girdle muscular dystrophy, proximal muscle weakness'. "
+                             "Only used for raw VCF input; optional — falls back to canonical/MANE if not provided. (v0.9.0)")
+    parser.add_argument("--annotator", default="auto", choices=["auto", "vep_api", "vep_local"],
+                        help="Variant annotator for raw VCF: auto (default, zero-config VEP API), "
+                             "vep_api (Ensembl REST), vep_local (local VEP command). (v0.9.0)")
+    parser.add_argument("--vep-cache", default=None,
+                        help="Path to local VEP cache directory. Required for --annotator vep_local. (v0.9.0)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
