@@ -1,7 +1,7 @@
 ---
 name: gpa-genomic-phenotype
 description: |
-  GPA (Genomic Phenotype Association) v0.7.1。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测。
+  GPA (Genomic Phenotype Association) v0.7.2。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估。
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
@@ -290,6 +290,25 @@ GPA 内部通过 `gpa_i18n.py` 自动标准化中英文 consequence 术语。输
 - 标记 `CLINVAR_CONFLICTING` qc_flag
 - 仍保留进入下游分析与报告
 - 标准复合评级如 `"Pathogenic/Likely_pathogenic"` **不算冲突**
+
+**ClinVar Review Status 星级（v0.7.2）**：
+GPA 读取 `CLNREVSTAT` 字段，将 ClinVar 提交者星级纳入证据权重计算：
+
+| CLNREVSTAT 文本 | 星级 | 置信度权重 |
+|---|---|---|
+| `practice_guideline` | ★★★★ | 0.95 |
+| `reviewed_by_expert_panel` | ★★★☆ | 0.80 |
+| `criteria_provided,_multiple_submitters,_no_conflicts` | ★★☆☆ | 0.55 |
+| `single_submitter` | ★☆☆☆ | 0.40 |
+| 缺失 / `no_assertion` / `conflicting` | — | 0.30 |
+
+**效果**：
+- Pathogenic 证据 weight = 基础值 × 星级权重（1.0 × 0.30~0.95）
+- Benign 证据 weight = -0.5 × 星级权重（排除信号随星级增强）
+- 单一提交者的 Pathogenic 不再自动 Tier 1（weight=0.40，需更多证据支持）
+- 实践指南认可的 Pathogenic 仍高置信度（weight=0.95）
+
+**冲突注释优先**：如果 ClinVar 评级冲突（v0.7.1 逻辑），星级评估被跳过，weight=0。
 | **原因** | ClinVar pathogenic... | 为什么是这个 tier |
 
 **若 chrom 为空或转录本选择有警告，必须标注并说明影响。**

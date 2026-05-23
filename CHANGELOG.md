@@ -1,5 +1,73 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.7.2] - 2026-05-23
+
+### ClinVar Review Status 星级纳入置信度评估
+
+**目标**：解决 P4 — ClinVar 判断只看文本不看提交者星级的问题。
+
+**1. 新增 `_parse_clinvar_confidence()`（`dgra_core.py`）**
+- CLNREVSTAT 文本 → 置信度权重（0.30~0.95）
+  - `practice_guideline` → 0.95（★★★★ 实践指南认可）
+  - `reviewed_by_expert_panel` → 0.80（★★★☆ 专家小组审核）
+  - `multiple_submitters_no_conflict` → 0.55（★★☆☆ 多提交者一致）
+  - `single_submitter` → 0.40（★☆☆☆ 单一提交者）
+  - 缺失 / `no_assertion` / `conflicting` → 0.30
+
+**2. Pathogenic evidence weight 乘以星级**
+- 4 个 pathogenic 调用点（coagulation、HIGH+tissue-relevant、phenotype mismatch、non-tissue-relevant）全部 weight × clinvar_conf
+- 原始 weight 1.0 → 有效范围 0.30~0.95
+- Confidence level 根据星级动态调整：≥0.8 high，≥0.5 medium，<0.5 low
+
+**3. Benign evidence 新增负权重**
+- Tier 3 benign 分支新增独立 ClinVar evidence：weight = -0.5 × clinvar_conf
+- 高星级 benign 排除信号更强（-0.475），低星级更弱（-0.15）
+
+**4. 输入层支持 CLNREVSTAT**
+- `dgra_cli_wrapper.py`：REQUIRED_COLS + OPTIONAL_DEFAULTS 新增 `CLNREVSTAT`
+- `dgra_core.py` TSV 解析器：读取 CLNREVSTAT 传入 Variant 构造函数
+- Variant dataclass 新增 `clinvar_review_status: Optional[str]`
+
+**关键边界：**
+- 冲突注释（v0.7.1 P3）优先于星级 — `_clinvar_is_conflicting` 返回 True 时 pathogenic/benign 均返回 False
+- `Pathogenic/Likely_pathogenic` 复合评级正常处理
+- 缺失 CLNREVSTAT → 保守 weight × 0.30
+
+**测试**：
+- A-Layer 回归：11/11 ✅
+- CLNREVSTAT 专项：5/5 ✅（practice_guideline 0.95、single_submitter 0.40、missing 0.30、benign multi-submitter -0.275、conflicting priority）
+
+---
+
+## [v0.7.1] - 2026-05-23
+
+### P010 三问题修复：ClinVar 冲突检测 + 中英文映射 + 预过滤
+
+**1. Phase 1: ClinVar 冲突注释检测（P3）**
+- 新增 `_clinvar_is_conflicting()`：正反同时存在（如 "良性, 致病"）→ True
+- 标准复合评级（`Pathogenic/Likely_pathogenic`）不算冲突
+- 冲突变异标记 `CLINVAR_CONFLICTING` qc_flag，weight=0，不触发 Tier 升级
+
+**2. Phase 2: 统一中英文 consequence 映射（P2）**
+- 新建 `gpa_i18n.py`：`CONSEQUENCE_MAP` 40+ 中文→英文术语，`normalize_consequence()`、`infer_impact_from_consequence()`
+- `dgra_adapters.py` 的 `_infer_impact()` 委托给 `gpa_i18n`
+
+**3. Phase 3: 预过滤模块（P1）**
+- 新建 `dgra_variant_filter.py`：strict/clinical/broad 三档过滤
+  - strict：仅 HIGH/MODERATE
+  - clinical：+ 剪接区 LOW + 组织相关基因同义 + ClinVar 冲突保留
+  - broad：+ LOW
+- `dgra_cli_wrapper.py` 新增 `--filter-preset` CLI 参数
+- 报告头部显示过滤统计（Input → Output 计数、Impact 分布、保留明细）
+
+**4. Phase 4: 文档同步**
+- `SKILL.md` 更新：版本号、过滤 preset 用法、中英文映射表、ClinVar 冲突说明
+- `dgra.yaml` 更新：版本号、新增 `filter_presets` 配置段
+
+**测试全绿：** A-Layer 11/11、中英文映射 8/8、过滤模块三档正确、ClinVar 冲突端到端通过
+
+---
+
 ## [v0.7.0] - 2026-05-23
 
 ### Phase 4: 报告模板重写 + 表型关联评估章节

@@ -5,7 +5,7 @@
 # =============================================================================
 # DGRA Version & Metadata
 # =============================================================================
-dgra_version: "0.7.1"
+dgra_version: "0.7.2"
 
 # =============================================================================
 # API Endpoints (override defaults in dgra_config.py)
@@ -112,8 +112,20 @@ tier_rules:
     - "synonymous_low_impact"                 # LOW impact, no domain overlap
 
 # =============================================================================
-# Tissue / Organ Profiles
+# ClinVar Review Status Confidence (v0.7.2)
 # =============================================================================
+# Optional: override default confidence weights for ClinVar CLNREVSTAT.
+# If omitted, code defaults are used (see dgra_core.py _parse_clinvar_confidence).
+clinvar_confidence:
+  practice_guideline: 0.95
+  reviewed_by_expert_panel: 0.80
+  multiple_submitters_no_conflict: 0.55
+  no_conflicts: 0.50
+  single_submitter: 0.40
+  no_assertion: 0.30
+  no_criteria: 0.30
+  conflicting: 0.30
+  default: 0.30
 tissue_profiles:
   # Available profiles referenced in references/tissue_context.json
   available:
