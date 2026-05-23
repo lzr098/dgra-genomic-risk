@@ -59,6 +59,14 @@
 
 ---
 
+### P2: 中文 VEP 术语映射 + P6: gnomAD 频率接入 pipeline
+
+**P2 — 中文适配器**：`dgra_adapters.py` 新增 `CN_EXONIC_FUNC_MAP`，支持国内测序公司（诺禾致源、华大基因）中文 VEP 注释输出。`_infer_impact()` 已委托 `gpa_i18n.py` 统一处理中英文 consequence 术语。
+
+**P6 — gnomAD 频率接入**：修复 `query_gnomad_variant()` 已实现但从未被调用的阻断性缺陷。`run_dgra_pipeline()` 现在对 `gnomad_af=None` 的变异自动批量查询 gnomAD GraphQL API，结果写入 `variant.gnomad_af` 和 `variant.gnomad_populations`。频率降级逻辑（BA1: AF>1% → Tier 3）现已生效。
+
+---
+
 ## [v0.7.2] - 2026-05-23
 
 ### ClinVar Review Status 星级纳入置信度评估

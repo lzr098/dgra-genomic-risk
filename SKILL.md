@@ -1,7 +1,7 @@
 ---
 name: gpa-genomic-phenotype
 description: |
-  GPA (Genomic Phenotype Association) v0.8.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + **SpliceAI 剪接预测集成（v0.8.0，默认关闭）**。
+  GPA (Genomic Phenotype Association) v0.8.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx/gnomAD 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + SpliceAI 剪接预测集成 + gnomAD 频率自动查询。
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
