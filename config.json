@@ -1,7 +1,7 @@
 {
   "id": "gpa-genomic-phenotype",
   "name": "GPA",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "GPA (Genomic Phenotype Association) with dynamic tissue-context analysis, API-first with offline archive, and CLI wrapper for OpenClaw agent integration",
   "author": "",
   "license": "MIT-0",

@@ -13,7 +13,6 @@ from typing import List
 # =============================================================================
 
 CHINESE_COLUMN_MAP = {
-    # 位置信息
     "Uploaded_variation": "Uploaded_variation",
     "位置": "Location",
     "基因位置": "Gene",
@@ -22,15 +21,11 @@ CHINESE_COLUMN_MAP = {
     "转录本": "Feature",
     "转录本ID": "Feature",
     "转录本编号": "Feature",
-
-    # 后果
     "变异后果": "Consequence",
     "后果": "Consequence",
     "变异类型": "Consequence",
     "影响程度": "IMPACT",
     "影响": "IMPACT",
-
-    # cDNA/蛋白
     "CDNA位置": "cDNA_position",
     "CDS位置": "CDS_position",
     "蛋白位置": "Protein_position",
@@ -41,34 +36,24 @@ CHINESE_COLUMN_MAP = {
     "HGVSp": "HGVSp",
     "hgvsc": "HGVSc",
     "hgvsp": "HGVSp",
-
-    # 等位基因
     "现有等位基因": "Existing_variation",
     "rs号": "Existing_variation",
     "参考等位基因": "REF",
     "替代等位基因": "ALT",
-
-    # 频率
     "gnomAD频率": "gnomAD_AF",
     "gnomad频率": "gnomAD_AF",
     "gnomad_af": "gnomAD_AF",
     "GnomAD_AF": "gnomAD_AF",
     "千人基因组频率": "AFR_AF",
     "最大人群频率": "MAX_AF",
-
-    # 致病性
     "ClinVar": "CLIN_SIG",
     "临床意义": "CLIN_SIG",
     "clinvar": "CLIN_SIG",
-
-    # 样本
     "样本": "SAMPLE",
     "基因型": "GT",
     "测序深度": "DP",
     "质量值": "GQ",
     "等位基因频率": "VAF",
-
-    # 其他
     "距离": "DISTANCE",
     "链": "STRAND",
     "突变频谱": "VARIANT_CLASS",
@@ -268,88 +253,3 @@ def normalize_clinvar(clinvar_str: str) -> str:
 # does not include gnomAD_AF or VAF columns — these must be sourced from
 # external APIs or the original VCF INFO field.
 
-CHINESE_COLUMN_MAP = {
-    # Chromosome / Position / Allele
-    "染色体": "CHROM",
-    "位置": "POS",
-    "变异ID": "_variant_id",
-    "参考碱基": "REF",
-    "变异碱基": "ALT",
-    # Quality
-    "质量值(QUAL)": "_qual",
-    "质量值(qual)": "_qual",
-    "过滤状态": "_filter",
-    # Gene / Transcript
-    "基因符号": "GENE",
-    "基因名称": "_gene_name",
-    "转录本 (Canonical)": "Feature",
-    "转录本(canonical)": "Feature",
-    "转录本": "Feature",
-    "所有转录本": "_all_transcripts",
-    "链方向": "_strand",
-    # Location
-    "外显子": "EXON",
-    "内含子": "_intron",
-    # Consequence / Impact
-    "变异后果": "Consequence",
-    "影响程度": "IMPACT",  # VEP IMPACT: HIGH/MODERATE/LOW/MODIFIER
-    "转录本类型": "_transcript_type",
-    # HGVS
-    "HGVSc": "HGVSc",  # English name preserved
-    "HGVSp": "HGVSp",  # English name preserved
-    # cDNA / CDS / Protein positions
-    "cDNA位置": "_cdna_pos",
-    "CDS位置": "_cds_pos",
-    "蛋白质位置": "_protein_pos",
-    "氨基酸变化": "_aa_change",
-    "密码子变化": "_codon_change",
-    # ClinVar
-    "ClinVar注释": "CLIN_SIG",
-    # Sample INFO
-    "样本": "GT",  # partial — the actual column is "样本: P008"
-    "原始INFO信息": "_raw_info",
-    # Additional common Chinese headers
-    "人群频率": "gnomAD_AF",
-    "gnomAD频率": "gnomAD_AF",
-    "人群等位基因频率": "gnomAD_AF",
-    "变异等位基因频率": "VAF",
-    "基因型": "GT",
-    "测序深度": "DP",
-    "质量值": "GQ",
-}
-
-# Sample column pattern: "样本: P008" → split to get GT, DP, GQ
-_SAMPLE_COLUMN_PATTERN = r"样本[:：]\s*\S+"
-
-
-def _translate_single_cn_header(cn_header: str) -> str:
-    """
-    Translate a Chinese VEP CSV column header to DGRA canonical English name.
-    Handles exact matches, prefix matches (e.g. "样本: P008"), and returns
-    the original string if no mapping is found.
-
-    Args:
-        cn_header: Chinese column header string (may include whitespace/suffix)
-
-    Returns:
-        DGRA canonical column name or original string if unmapped
-    """
-    import re
-
-    clean = cn_header.strip()
-
-    # Handle "样本: P008" pattern → maps to GT (genotype column)
-    if re.match(_SAMPLE_COLUMN_PATTERN, clean):
-        return "GT"
-
-    # Exact match
-    if clean in CHINESE_COLUMN_MAP:
-        return CHINESE_COLUMN_MAP[clean]
-
-    # Fuzzy match: try stripping parenthetical suffixes
-    for cn_key, dgra_key in CHINESE_COLUMN_MAP.items():
-        if clean.startswith(cn_key) and cn_key != clean:
-            return dgra_key
-
-    # Pass through — will be handled by dgra_adapters auto-detection
-    return clean

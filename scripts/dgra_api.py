@@ -952,7 +952,9 @@ class DGRAAPIClient:
             }}
         }}
         """
-        variant_id = f"{chrom}-{pos}-{ref}-{alt}"
+        # v0.9.2: Strip chr prefix for gnomAD variant ID format
+        chrom_std = chrom.replace("chr", "").replace("CHR", "") if chrom.upper().startswith("CHR") else chrom
+        variant_id = f"{chrom_std}-{pos}-{ref}-{alt}"
         
         result = await self._request_with_retry(
             api_name="gnomad",
@@ -1048,7 +1050,7 @@ class DGRAAPIClient:
                 "an_exome": exome.get("an"),
                 "an_genome": genome.get("an"),
                 "hom_count": (exome.get("homozygote_count") or 0) + (genome.get("homozygote_count") or 0),
-                "status": "CAPTURED",
+                "status": "SUCCESS",
                 "source": "cache" if result["from_cache"] else "gnomad",
                 "confidence": result["confidence"],
                 "raw": data,
@@ -1059,7 +1061,7 @@ class DGRAAPIClient:
             "af": None,
             "af_popmax": None,
             "af_populations": {},
-            "status": "QUERY_FAILED",
+            "status": "API_FAILED",
             "source": "failed",
             "confidence": "low",
             "error": result.get("error"),
@@ -1142,7 +1144,7 @@ class DGRAAPIClient:
                 "loeuf": constraint.get("oe_lof_upper"),
                 "oe_lof": constraint.get("oe_lof"),
                 "oe_lof_lower": constraint.get("oe_lof_lower"),
-                "status": "CAPTURED",
+                "status": "SUCCESS",
                 "source": "cache" if result["from_cache"] else "gnomad",
                 "confidence": result["confidence"],
             }
@@ -1154,7 +1156,7 @@ class DGRAAPIClient:
             "mis_z": None,
             "loeuf": None,
             "oe_lof": None,
-            "status": "QUERY_FAILED",
+            "status": "API_FAILED",
             "source": "failed",
             "confidence": "low",
             "error": result.get("error"),

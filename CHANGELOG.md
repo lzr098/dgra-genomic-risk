@@ -1,5 +1,22 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.9.2] - 2026-05-23
+
+### P0 Hotfix：代码审查遗留问题修复
+
+**修复内容**：
+
+| 问题 | 描述 | 文件 |
+|------|------|------|
+| **P0-1** | `Variant` dataclass 中 `gnomad_status`/`gnomad_af_warning` 重复定义 → 删除旧残留 | `dgra_core.py` |
+| **P0-2** | gnomAD API status 命名不一致：`QUERY_FAILED` → `API_FAILED`，`CAPTURED` → `SUCCESS` | `dgra_api.py` |
+| **P0-3** | gnomAD variant_id 未去 `chr` 前缀 → 所有 chr 前缀查询误判为 `NOT_CAPTURED` | `dgra_api.py` |
+| **P1** | `CHINESE_COLUMN_MAP` 重复定义互相覆盖 → 合并为单一字典 | `gpa_i18n.py` |
+
+**测试状态**：26/26 全绿（v0.9.2 测试 11/11 + A-Layer 回归 15/15）。
+
+---
+
 ## [v0.9.1] - 2026-05-23
 
 ### P0 Hotfix：DDX3X rs6520743 常见多态性误判修复

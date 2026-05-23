@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__) + "/../scripts")
 
 from dgra_core import Variant, classify_variant_tier, GPAConfig
-from gpa_i18n import is_chinese_header, translate_chinese_header
+from gpa_i18n import is_chinese_header, translate_chinese_headers
 
 # _impact_high is nested inside classify_variant_tier; define locally for tests
 def _impact_high(impact):
@@ -149,7 +149,7 @@ class TestChineseHeaderTranslation(unittest.TestCase):
             "参考等位基因", "替代等位基因", "gnomAD频率", "ClinVar",
             "样本", "基因型", "测序深度", "质量值", "距离", "链", "突变频谱",
         ]
-        translated = translate_chinese_header(headers)
+        translated = translate_chinese_headers(headers)
         expected = {
             "位置": "Location",
             "基因": "Gene",
@@ -167,7 +167,7 @@ class TestChineseHeaderTranslation(unittest.TestCase):
 
     def test_preserve_unmapped_headers(self):
         headers = ["未知列", "位置", "AnotherUnknown"]
-        translated = translate_chinese_header(headers)
+        translated = translate_chinese_headers(headers)
         self.assertEqual(translated[0], "未知列")
         self.assertEqual(translated[1], "Location")
         self.assertEqual(translated[2], "AnotherUnknown")

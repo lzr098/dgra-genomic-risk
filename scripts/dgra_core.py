@@ -178,8 +178,6 @@ class Variant:
     domain_info: Optional[Dict] = None
     transcript_warning: Optional[str] = None
     pseudogene_warning: Optional[str] = None
-    gnomad_status: Optional[str] = None
-    gnomad_af_warning: bool = False  # v0.8.1: True when gnomAD API failed (frequency UNKNOWN, not genuinely rare)
     tissue_relevance: Optional[Dict] = None
 
     # v0.5 P0-7: Quality confidence when key fields are missing.
