@@ -922,14 +922,13 @@ class DGRAAPIClient:
         if populations is None:
             populations = ["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN", "MID", "OTH"]
         
-        # Build populations query fragment dynamically
-        pop_fields = "\n".join(
-            f"""                {pop} {{
+        # Build populations query fragment
+        # v0.9.3: gnomAD removed population-specific fields (EAS, AMR, etc.) from VariantPopulation type.
+        # Now populations is an array of {id, ac, an, homozygote_count} objects.
+        pop_query = """                id
                     ac
                     an
-                    homozygote_count
-                }}""" for pop in populations
-        )
+                    homozygote_count"""
         
         query = f"""
         query VariantQuery($variantId: String!, $datasetId: DatasetId!) {{
@@ -940,7 +939,7 @@ class DGRAAPIClient:
                     ac
                     homozygote_count
                     populations {{
-{pop_fields}
+{pop_query}
                     }}
                 }}
                 genome {{
@@ -948,7 +947,7 @@ class DGRAAPIClient:
                     ac
                     homozygote_count
                     populations {{
-{pop_fields}
+{pop_query}
                     }}
                 }}
             }}
@@ -1011,9 +1010,14 @@ class DGRAAPIClient:
                 combined_af = None
             
             # v0.5 P1-1: Aggregate per-population frequencies across exome + genome
+            # v0.9.3: gnomAD populations now returns array of {id, ac, an, homozygote_count}
             af_populations = {}
-            ex_pops = exome.get("populations", {}) or {}
-            gen_pops = genome.get("populations", {}) or {}
+            ex_pops_raw = exome.get("populations", []) or []
+            gen_pops_raw = genome.get("populations", []) or []
+            
+            # Convert list format to dict format keyed by population id
+            ex_pops = {p.get("id"): p for p in ex_pops_raw if p.get("id")}
+            gen_pops = {p.get("id"): p for p in gen_pops_raw if p.get("id")}
             
             all_pops = set(ex_pops.keys()) | set(gen_pops.keys())
             popmax_af = 0.0
