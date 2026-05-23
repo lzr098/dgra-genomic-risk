@@ -4107,6 +4107,28 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             uniprot_data = {g: uniprot_raw.get(g, {}) for g in unique_genes}
             hgnc_data = {g: hgnc_raw.get(g, {}) for g in unique_genes}
             gnomad_constraint_data = {g: gnomad_constraint_raw.get(g, {}) for g in unique_genes}
+        # v0.8.0 P6: gnomAD variant frequency batch query for variants missing AF data
+        # This fixes the disconnect where query_gnomad_variant() was implemented
+        # but never called — all frequency-based tiering was effectively disabled.
+        variants_without_af = [v for v in variants if v.gnomad_af is None and v.chrom and v.pos and v.ref and v.alt]
+        if variants_without_af:
+            print(f"[GPA] gnomAD: querying {len(variants_without_af)} variants without AF data")
+            gnomad_sem = asyncio.Semaphore(5)  # Limit concurrent gnomAD requests
+            async def _query_one_gnomad(v):
+                async with gnomad_sem:
+                    try:
+                        return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
+                    except Exception as e:
+                        print(f"[GPA] gnomAD query failed for {v.gene} {v.chrom}:{v.pos}: {e}")
+                        return None
+            gnomad_results = await asyncio.gather(*[_query_one_gnomad(v) for v in variants_without_af])
+            for v, result in zip(variants_without_af, gnomad_results):
+                if result and result.get("source") in ("gnomad", "cache"):
+                    v.gnomad_af = result.get("af")
+                    v.gnomad_populations = result.get("af_populations", {})
+                    print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
+                else:
+                    v.gnomad_populations = {}
         print(f"[GPA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
         # Persist successful API results for future offline use
         for gene in unique_genes:

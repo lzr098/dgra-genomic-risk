@@ -209,7 +209,12 @@ class ANNOVARAdapter(AnnotationAdapter):
         # ExonicFunc → Consequence
         exonic_func = out.pop("_exonic_func", "")
         if exonic_func:
-            consequence = self.EXONIC_FUNC_MAP.get(exonic_func.lower(), exonic_func)
+            # v0.8.0 P2: Support Chinese exonic function terms
+            consequence = self.EXONIC_FUNC_MAP.get(exonic_func.lower())
+            if not consequence:
+                consequence = self.CN_EXONIC_FUNC_MAP.get(exonic_func.strip())
+            if not consequence:
+                consequence = exonic_func
             out["Consequence"] = consequence
 
         # Func.refGene → broad consequence fallback
@@ -266,6 +271,22 @@ class ANNOVARAdapter(AnnotationAdapter):
         v0.7.1: Delegates to gpa_i18n for unified Chinese/English support."""
         from gpa_i18n import infer_impact_from_consequence
         return infer_impact_from_consequence(consequence)
+
+    # v0.8.0 P2: Add Chinese terms to EXONIC_FUNC_MAP for direct lookup
+    CN_EXONIC_FUNC_MAP = {
+        "移码变异": "frameshift_variant",
+        "错义变异": "missense_variant",
+        "非移码缺失": "inframe_deletion",
+        "非移码插入": "inframe_insertion",
+        "无义变异": "stop_gained",
+        "终止密码子获得": "stop_gained",
+        "剪接位点变异": "splice_variant",
+        "剪接受体位点变异": "splice_acceptor_variant",
+        "剪接供体位点变异": "splice_donor_variant",
+        "剪接区域变异": "splice_region_variant",
+        "同义变异": "synonymous_variant",
+        "未知": "unknown",
+    }
 
 
 # =============================================================================
