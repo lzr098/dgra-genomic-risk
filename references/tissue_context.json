@@ -148,13 +148,14 @@
     "neurological": {
       "display_name": "神经系统",
       "gtex_tissue": "Brain - Cortex",
-      "gtex_tissues": ["Brain - Cortex", "Brain - Cerebellum", "Brain - Hippocampus", "Brain - Frontal Cortex (BA9)", "Brain - Caudate (basal ganglia)"],
-      "fast_track_rule": "GTEx脑表达≈0且无神经功能 → Tier 3",
+      "gtex_tissues": ["Brain - Cortex", "Brain - Cerebellum", "Brain - Hippocampus", "Brain - Frontal Cortex (BA9)", "Brain - Caudate (basal ganglia)", "Brain - Substantia nigra", "Brain - Spinal cord (cervical c-1)", "Cells - Cultured fibroblasts", "Pituitary"],
+      "fast_track_rule": "GTEx脑表达≈0且无神经/眼功能 → Tier 3",
       "special_gene_lists": {
         "trinucleotide_repeat": ["HTT", "ATXN1", "ATXN2", "ATXN3", "ATXN7", "C9orf72", "DMPK", "FXN", "FMR1"],
         "motor_neuron": ["SOD1", "TARDBP", "FUS", "C9orf72", "TBK1", "CCNF", "NEK1", "KIF5A"],
         "parkinsonism": ["SNCA", "PARK2", "PINK1", "DJ1", "LRRK2", "GBA", "VPS35"],
-        "peripheral_neuropathy": ["PMP22", "MFN2", "MPZ", "GJB1", "HSPB1", "HSPB8", "BSCL2"]
+        "peripheral_neuropathy": ["PMP22", "MFN2", "MPZ", "GJB1", "HSPB1", "HSPB8", "BSCL2"],
+        "eye_disease": ["CRB1", "SAG", "RAX", "FOXE3", "PRPF8", "PRPF3", "PRPF31", "NDP", "PAX6", "MITF", "COL2A1", "COL11A1", "FBN1", "CDH23", "USH2A", "MYO7A", "RPGR", "RHO", "ABCA4", "BEST1", "RS1", "CHM", "OPA1", "GUCY2D", "CEP290"]
       },
       "tier_rules": {
         "tier_1_conditions": [

@@ -93,6 +93,38 @@ class VEPAdapter(AnnotationAdapter):
             dgra_name = self.VEP_TO_DGRA.get(clean_k, clean_k)
             out[dgra_name] = str(v) if v is not None else ""
 
+        # v0.8.1: Parse sample-level genotype column (样本: P008)
+        # Chinese VEP format stores GT:DP:GQ in a single column like "GT:1/1 DP:22 GQ:66"
+        # or "GT:0/1 DP:48 GQ:99". Extract GT, DP, GQ if they are not already separate.
+        gt_val = out.get("GT", "")
+        if gt_val and "GT:" in gt_val and not out.get("DP"):
+            import re as _re
+            gt_match = _re.search(r"GT[:=]\s*([\d\|\/\.]+)", str(gt_val))
+            dp_match = _re.search(r"DP[:=]\s*(\d+)", str(gt_val))
+            gq_match = _re.search(r"GQ[:=]\s*(\d+)", str(gt_val))
+            if gt_match:
+                out["GT"] = gt_match.group(1)
+            if dp_match:
+                out["DP"] = dp_match.group(1)
+            if gq_match:
+                out["GQ"] = gq_match.group(1)
+
+        # v0.8.1: Translate Chinese IMPACT values to English
+        # Chinese VEP uses: 高=HIGH, 中等=MODERATE, 低=LOW, 修饰=MODIFIER
+        raw_impact = out.get("IMPACT", "")
+        CN_IMPACT_MAP = {"高": "HIGH", "中等": "MODERATE", "低": "LOW", "修饰": "MODIFIER"}
+        if raw_impact in CN_IMPACT_MAP:
+            out["IMPACT"] = CN_IMPACT_MAP[raw_impact]
+
+        # v0.8.1: Normalize Chinese consequence terms to English SO terms
+        # Chinese VEP/GATK uses consequence terms like 剪接受体位点变异= splice_acceptor_variant
+        raw_consequence = out.get("Consequence", "")
+        if raw_consequence:
+            from gpa_i18n import normalize_consequence
+            normalized = normalize_consequence(raw_consequence)
+            if normalized:
+                out["Consequence"] = ",".join(normalized)
+
         # Handle #Uploaded_variation → CHROM/POS if missing
         if not out.get("CHROM") and "#Uploaded_variation" in row:
             uv = str(row["#Uploaded_variation"])
@@ -417,22 +449,34 @@ class SnpEffAdapter(AnnotationAdapter):
 # =============================================================================
 
 def auto_detect_adapter(headers: List[str]) -> AnnotationAdapter:
-    """Detect annotation format from column headers and return appropriate adapter."""
-    if ANNOVARAdapter.supports_headers(headers):
+    """Detect annotation format from column headers and return appropriate adapter.
+    v0.8.1: Translates Chinese column headers to English before detection."""
+    # v0.8.1: Translate Chinese headers to English for downstream adapter detection
+    from gpa_i18n import translate_chinese_header
+    translated_headers = [translate_chinese_header(h) for h in headers]
+
+    if ANNOVARAdapter.supports_headers(translated_headers):
         return ANNOVARAdapter()
-    if SnpEffAdapter.supports_headers(headers):
+    if SnpEffAdapter.supports_headers(translated_headers):
         return SnpEffAdapter()
-    if VEPAdapter.supports_headers(headers):
+    if VEPAdapter.supports_headers(translated_headers):
         return VEPAdapter()
     # Default: VEP (pass-through, best-effort)
     return VEPAdapter()
 
 
 def adapt_rows(rows: List[Dict[str, Any]], adapter: Optional[AnnotationAdapter] = None) -> List[Dict[str, Any]]:
-    """Apply adapter to all rows. If adapter is None, auto-detect from first row keys."""
+    """Apply adapter to all rows. If adapter is None, auto-detect from first row keys.
+    v0.8.1: Translates Chinese column headers to English before adaptation."""
     if not rows:
         return []
     if adapter is None:
         headers = list(rows[0].keys())
         adapter = auto_detect_adapter(headers)
-    return [adapter.adapt(row) for row in rows]
+    # v0.8.1: Translate Chinese row keys to English for adapter matching
+    from gpa_i18n import translate_chinese_header
+    translated_rows = []
+    for row in rows:
+        translated = {translate_chinese_header(k): v for k, v in row.items()}
+        translated_rows.append(translated)
+    return [adapter.adapt(row) for row in translated_rows]

@@ -130,7 +130,7 @@ class DGRAAPIClient:
                     params=params,
                     json=json_body,
                     headers=headers,
-                    proxy=cfg.proxy,  # Explicit proxy from config; falls back to env via trust_env if None
+                    proxy=None if cfg.proxy == "__DIRECT__" else cfg.proxy,  # __DIRECT__ = bypass env proxy
                     timeout=aiohttp.ClientTimeout(total=cfg.timeout),
                 ) as response:
                     http_status = response.status

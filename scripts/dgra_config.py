@@ -93,6 +93,7 @@ class DGRAGlobalConfig:
             max_retries=2,
             retry_delay=2.0,
             rate_limit_per_sec=2.0,
+            proxy="__DIRECT__",  # Bypass env proxy (Clash/VPN) — gnomAD needs direct connection
         ),
         "ncbi_eutils": APIConfig(
             base_url="https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
