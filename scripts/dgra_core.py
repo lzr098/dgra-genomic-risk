@@ -197,6 +197,9 @@ class Variant:
     phenotype_matched_pairs: List = field(default_factory=list)
     phenotype_known_list: List[str] = field(default_factory=list)
 
+    # v0.7.2: ClinVar review status (CLNREVSTAT)
+    clinvar_review_status: Optional[str] = None
+
 @dataclass
 class GPAConfig:
     """User-facing config (kept simple). Maps to GPAGlobalConfig internally.
@@ -1729,7 +1732,37 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         return (("benign" in clinvar_lower or "良性" in clinvar)
                 and "conflicting" not in clinvar_lower)
     
-    # v0.7.1: ClinVar conflicting interpretation detection
+    def _parse_clinvar_confidence(clnrevstat):
+        """v0.7.2: Map ClinVar CLNREVSTAT review status to confidence weight (0.30~0.95).
+        
+        ClinVar review status is text, not numeric stars:
+            - practice_guideline → 0.95 (★★★★)
+            - reviewed_by_expert_panel → 0.80 (★★★☆)
+            - multiple_submitters_no_conflict → 0.55 (★★☆☆)
+            - single_submitter → 0.40 (★☆☆☆)
+            - no_assertion / no_criteria / conflicting / missing → 0.30
+        """
+        if not clnrevstat:
+            return 0.30
+        cs = clnrevstat.lower()
+        if "practice_guideline" in cs:
+            return 0.95
+        if "reviewed_by_expert_panel" in cs:
+            return 0.80
+        if "multiple_submitters" in cs and "noconflict" in cs.replace("_", ""):
+            return 0.55
+        if "noconflicts" in cs.replace("_", ""):
+            return 0.50
+        if "single_submitter" in cs:
+            return 0.40
+        if "conflicting" in cs:
+            return 0.30
+        if "no_assertion" in cs or "no_criteria" in cs:
+            return 0.30
+        return 0.30
+    
+    # v0.7.2: Pre-compute ClinVar confidence once for this variant
+    clinvar_conf = _parse_clinvar_confidence(variant.clinvar_review_status)
     if _clinvar_is_conflicting(variant.clinvar):
         if "CLINVAR_CONFLICTING" not in variant.qc_flags:
             variant.qc_flags.append("CLINVAR_CONFLICTING")
@@ -2001,7 +2034,8 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     for list_name, gene_list in special_lists.items():
         if gene in gene_list:
             if "coagulation" in list_name.lower() and _clinvar_pathogenic(variant.clinvar):
-                _add_evidence("ClinVar", f"Pathogenic in coagulation gene {gene} → Tier 1", weight=1.0, confidence="high", raw_data={"clinvar": variant.clinvar, "gene_list": list_name})
+                # v0.7.2: weight scaled by ClinVar review status confidence
+                _add_evidence("ClinVar", f"Pathogenic in coagulation gene {gene} → Tier 1 (review_status={variant.clinvar_review_status}, conf={clinvar_conf:.2f})", weight=1.0*clinvar_conf, confidence="high" if clinvar_conf >= 0.8 else "medium" if clinvar_conf >= 0.5 else "low", raw_data={"clinvar": variant.clinvar, "gene_list": list_name, "review_status": variant.clinvar_review_status, "clinvar_conf": clinvar_conf})
                 actions.append("Assess bleeding history and coagulation function")
                 actions.append("Consider peripheral blood stem cell over bone marrow if applicable")
                 variant.evidence_chain = evidence_chain
@@ -2047,7 +2081,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             pms = getattr(variant, 'phenotype_match_score', None)
             if pms is not None and pms < 0.6:
                 # Phenotype mismatch → Tier 2 (not Tier 3)
-                _add_evidence("ClinVar", f"Pathogenic + HIGH + tissue-relevant but phenotype mismatch (score={pms:.2f}) → Tier 2", weight=0.30, confidence="medium", raw_data={"clinvar": variant.clinvar, "impact": variant.impact, "phenotype_match_score": pms})
+                _add_evidence("ClinVar", f"Pathogenic + HIGH + tissue-relevant but phenotype mismatch (score={pms:.2f}) → Tier 2 (review_status={variant.clinvar_review_status}, conf={clinvar_conf:.2f})", weight=0.30*clinvar_conf, confidence="medium" if clinvar_conf >= 0.5 else "low", raw_data={"clinvar": variant.clinvar, "impact": variant.impact, "phenotype_match_score": pms, "review_status": variant.clinvar_review_status, "clinvar_conf": clinvar_conf})
                 actions.append("Confirm variant via secondary method")
                 actions.append("Assess phenotypic severity and clinical relevance")
                 variant.evidence_chain = evidence_chain
@@ -2057,7 +2091,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
                 return 2, f"ClinVar pathogenic {variant.consequence} in tissue-relevant gene {gene} — phenotype mismatch (score={pms:.2f})", actions
             # Phenotype match or no phenotype provided → Tier 1 (original logic)
-            _add_evidence("ClinVar", f"Pathogenic + HIGH + tissue-relevant → Tier 1 for {gene}", weight=1.0, confidence="high", raw_data={"clinvar": variant.clinvar, "impact": variant.impact, "relevance": tissue_assessment.get("relevance")})
+            _add_evidence("ClinVar", f"Pathogenic + HIGH + tissue-relevant → Tier 1 for {gene} (review_status={variant.clinvar_review_status}, conf={clinvar_conf:.2f})", weight=1.0*clinvar_conf, confidence="high" if clinvar_conf >= 0.8 else "medium" if clinvar_conf >= 0.5 else "low", raw_data={"clinvar": variant.clinvar, "impact": variant.impact, "relevance": tissue_assessment.get("relevance"), "review_status": variant.clinvar_review_status, "clinvar_conf": clinvar_conf})
             actions.append("Confirm variant via secondary method")
             actions.append("Assess phenotypic severity and clinical relevance")
             variant.evidence_chain = evidence_chain
@@ -2209,7 +2243,8 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
 
     # 2b. Non-primary but ClinVar pathogenic
     if _clinvar_pathogenic(variant.clinvar) and tissue_assessment.get("relevance") == "none":
-        _add_evidence("ClinVar", f"Pathogenic but non-tissue-relevant {gene} → Tier 2", weight=0.7, confidence="high", raw_data={"clinvar": variant.clinvar, "relevance": "none"})
+        # v0.7.2: weight scaled by ClinVar review status confidence
+        _add_evidence("ClinVar", f"Pathogenic but non-tissue-relevant {gene} → Tier 2 (review_status={variant.clinvar_review_status}, conf={clinvar_conf:.2f})", weight=0.7*clinvar_conf, confidence="high" if clinvar_conf >= 0.8 else "medium" if clinvar_conf >= 0.5 else "low", raw_data={"clinvar": variant.clinvar, "relevance": "none", "review_status": variant.clinvar_review_status, "clinvar_conf": clinvar_conf})
         actions.append("Inform patient of genetic finding")
         actions.append("Refer for relevant specialist evaluation if indicated")
         variant.evidence_chain = evidence_chain
@@ -2248,6 +2283,8 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         reason_parts.append(f"Common polymorphism (AF={gnomad_info.get('af')})")
     if _clinvar_benign(variant.clinvar):
         reason_parts.append("ClinVar benign")
+        # v0.7.2: Add separate ClinVar benign evidence with negative weight scaled by review status
+        _add_evidence("ClinVar", f"ClinVar Benign (review_status={variant.clinvar_review_status}, conf={clinvar_conf:.2f})", weight=-0.5*clinvar_conf, confidence="high" if clinvar_conf >= 0.8 else "medium" if clinvar_conf >= 0.5 else "low", raw_data={"clinvar": variant.clinvar, "review_status": variant.clinvar_review_status, "clinvar_conf": clinvar_conf})
     if tissue_assessment.get("relevance") == "none":
         reason_parts.append("No tissue relevance")
 
@@ -2674,7 +2711,7 @@ def _get_version_info(config: GPAConfig) -> Dict:
     import subprocess
     
     version_info = {
-        "dgra_version": "0.7.0",
+        "dgra_version": "0.7.2",
         "analysis_date": datetime.now().isoformat(),
     }
     
@@ -3891,6 +3928,11 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             raw_clinvar = _UNKNOWN
             missing.append("CLIN_SIG")
         
+        # v0.7.2: ClinVar review status (CLNREVSTAT)
+        raw_clinvar_review = vd.get("CLNREVSTAT", "").strip()
+        if not raw_clinvar_review:
+            raw_clinvar_review = None
+        
         raw_dp = vd.get("DP", "").strip()
         dp_val = int(raw_dp) if raw_dp and raw_dp != _UNKNOWN else 0
         if not raw_dp:
@@ -3944,6 +3986,8 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             classification=vd.get("classification", ""),
             is_tsg=vd.get("is_tsg", "") == "Yes" or vd.get("is_tsg", False) == True,
             is_oncogene=vd.get("is_oncogene", "") == "Yes" or vd.get("is_oncogene", False) == True,
+            # v0.7.2: ClinVar review status
+            clinvar_review_status=raw_clinvar_review,
             # v0.5 P0-7
             quality_confidence=quality_confidence,
             missing_fields=missing,

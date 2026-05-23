@@ -35,7 +35,7 @@ REFS_DIR = SCRIPT_DIR.parent / "references"
 REQUIRED_COLS = [
     "CHROM", "POS", "REF", "ALT", "GENE", "Feature", "EXON",
     "IMPACT", "Consequence", "HGVSp", "HGVSc", "CLIN_SIG",
-    "GT", "DP", "GQ", "VAF", "gnomAD_AF"
+    "GT", "DP", "GQ", "VAF", "gnomAD_AF", "CLNREVSTAT"
 ]
 
 # v0.5 P0-7: Missing field sentinel. Critical fields are NOT backfilled with
@@ -47,6 +47,7 @@ OPTIONAL_DEFAULTS = {
     "EXON": "",          # exon info - harmless when missing
     "HGVSp": "",         # protein change - harmless when missing
     "HGVSc": "",         # cDNA change - harmless when missing
+    "CLNREVSTAT": "",    # v0.7.2: ClinVar review status - harmless when missing
     # NOTE: The following fields are CRITICAL and are NOT given defaults:
     #   IMPACT, Consequence, CLIN_SIG, VAF, DP, GQ, gnomAD_AF
     # Missing values are written as empty strings and core.py treats them
