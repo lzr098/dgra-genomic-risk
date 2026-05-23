@@ -1,5 +1,31 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.9.1] - 2026-05-23
+
+### P0 Hotfix：DDX3X rs6520743 常见多态性误判修复
+
+**严重级别**：Critical — 三个 Bug 形成致命链条，导致常见良性 SNP 被误判为 Tier 1 "最可能致病"。
+
+**根因分析**：
+1. **Bug 1**：中文 VEP CSV 无 `gnomAD_AF` 列，API 查询无结果
+2. **Bug 2**：gnomAD API 静默失败返回 `None`，未标记为失败状态
+3. **Bug 3**：Priority 1b（纯合截短 + 主要组织）无条件放行，未检查 gnomAD 频率
+
+**修复内容**：
+
+| Phase | 修复 | 文件 |
+|-------|------|------|
+| **1** | gnomAD API 返回结构化状态（`SUCCESS`/`NOT_CAPTURED`/`API_FAILED`） | `dgra_api.py` |
+| **2** | `Variant` dataclass 扩展 `gnomad_status`/`gnomad_error_msg`/`gnomad_af_warning` | `dgra_core.py` |
+| **3** | Priority 1b 守卫逻辑：API_FAILED→Tier 2；NOT_CAPTURED→Tier 1（confidence=MEDIUM）；AF>1%→Tier 3 | `dgra_core.py` |
+| **4** | 中文 VEP CSV 表头自动翻译（37+ 中文→英文映射） | `gpa_i18n.py` + `dgra_adapters.py` |
+| **5** | 报告新增 gnomAD warning 标注 | `dgra_core.py` |
+| **6** | 测试覆盖 11/11 全绿 | `tests/test_v091.py` |
+
+**测试状态**：v0.9.1 测试 11/11 通过 + A-Layer 回归 15/15 通过。
+
+---
+
 ## [v0.9.0] - 2026-05-23
 
 ### Raw VCF 注释 + 疾病感知转录本选择（P7-P9）

@@ -166,6 +166,11 @@ class Variant:
     is_tsg: bool = False
     is_oncogene: bool = False
 
+    # v0.9.1: gnomAD query status (hotfix DDX3X misclassification)
+    gnomad_status: str = "UNKNOWN"  # SUCCESS | API_FAILED | NOT_CAPTURED | ERROR
+    gnomad_error_msg: Optional[str] = None
+    gnomad_af_warning: bool = False
+
     # Computed fields
     tier: Optional[int] = None
     tier_reason: str = ""
@@ -173,7 +178,6 @@ class Variant:
     domain_info: Optional[Dict] = None
     transcript_warning: Optional[str] = None
     pseudogene_warning: Optional[str] = None
-    gnomad_status: Optional[str] = None
     tissue_relevance: Optional[Dict] = None
 
     # v0.5 P0-7: Quality confidence when key fields are missing.
@@ -2094,15 +2098,43 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     # 1b. Homozygous truncating in primary tissue gene
     if variant.gt in ["1/1", "1|1"] and _impact_high(variant.impact):
         if tissue_assessment.get("relevance") == "primary":
-            _add_evidence("Zygosity", f"Homozygous LOF in primary tissue gene {gene} → Tier 1", weight=1.0, confidence="high", raw_data={"gt": variant.gt, "impact": variant.impact, "relevance": "primary"})
+            # === v0.9.1: gnomAD frequency guard (DDX3X hotfix) ===
+            if variant.gnomad_status == "API_FAILED":
+                _add_evidence("gnomAD", f"gnomAD API FAILED ({variant.gnomad_error_msg}) — cannot confirm rarity. Downgrading from Tier 1 to Tier 2.", weight=-0.8, confidence="low", raw_data={"gnomad_status": variant.gnomad_status, "error": variant.gnomad_error_msg})
+                actions.append("⚠️ gnomAD query failed — frequency unverified. Downgraded to Tier 2 pending external verification.")
+                variant.gnomad_af_warning = True
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                upgrade_conditions.append("若gnomAD查询恢复正常且确认AF<1%,可升级为Tier 1")
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                return 2, f"Priority 1b candidate (homozygous HIGH in primary tissue gene {gene}), but gnomAD query FAILED ({variant.gnomad_error_msg}). Downgraded to Tier 2 pending frequency verification.", actions
+            elif variant.gnomad_status == "NOT_CAPTURED":
+                _add_evidence("Zygosity", f"Homozygous LOF in primary tissue gene {gene} → Tier 1 (gnomAD NOT_CAPTURED, confidence=MEDIUM)", weight=1.0, confidence="medium", raw_data={"gt": variant.gt, "impact": variant.impact, "relevance": "primary", "gnomad_status": "NOT_CAPTURED"})
+                actions.append("Confirm homozygosity via secondary method")
+                actions.append("Assess if phenotype is consistent with expected tissue function")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = []  # Tier 1: no upgrade
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                return 1, f"Homozygous truncating variant in primary tissue gene {gene} (gnomAD not captured — may be rare/indel)", actions
+            # === v0.9.1: known common polymorphism guard ===
+            elif variant.gnomad_af is not None and variant.gnomad_af > 0.01:
+                _add_evidence("gnomAD", f"AF={variant.gnomad_af:.3f} > 1% — common polymorphism, not Tier 1", weight=-1.0, confidence="high", raw_data={"gnomad_af": variant.gnomad_af})
+                actions.append("Common polymorphism — no clinical action needed for homozygous state")
+                variant.evidence_chain = evidence_chain
+                upgrade_conditions = []  # Tier 3: no upgrade
+                variant.upgrade_conditions = upgrade_conditions
+                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                return 3, f"Homozygous HIGH in {gene} but AF={variant.gnomad_af:.3f} > 1% — common polymorphism", actions
+            # === original logic (SUCCESS with confirmed rare AF) ===
+            _add_evidence("Zygosity", f"Homozygous LOF in primary tissue gene {gene} → Tier 1", weight=1.0, confidence="high", raw_data={"gt": variant.gt, "impact": variant.impact, "relevance": "primary", "gnomad_af": variant.gnomad_af})
             actions.append("Confirm homozygosity via secondary method")
             actions.append("Assess if phenotype is consistent with expected tissue function")
             variant.evidence_chain = evidence_chain
             upgrade_conditions = []  # Tier 1: no upgrade
             variant.upgrade_conditions = upgrade_conditions
             variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-            upgrade_conditions = []  # Tier 1: no upgrade possible
-
             return 1, f"Homozygous truncating variant in primary tissue gene {gene}", actions
 
     # Priority 1c: ClinVar Pathogenic + HIGH impact + primary/secondary tissue
@@ -4426,15 +4458,33 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                 async with gnomad_sem:
                     try:
                         return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
+                    except asyncio.TimeoutError as e:
+                        print(f"[GPA] gnomAD query TIMEOUT for {v.gene} {v.chrom}:{v.pos}: {e}")
+                        return {"status": "API_FAILED", "error": f"timeout: {e}", "source": "failed"}
+                    except aiohttp.ClientError as e:
+                        print(f"[GPA] gnomAD query CLIENT_ERROR for {v.gene} {v.chrom}:{v.pos}: {e}")
+                        return {"status": "API_FAILED", "error": f"client_error: {e}", "source": "failed"}
                     except Exception as e:
-                        print(f"[GPA] gnomAD query failed for {v.gene} {v.chrom}:{v.pos}: {e}")
-                        return None
+                        print(f"[GPA] gnomAD query FAILED for {v.gene} {v.chrom}:{v.pos}: {e}")
+                        return {"status": "API_FAILED", "error": str(e), "source": "failed"}
             gnomad_results = await asyncio.gather(*[_query_one_gnomad(v) for v in variants_without_af])
             for v, result in zip(variants_without_af, gnomad_results):
                 if result and result.get("source") in ("gnomad", "cache"):
                     v.gnomad_af = result.get("af")
                     v.gnomad_populations = result.get("af_populations", {})
+                    v.gnomad_status = "SUCCESS"
                     print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
+                elif result and result.get("status") == "NOT_CAPTURED":
+                    v.gnomad_status = "NOT_CAPTURED"
+                    v.gnomad_af = None
+                    v.gnomad_populations = {}
+                    print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} NOT_CAPTURED")
+                elif result and result.get("status") == "API_FAILED":
+                    v.gnomad_status = "API_FAILED"
+                    v.gnomad_error_msg = result.get("error", "unknown")
+                    v.gnomad_af_warning = True
+                    v.gnomad_populations = {}
+                    print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} API_FAILED ({v.gnomad_error_msg})")
                 else:
                     v.gnomad_populations = {}
         print(f"[GPA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")

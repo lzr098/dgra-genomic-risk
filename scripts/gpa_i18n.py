@@ -9,6 +9,110 @@ Used by adapters, filters, and downstream analysis modules.
 from typing import List
 
 # =============================================================================
+# Chinese VEP CSV Column Header Mapping (v0.9.1 hotfix)
+# =============================================================================
+
+CHINESE_COLUMN_MAP = {
+    # 位置信息
+    "Uploaded_variation": "Uploaded_variation",
+    "位置": "Location",
+    "基因位置": "Gene",
+    "基因": "Gene",
+    "特征": "Feature",
+    "转录本": "Feature",
+    "转录本ID": "Feature",
+    "转录本编号": "Feature",
+
+    # 后果
+    "变异后果": "Consequence",
+    "后果": "Consequence",
+    "变异类型": "Consequence",
+    "影响程度": "IMPACT",
+    "影响": "IMPACT",
+
+    # cDNA/蛋白
+    "CDNA位置": "cDNA_position",
+    "CDS位置": "CDS_position",
+    "蛋白位置": "Protein_position",
+    "氨基酸改变": "Amino_acids",
+    "密码子": "Codons",
+    "HGVC": "HGVSc",
+    "HGVSc": "HGVSc",
+    "HGVSp": "HGVSp",
+    "hgvsc": "HGVSc",
+    "hgvsp": "HGVSp",
+
+    # 等位基因
+    "现有等位基因": "Existing_variation",
+    "rs号": "Existing_variation",
+    "参考等位基因": "REF",
+    "替代等位基因": "ALT",
+
+    # 频率
+    "gnomAD频率": "gnomAD_AF",
+    "gnomad频率": "gnomAD_AF",
+    "gnomad_af": "gnomAD_AF",
+    "GnomAD_AF": "gnomAD_AF",
+    "千人基因组频率": "AFR_AF",
+    "最大人群频率": "MAX_AF",
+
+    # 致病性
+    "ClinVar": "CLIN_SIG",
+    "临床意义": "CLIN_SIG",
+    "clinvar": "CLIN_SIG",
+
+    # 样本
+    "样本": "SAMPLE",
+    "基因型": "GT",
+    "测序深度": "DP",
+    "质量值": "GQ",
+    "等位基因频率": "VAF",
+
+    # 其他
+    "距离": "DISTANCE",
+    "链": "STRAND",
+    "突变频谱": "VARIANT_CLASS",
+    "最小等位基因": "Allele",
+    "SYMBOL": "SYMBOL",
+    "基因符号": "SYMBOL",
+}
+
+
+def _normalize_header_key(key: str) -> str:
+    """Normalize header key for fuzzy matching."""
+    return key.strip().replace(" ", "").replace("_", "").replace("-", "").lower()
+
+
+def translate_chinese_header(headers: List[str]) -> List[str]:
+    """将中文VEP CSV表头翻译为英文标准列名。"""
+    translated = []
+    # Build normalized lookup
+    normalized_map = {_normalize_header_key(k): v for k, v in CHINESE_COLUMN_MAP.items()}
+    for h in headers:
+        h_stripped = h.strip()
+        # Exact match first
+        if h_stripped in CHINESE_COLUMN_MAP:
+            translated.append(CHINESE_COLUMN_MAP[h_stripped])
+            continue
+        # Fuzzy match
+        h_norm = _normalize_header_key(h_stripped)
+        if h_norm in normalized_map:
+            translated.append(normalized_map[h_norm])
+            continue
+        # Keep original if no match
+        translated.append(h_stripped)
+    return translated
+
+
+def is_chinese_header(headers: List[str]) -> bool:
+    """检测表头是否包含中文字符。"""
+    for h in headers:
+        if any("\u4e00" <= ch <= "\u9fff" for ch in h):
+            return True
+    return False
+
+
+# =============================================================================
 # Consequence Term Mapping: Chinese VEP/SnpEff/ANNOVAR → English SO terms
 # =============================================================================
 

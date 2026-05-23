@@ -116,6 +116,16 @@ class TSVParser(InputParser):
             else:
                 delimiter = "\t" if self.dialect == "tab" else ","
             reader = csv.DictReader(f, delimiter=delimiter)
+            # v0.9.1: Detect and translate Chinese headers before parsing
+            raw_fieldnames = reader.fieldnames or []
+            from gpa_i18n import is_chinese_header, translate_chinese_header
+            if is_chinese_header(raw_fieldnames):
+                translated = translate_chinese_header(raw_fieldnames)
+                # Rebuild reader with translated headers
+                f.seek(0)
+                # Skip header line
+                next(f)
+                reader = csv.DictReader(f, fieldnames=translated, delimiter=delimiter)
             raw_rows = []
             for row in reader:
                 # Strip whitespace, convert empty strings to empty (core.py handles UNKNOWN)
