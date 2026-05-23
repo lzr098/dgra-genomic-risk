@@ -1,5 +1,64 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.8.0] - 2026-05-23
+
+### SpliceAI 剪接预测集成（P5）
+
+**目标**：对 canonical splice（acceptor/donor）和 splice_region 变异自动查询 SpliceAI delta score，作为剪接功能影响的独立证据，修正 VEP HIGH 剪接过调用（false positive）。
+
+**默认关闭** — 仅当用户显式提供 `--spliceai` 时启用。
+
+#### 1. 新增 `scripts/dgra_splice_predictor.py`
+- `SpliceAIPredictor` 类：异步批量查询 Broad Institute SpliceAI lookup API
+- 并发限制：`asyncio.Semaphore`（默认 5，CLI `--spliceai-concurrency` 可调）
+- 指数退避重试：HTTP 429/502/503/504 + `asyncio.TimeoutError` → 1s→2s→4s
+- 内存缓存：同分析内重复查询去重
+- Graceful fallback：
+  - API 失败 → `source="api_error"`，QC flag `SPLICEAI_API_ERROR`
+  - 不在数据库 → `source="not_in_db"`，不阻断分析
+- 阈值体系：
+  - canonical（acceptor/donor）：strong≥0.5 / moderate≥0.2 / weak≥0.1
+  - splice_region：strong≥0.2 / moderate≥0.1 / weak≥0.05
+- 模块级兼容函数：`query_spliceai_batch()`、`should_query_spliceai()`、`reset_spliceai_cache()`、`_cache_key()`
+
+#### 2. `dgra_core.py` 集成
+- `Variant` dataclass 新增 `spliceai_result: Optional[Dict[str, Any]]`
+- `GPAConfig` 新增 `spliceai_enabled`（默认 False）、`spliceai_concurrency`（默认 5）
+- `run_dgra_pipeline()` Step 6.75：
+  - 在表型关联（Step 6.5）与分级（Step 7）之间插入
+  - 仅对 `should_query_spliceai()` 返回 True 的变异批量查询
+  - 结果写入 `variant.spliceai_result`
+- `classify_variant_tier()` 新增 SpliceAI evidence 链：
+  - **Tier 1 降级**（NMD-sensitive canonical splice）：delta=0 → weight=-0.5，降级为 Tier 2
+  - **Tier 2 降级**（tissue-relevant canonical splice）：delta=0 → weight=-0.5，降级为 Tier 3
+  - **Tier 3 升级**：delta≥0.5（strong）→ weight=0.8，升级为 Tier 2
+  - **Tier 3 moderate**：delta≥0.2 → weight=0.4，保留 Tier 3
+  - **not_in_db** → evidence weight=0（仅记录）
+  - **api_error** → QC flag `SPLICEAI_API_ERROR`
+
+#### 3. CLI 扩展（`dgra_cli_wrapper.py` + `dgra_core.py`）
+- `--spliceai`：显式开启 SpliceAI 查询
+- `--spliceai-concurrency`：最大并发数（默认 5）
+- 参数透传：`main()` → `run_gpa_from_file()` → `run_gpa()` → `GPAConfig` → `run_dgra_pipeline()`
+
+#### 4. 测试套件（`tests/test_spliceai.py`）
+| 测试 | 场景 | 结果 |
+|------|------|------|
+| PYGL 降级 | canonical splice + delta=0 | Tier 2 → 3 ✅ |
+| 强剪接升级 | canonical splice + delta=0.8 | Tier 3 → 2 ✅ |
+| 不在数据库 | not_in_db | 不崩溃，evidence 记录 ✅ |
+| API 失败 | api_error | 不崩溃，QC flag ✅ |
+| 未开启一致 | spliceai_enabled=False | 无 SpliceAI evidence ✅ |
+| 非剪接不查 | missense/stop_gained | should_query=False ✅ |
+| 阈值分级 | canonical/splice_region | determine_impact ✅ |
+| 阈值配置 | 0.5/0.2/0.1 vs 0.2/0.1/0.05 | 正确 ✅ |
+| canonical vs region | 区分 acceptor/donor vs region | 正确 ✅ |
+| Async mock | mocked API 响应 | batch 查询 ✅ |
+
+**10/10 通过**
+
+---
+
 ## [v0.7.2] - 2026-05-23
 
 ### ClinVar Review Status 星级纳入置信度评估

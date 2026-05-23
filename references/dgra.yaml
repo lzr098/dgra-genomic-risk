@@ -3,9 +3,35 @@
 # Place at references/dgra.yaml or pass via --config <path>
 
 # =============================================================================
+# SpliceAI Settings (v0.8.0)
+# =============================================================================
+spliceai:
+  # Enable SpliceAI splicing prediction (default: false)
+  # Must be explicitly enabled via --spliceai CLI flag
+  enabled: false
+
+  # Max concurrent API requests to SpliceAI lookup
+  concurrency: 5
+
+  # Timeout per request (seconds)
+  timeout: 30
+
+  # Thresholds for canonical splice sites (acceptor/donor ±1,2 bp)
+  canonical_thresholds:
+    strong: 0.5
+    moderate: 0.2
+    weak: 0.1
+
+  # Thresholds for splice region variants
+  splice_region_thresholds:
+    strong: 0.2
+    moderate: 0.1
+    weak: 0.05
+
+# =============================================================================
 # DGRA Version & Metadata
 # =============================================================================
-dgra_version: "0.7.2"
+dgra_version: "0.8.0"
 
 # =============================================================================
 # API Endpoints (override defaults in dgra_config.py)

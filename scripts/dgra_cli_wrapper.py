@@ -113,6 +113,9 @@ def run_gpa_from_file(
     batch_size: int = 500,
     timeout_per_batch: int = 300,
     max_batch_retries: int = 1,
+    # v0.8.0: SpliceAI
+    spliceai_enabled: bool = False,
+    spliceai_concurrency: int = 5,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -146,6 +149,9 @@ def run_gpa_from_file(
         batch_size=batch_size,
         timeout_per_batch=timeout_per_batch,
         max_batch_retries=max_batch_retries,
+        # v0.8.0: SpliceAI
+        spliceai_enabled=spliceai_enabled,
+        spliceai_concurrency=spliceai_concurrency,
     )
 
 
@@ -169,6 +175,9 @@ def run_gpa(
     batch_size: int = 500,
     timeout_per_batch: int = 300,
     max_batch_retries: int = 1,
+    # v0.8.0: SpliceAI splice-prediction integration (default OFF)
+    spliceai_enabled: bool = False,
+    spliceai_concurrency: int = 5,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
@@ -289,6 +298,10 @@ def run_gpa(
         # v0.5 P2-3: YAML config file
         if config_path:
             cmd.extend(["--config", str(config_path)])
+        # v0.8.0: SpliceAI
+        if spliceai_enabled:
+            cmd.append("--spliceai")
+            cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
 
         # 执行
         try:
@@ -408,6 +421,12 @@ def main():
                         help="Pre-filter variants before analysis. strict=HIGH/MODERATE only; "
                              "clinical=HIGH/MODERATE + splice + tissue-synonymous (default if set); "
                              "broad=includes LOW. (v0.7.1)")
+    parser.add_argument("--spliceai", action="store_true",
+                        help="Enable SpliceAI splice-prediction lookup for splice variants. "
+                             "Default OFF — only applies to canonical splice (acceptor/donor) and splice_region. "
+                             "(v0.8.0)")
+    parser.add_argument("--spliceai-concurrency", type=int, default=5,
+                        help="Max concurrent SpliceAI API requests (default: 5). (v0.8.0)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
@@ -461,6 +480,9 @@ def main():
             batch_size=args.batch_size,
             timeout_per_batch=args.timeout,
             max_batch_retries=0,
+            # v0.8.0: SpliceAI
+            spliceai_enabled=args.spliceai,
+            spliceai_concurrency=args.spliceai_concurrency,
         )
     elif args.free_text:
         try:
@@ -488,6 +510,9 @@ def main():
             batch_size=args.batch_size,
             timeout_per_batch=args.timeout,
             max_batch_retries=0,
+            # v0.8.0: SpliceAI
+            spliceai_enabled=args.spliceai,
+            spliceai_concurrency=args.spliceai_concurrency,
         )
     else:
         # Inline JSON variants
@@ -515,6 +540,9 @@ def main():
             batch_size=args.batch_size,
             timeout_per_batch=args.timeout,
             max_batch_retries=0,
+            # v0.8.0: SpliceAI
+            spliceai_enabled=args.spliceai,
+            spliceai_concurrency=args.spliceai_concurrency,
         )
     
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)

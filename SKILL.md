@@ -1,7 +1,7 @@
 ---
 name: gpa-genomic-phenotype
 description: |
-  GPA (Genomic Phenotype Association) v0.7.2。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估。
+  GPA (Genomic Phenotype Association) v0.8.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + **SpliceAI 剪接预测集成（v0.8.0，默认关闭）**。
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
@@ -150,8 +150,28 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_core.py \
   --tissue general \
   --output /tmp/gpa_report.md \
   --json /tmp/gpa_results.json \
-  --somatic
+  --somatic \
+  --spliceai                              # v0.8.0: 启用 SpliceAI 剪接预测
 ```
+
+### SpliceAI 剪接预测（v0.8.0，默认关闭）
+
+SpliceAI 仅对 canonical splice（acceptor/donor）和 splice_region 变异查询 Broad Institute lookup API，作为 VEP HIGH 剪接过调用的独立验证证据。
+
+**必须显式开启：**
+
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --input-file variants.tsv \
+  --tissue hematopoietic \
+  --spliceai                              # 开启 SpliceAI
+  --spliceai-concurrency 5                # 可选：调整并发（默认 5）
+```
+
+**效果：**
+- delta=0（无剪接变化）→ 降级：HIGH 剪接过调用 → Tier 下调
+- delta≥0.5（强剪接变化）→ 升级：MODERATE 剪接区 → Tier 上调
+- API 失败 / 不在数据库 → graceful fallback，不阻断分析
 
 ---
 
