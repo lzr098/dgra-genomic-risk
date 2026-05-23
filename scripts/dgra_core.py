@@ -24,6 +24,12 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple, Any
 import argparse
 
+# v0.8.0: SpliceAI requires aiohttp for async HTTP queries
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None
+
 # v0.5 P2-3: YAML config support
 from dgra_config import DGRAGlobalConfig as GPAGlobalConfig, DGRAFileConfig as GPAFileConfig, DEFAULT_CONFIG_PATH
 from dgra_cache import DGRACache
@@ -796,7 +802,8 @@ def normalize_gene_symbols(
 
 def parse_protein_position(hgvsp: str) -> Optional[int]:
     """Extract amino acid position from p. string. Handles NP_ prefix."""
-    if not hgvsp or hgvsp == "":
+    hgvsp = str(hgvsp) if hgvsp is not None else ""
+    if not hgvsp or hgvsp == "" or hgvsp == "nan":
         return None
     # Strip NP_ prefix if present: NP_000543.3:p.Val1565Leu -> p.Val1565Leu
     if ':p.' in hgvsp:
@@ -2479,7 +2486,8 @@ class PhaseResult:
 
 def _parse_gt_field(gt_str: str) -> Dict:
     """解析 VCF GT 字段,返回 {is_phased, allele_0, allele_1}"""
-    if not gt_str or gt_str in ('.', './.', '.|.'):
+    gt_str = str(gt_str) if gt_str is not None else ""
+    if not gt_str or gt_str in ('.', './.', '.|.', 'nan'):
         return {"is_phased": False, "allele_0": -1, "allele_1": -1}
 
     if '|' in gt_str:
@@ -2905,8 +2913,11 @@ def _run_qc_checks(variants: List[Variant]) -> Dict:
                 pass
 
         # 5. VAF-GT consistency check (v0.5.3)
-        if v.vaf is not None and v.gt:
-            gt = v.gt.replace("|", "/")
+        gt_raw = str(v.gt) if v.gt is not None else ""
+        if gt_raw in ('.', './.', '.|.', 'nan', 'None', ''):
+            gt_raw = ""
+        if v.vaf is not None and gt_raw:
+            gt = gt_raw.replace("|", "/")
             vaf = v.vaf
             if gt == "0/1":
                 if vaf < 0.20 or vaf > 0.80:
@@ -3944,7 +3955,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         # Detect which critical fields are missing/empty and record them.
         missing = []
 
-        raw_impact = vd.get("IMPACT", "").strip()
+        raw_impact = str(vd.get("IMPACT", "")).strip()
         # v0.7.1: Chinese impact mapping
         _IMPACT_CN_MAP = {"高": "HIGH", "中等": "MODERATE", "低": "LOW", "修饰": "MODIFIER"}
         if raw_impact in _IMPACT_CN_MAP:
@@ -3953,7 +3964,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             raw_impact = _UNKNOWN
             missing.append("IMPACT")
 
-        raw_consequence = vd.get("Consequence", "").strip()
+        raw_consequence = str(vd.get("Consequence", "")).strip()
         # v0.7.1: Chinese consequence mapping
         _CONSEQUENCE_CN_MAP = {
             "错义变异": "missense_variant",
@@ -3981,32 +3992,35 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             raw_consequence = _UNKNOWN
             missing.append("Consequence")
 
-        raw_clinvar = vd.get("CLIN_SIG", "").strip()
+        raw_clinvar = str(vd.get("CLIN_SIG", "")).strip()
         if not raw_clinvar:
             raw_clinvar = _UNKNOWN
             missing.append("CLIN_SIG")
 
         # v0.7.2: ClinVar review status (CLNREVSTAT)
-        raw_clinvar_review = vd.get("CLNREVSTAT", "").strip()
-        if not raw_clinvar_review:
+        raw_clinvar_review = str(vd.get("CLNREVSTAT", "")).strip()
+        if not raw_clinvar_review or raw_clinvar_review == "nan":
             raw_clinvar_review = None
 
-        raw_dp = vd.get("DP", "").strip()
-        dp_val = int(raw_dp) if raw_dp and raw_dp != _UNKNOWN else 0
+        raw_dp = str(vd.get("DP", "")).strip()
+        try:
+            dp_val = int(float(raw_dp)) if raw_dp and raw_dp != _UNKNOWN else 0
+        except ValueError:
+            dp_val = 0
         if not raw_dp:
             missing.append("DP")
 
-        raw_gq = vd.get("GQ", "").strip()
+        raw_gq = str(vd.get("GQ", "")).strip()
         gq_val = float(raw_gq) if raw_gq and raw_gq != _UNKNOWN else 0.0
         if not raw_gq:
             missing.append("GQ")
 
-        raw_vaf = vd.get("VAF", "").strip()
+        raw_vaf = str(vd.get("VAF", "")).strip()
         vaf_val = float(raw_vaf) if raw_vaf else None
         if not raw_vaf:
             missing.append("VAF")
 
-        raw_gnomad = vd.get("gnomAD_AF", "").strip()
+        raw_gnomad = str(vd.get("gnomAD_AF", "")).strip()
         gnomad_val = float(raw_gnomad) if raw_gnomad and raw_gnomad != "N/A" else None
         if not raw_gnomad:
             missing.append("gnomAD_AF")
