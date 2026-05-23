@@ -1,7 +1,7 @@
 ---
 name: gpa-genomic-phenotype
 description: |
-  GPA (Genomic Phenotype Association) v0.7.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析。
+  GPA (Genomic Phenotype Association) v0.7.1。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测。
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
@@ -120,7 +120,29 @@ Somatic 模式下：
 - OncoKB Oncogenic / Likely Oncogenic = **Tier 1**
 - VAF > 0.5 的变异会被标记为可能的 germline 混入
 
-### 方式二：已有 TSV 文件
+**预过滤（v0.7.1 新增）**：变异数过大时，用 `--filter-preset` 先过滤再分级，减少噪音：
+
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --variants '[...]' \
+  --tissue general \
+  --filter-preset clinical
+```
+
+| Preset | 保留规则 | 用途 |
+|--------|---------|------|
+| `strict` | 仅 HIGH / MODERATE | 高置信度，少噪音 |
+| `clinical` | HIGH / MODERATE + 剪接区 LOW + 组织相关基因同义 + ClinVar 冲突 | 推荐默认 |
+| `broad` | HIGH / MODERATE / LOW | 保守，保留更多 |
+
+**自动分批（v0.7.1）**：当变异数 > 500 时，wrapper 自动分批处理，每批500个：
+
+```bash
+python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --input-file variants.tsv \
+  --tissue neurological \
+  --batch-size 500
+```
 
 ```bash
 python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_core.py \
@@ -244,10 +266,30 @@ Wrapper 返回 JSON 结构：
 | **转录本变化** | c.3931C>T | cDNA 水平 |
 | **蛋白变化** | p.Gln1311Ter | 氨基酸水平 |
 | **影响** | HIGH | VEP IMPACT |
-| **类型** | stop_gained | Consequence |
+| **类型** | stop_gained | Consequence（中英文自动映射，见下方） |
 | **合子性** | 0/1 | GT |
 | **ClinVar** | 致病 | 中文/英文 |
 | **Tier** | 1 | GPA 分级 |
+| **QC 标记** | `CLINVAR_CONFLICTING` | v0.7.1 新增：冲突注释标记 |
+
+**Consequence 中英文映射（v0.7.1）**：
+GPA 内部通过 `gpa_i18n.py` 自动标准化中英文 consequence 术语。输入可以是中文 VEP 注释（如 `错义变异`、`剪接供体变异`）或英文（`missense_variant`、`splice_donor_variant`），系统会自动映射到统一的标准术语并推断 IMPACT。
+
+| 中文示例 | 映射后英文 | 推断 IMPACT |
+|---------|-----------|------------|
+| 错义变异 | missense_variant | MODERATE |
+| 无义变异 | stop_gained | HIGH |
+| 剪接供体变异 | splice_donor_variant | HIGH |
+| 同义变异 | synonymous_variant | LOW |
+| 移码变异 | frameshift_variant | HIGH |
+| 框内缺失 | inframe_deletion | MODERATE |
+
+**ClinVar 冲突注释（v0.7.1）**：
+当 ClinVar 同时包含正反两种评级（如 `"良性, 致病"`、`"VUS, Pathogenic"`）时：
+- 不触发 Tier 升级（weight=0）
+- 标记 `CLINVAR_CONFLICTING` qc_flag
+- 仍保留进入下游分析与报告
+- 标准复合评级如 `"Pathogenic/Likely_pathogenic"` **不算冲突**
 | **原因** | ClinVar pathogenic... | 为什么是这个 tier |
 
 **若 chrom 为空或转录本选择有警告，必须标注并说明影响。**
@@ -300,8 +342,12 @@ dgra-genomic-risk/
     dgra_cache.py           # SQLite 缓存
     dgra_config.py          # 配置管理
     dgra_build_state.py     # 构建状态持久化（v0.6.1）
+    gpa_phenotype_match.py  # LLM 表型语义匹配（v0.7.0 Phase 2）
+    gpa_i18n.py             # 中英文 consequence 术语映射（v0.7.1 Phase 2）
+    dgra_variant_filter.py  # 预过滤模块：strict/clinical/broad（v0.7.1 Phase 3）
   references/
     tissue_context.json     # 组织上下文配置
+    dgra.yaml               # 运行时参数配置
     offline_data/           # 离线归档（自动创建）
   cache/
     dgra_cache.db           # API 响应缓存

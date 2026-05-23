@@ -5,7 +5,7 @@
 # =============================================================================
 # DGRA Version & Metadata
 # =============================================================================
-dgra_version: "0.5.3"
+dgra_version: "0.7.1"
 
 # =============================================================================
 # API Endpoints (override defaults in dgra_config.py)
@@ -63,6 +63,29 @@ thresholds:
   common_af_threshold: 0.01     # Common variant AF threshold (1%)
   low_af_threshold: 0.001       # Low AF threshold (0.1%)
   vaf_deviation_threshold: 0.20 # VAF deviation from expected heterozygosity (0.5)
+
+# =============================================================================
+# Filter Presets (v0.7.1 Phase 3)
+# =============================================================================
+filter_presets:
+  strict:
+    description: "仅保留 HIGH / MODERATE 变异，适合高置信度分析"
+    impacts: ["HIGH", "MODERATE"]
+    include_low_splice: false
+    include_synonymous_tissue: false
+    include_clinvar_conflicting: false
+  clinical:
+    description: "保留 HIGH / MODERATE + 剪接区 LOW + 组织相关同义 + ClinVar 冲突，推荐默认"
+    impacts: ["HIGH", "MODERATE"]
+    include_low_splice: true
+    include_synonymous_tissue: true
+    include_clinvar_conflicting: true
+  broad:
+    description: "保留 HIGH / MODERATE / LOW，适合保守分析"
+    impacts: ["HIGH", "MODERATE", "LOW"]
+    include_low_splice: false
+    include_synonymous_tissue: false
+    include_clinvar_conflicting: false
 
 # =============================================================================
 # Tier Classification Rules
