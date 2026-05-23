@@ -262,22 +262,10 @@ class ANNOVARAdapter(AnnotationAdapter):
 
     @staticmethod
     def _infer_impact(consequence: str) -> str:
-        """Infer IMPACT from Consequence string (best-effort)."""
-        c = consequence.lower()
-        high = {"stop_gained", "stop_lost", "frameshift_variant", "splice_acceptor_variant",
-                "splice_donor_variant", "start_lost", "transcript_ablation"}
-        moderate = {"missense_variant", "inframe_deletion", "inframe_insertion",
-                    "protein_altering_variant", "splice_region_variant"}
-        low = {"synonymous_variant", "5_prime_UTR_variant", "3_prime_UTR_variant",
-               "intron_variant", "upstream_gene_variant", "downstream_gene_variant",
-               "intergenic_variant", "non_coding_transcript_exon_variant"}
-        if any(h in c for h in high):
-            return "HIGH"
-        if any(m in c for m in moderate):
-            return "MODERATE"
-        if any(l in c for l in low):
-            return "LOW"
-        return ""  # core.py will map empty → UNKNOWN → conservative HIGH
+        """Infer IMPACT from Consequence string (best-effort).
+        v0.7.1: Delegates to gpa_i18n for unified Chinese/English support."""
+        from gpa_i18n import infer_impact_from_consequence
+        return infer_impact_from_consequence(consequence)
 
 
 # =============================================================================
