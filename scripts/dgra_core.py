@@ -1592,7 +1592,7 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
 # =============================================================================
 
 TIER1_ACTION_GENES = {
-    "VWF": {"reason": "Coagulation disorder affects collection safety", "condition": "ClinVar_Pathogenic"},
+    "VWF": {"reason": "Coagulation disorder — vWD risk in patient", "condition": "ClinVar_Pathogenic"},
 }
 
 # v0.5.1 OPT-P0-2: X-linked gene female heterozygous risk adjustment
@@ -1958,7 +1958,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
 
             return 1, f"Known AML driver {gene} with {variant.consequence} — core somatic driver", actions
 
-    # Priority 1: Tier 1 checks (germline / donor safety logic)
+    # Priority 1: Tier 1 checks (germline disease risk logic)
     # 1a. Known high-risk special gene lists with pathogenic variant
     for list_name, gene_list in special_lists.items():
         if gene in gene_list:
@@ -1972,7 +1972,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
                 upgrade_conditions = []  # Tier 1: no upgrade possible
 
-                return 1, f"{gene} pathogenic variant affects collection safety (coagulation gene)", actions
+                return 1, f"{gene} pathogenic variant in coagulation gene — bleeding risk", actions
             if "fa_dna_repair" in list_name.lower() and _clinvar_pathogenic(variant.clinvar):
                 actions.append("Assess if patient has Fanconi anemia phenotype")
                 actions.append("Biallelic: high personal health risk; heterozygous: carrier status")
@@ -2636,7 +2636,7 @@ def _get_version_info(config: GPAConfig) -> Dict:
     import subprocess
     
     version_info = {
-        "dgra_version": "0.5.3",
+        "dgra_version": "0.7.0",
         "analysis_date": datetime.now().isoformat(),
     }
     
@@ -2942,6 +2942,152 @@ def _generate_pseudogene_assessment_section(variants: List[Variant]) -> Optional
 
 
 # =============================================================================
+# Phenotype Association Assessment Section (v0.7 Phase 4)
+# =============================================================================
+
+def _generate_phenotype_assessment_section(variants: List[Variant]) -> Optional[str]:
+    """
+    v0.7 Phase 4: Generate standalone phenotype association assessment section.
+
+    Core principle: Only Tier 1/2 variants undergo phenotype association analysis.
+    This saves ~95% computation (typically 5-20 variants out of 500).
+
+    Returns Markdown string with:
+      - Summary table of all Tier 1/2 variants with phenotype match results
+      - Per-variant detailed analysis (score, explanation, matched pairs, known phenotypes)
+      - High-score (≥0.75) variants → validation recommendation
+      - ClinVar Pathogenic + low match score → explicit mismatch warning
+    """
+    # Collect Tier 1/2 variants with phenotype data
+    pheno_variants = []
+    for v in variants:
+        if v.tier in (1, 2) and v.phenotype_match_score is not None:
+            pheno_variants.append(v)
+
+    if not pheno_variants:
+        return None
+
+    lines = []
+    lines.append("## 🧬 表型关联评估\n")
+    lines.append(f"*仅对 Tier 1/2 变异执行表型关联分析（共 {len(pheno_variants)} 个变异）*\n\n")
+
+    # Summary table
+    lines.append("### 汇总表\n\n")
+    lines.append("| 基因 | 位点 | 合子型 | VAF | 匹配评分 | 关联等级 | 假基因状态 | 建议 |\n")
+    lines.append("|------|------|--------|-----|----------|----------|------------|------|\n")
+
+    for v in pheno_variants:
+        pos = f"{v.chrom}:{v.pos}"
+        gt = v.gt or "N/A"
+        vaf = f"{v.vaf:.3f}" if v.vaf is not None else "N/A"
+        score = v.phenotype_match_score
+
+        # Association level
+        conf = v.phenotype_match_confidence or "low"
+        if score >= 0.75:
+            level_icon = "🟢"
+            level_text = "高度关联"
+        elif score >= 0.40:
+            level_icon = "🟡"
+            level_text = "中度关联"
+        elif score > 0:
+            level_icon = "🔴"
+            level_text = "低度关联"
+        else:
+            level_icon = "⚪"
+            level_text = "无关联"
+
+        # Pseudogene status
+        pg_status = "无"
+        if v.pseudogene_warning:
+            try:
+                pw = json.loads(v.pseudogene_warning)
+                if pw.get("score", 0) > 0:
+                    pg_level = pw.get("level", "unknown")
+                    pg_status = f"{pw.get('score', 0):.2f} ({pg_level})"
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Recommendation
+        if score >= 0.75:
+            rec = "✅ 表型高度匹配，建议确认"
+        elif score >= 0.40:
+            rec = "⚠️ 部分匹配，建议结合临床评估"
+        else:
+            rec = "⚠️ 表型匹配度低，建议复核"
+
+        lines.append(f"| {v.gene} | {pos} | {gt} | {vaf} | {score:.2f} | {level_icon} {level_text} | {pg_status} | {rec} |\n")
+
+    lines.append("\n")
+
+    # Detailed per-variant analysis
+    lines.append("### 逐变异详细分析\n\n")
+    for i, v in enumerate(pheno_variants, 1):
+        pos = f"{v.chrom}:{v.pos}"
+        score = v.phenotype_match_score
+        conf = v.phenotype_match_confidence or "low"
+
+        if score >= 0.75:
+            level_icon = "🟢"
+            level_text = "高度关联"
+        elif score >= 0.40:
+            level_icon = "🟡"
+            level_text = "中度关联"
+        elif score > 0:
+            level_icon = "🔴"
+            level_text = "低度关联"
+        else:
+            level_icon = "⚪"
+            level_text = "无关联"
+
+        lines.append(f"**{i}. {v.gene} ({pos})** {level_icon} {level_text}\n\n")
+        lines.append(f"- **变异**: {v.hgvsp or v.hgvsc or 'N/A'}\n")
+        lines.append(f"- **表型匹配评分**: {score:.2f}/1.0 (置信度: {conf})\n")
+
+        if v.phenotype_match_explanation:
+            lines.append(f"- **匹配解释**: {v.phenotype_match_explanation}\n")
+
+        if v.phenotype_matched_pairs:
+            pairs_str = ", ".join([f"'{u}' → '{k}'" for u, k in v.phenotype_matched_pairs[:5]])
+            ellipsis = "..." if len(v.phenotype_matched_pairs) > 5 else ""
+            lines.append(f"- **匹配对**: {pairs_str}{ellipsis}\n")
+
+        if v.phenotype_known_list:
+            known_str = ", ".join(v.phenotype_known_list[:5])
+            ellipsis = "..." if len(v.phenotype_known_list) > 5 else ""
+            lines.append(f"- **基因已知表型**: {known_str}{ellipsis}\n")
+
+        # ClinVar Pathogenic + low score → explicit warning
+        clinvar_is_pathogenic = v.clinvar and any(kw in v.clinvar.lower() for kw in ("pathogenic", "致病"))
+        if clinvar_is_pathogenic and score < 0.6:
+            lines.append(f"- ⚠️ **ClinVar 致病性提示**: 该变异在 ClinVar 中标注为致病/可能致病，但与输入表型的匹配度较低（{score:.2f}）。")
+            lines.append("建议结合患者具体临床表现进一步验证，不排除该变异与其他未报告表型相关。\n")
+
+        # Tier context
+        lines.append(f"- **当前分级**: Tier {v.tier} | 置信度: {v.tier_confidence or 'N/A'}\n")
+        lines.append(f"- **分级原因**: {v.tier_reason}\n")
+
+        lines.append("\n")
+
+    # High-score variants validation recommendation
+    high_score = [v for v in pheno_variants if v.phenotype_match_score >= 0.75]
+    if high_score:
+        lines.append("### ⚠️ 高分匹配变异验证建议\n\n")
+        lines.append(f"检测到 **{len(high_score)}** 个表型高度匹配变异（评分≥0.75）。")
+        lines.append("这些变异与输入的临床表型高度吻合，强烈建议进行验证：\n\n")
+        for v in high_score:
+            pos = f"{v.chrom}:{v.pos}"
+            lines.append(f"- **{v.gene}**: {pos} ({v.hgvsp or v.hgvsc or 'N/A'}) — 评分 {v.phenotype_match_score:.2f}\n")
+        lines.append("\n**建议验证方法**：\n")
+        lines.append("- Sanger 测序验证\n")
+        lines.append("- 长读长测序（如 PacBio / Oxford Nanopore）验证结构变异\n")
+        lines.append("- 家系共分离分析（如可获得父母/子女样本）\n")
+        lines.append("- 功能实验（如可行）\n\n")
+
+    return "".join(lines)
+
+
+# =============================================================================
 # Report Generation
 # =============================================================================
 
@@ -2958,7 +3104,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 
     report = []
-    report.append("# GPA Report - Genomic Phenotype Association v0.5\n")
+    report.append("# GPA Report - Genomic Phenotype Association v0.7\n")
     report.append(f"**Analysis Context**: {profile_name}\n")
     report.append(f"**Tissue Profile**: `{config.tissue_profile}`\n")
     report.append(f"**Offline Mode**: {'Yes' if config.offline_mode else 'No'}\n")
@@ -3075,10 +3221,16 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
             report.append(f"- **Required evidence**: {', '.join(mh['required_evidence'])}\n")
             report.append(f"- **Action**: {mh['action']}\n\n")
 
+    # v0.7 Phase 4: Phenotype association assessment — independent section
+    phenotype_assessment = _generate_phenotype_assessment_section(variants)
+    if phenotype_assessment:
+        report.append(phenotype_assessment)
+        report.append("\n")
+
     # Tier 1
     if tier1:
         report.append("---\n\n## 🔴 Tier 1: Action Required\n")
-        report.append(f"*Variants requiring intervention for {profile_name} context*\n\n")
+        report.append(f"*Variants requiring clinical attention for {profile_name} context*\n\n")
         
         # v0.5.2: Show gene-level summary first
         tier1_genes = set(v.gene for v in tier1)
@@ -3243,7 +3395,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     # Tier 2
     if tier2:
         report.append("---\n\n## 🟡 Tier 2: Inform & Monitor\n")
-        report.append(f"*Variants patients should be informed of for {profile_name} context*\n\n")
+        report.append(f"*Variants of clinical significance for {profile_name} context*\n\n")
         
         # Group by gene
         from collections import OrderedDict
@@ -3411,7 +3563,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
 
     # Methodology
     report.append("---\n\n## 方法学附录\n")
-    report.append(f"### 组织背景: {profile_name}\n")
+    report.append(f"### 分析背景: {profile_name}\n")
     report.append(f"- **GTEx 参考组织**: {tissue_profile.get('gtex_tissue', 'N/A')}\n")
     report.append(f"- **快速排除规则**: {tissue_profile.get('fast_track_rule', 'N/A')}\n\n")
     report.append("### 分析流程\n")
@@ -3420,9 +3572,10 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     report.append("3. **gnomAD 整合**: AF>1% 常见; AF<0.1% 罕见; NOT_CAPTURED 明确标注\n")
     report.append("4. **蛋白功能域映射**: UniProt REST API → DOMAIN/REGION 特征 → 本地回退\n")
     report.append("5. **组织相关性评估**: GTEx API → median TPM → 自动分级 + 本地回退\n")
-    report.append("6. **三级分类**: Action (Tier 1) → Inform (Tier 2) → No concern (Tier 3)\n")
-    report.append("7. **基因检测历史记录**: 保留变异信息用于后续分析\n")
-    report.append("8. **缓存**: 所有 API 响应缓存 30 天 (SQLite); 离线模式仅用缓存\n")
+    report.append("6. **表型关联分析** (v0.7): LLM 语义匹配 → 基因已知表型 vs 用户输入表型 → 仅 Tier 1/2 执行\n")
+    report.append("7. **三级分类**: Action (Tier 1) → Inform (Tier 2) → No concern (Tier 3)\n")
+    report.append("8. **基因检测历史记录**: 保留变异信息用于后续分析\n")
+    report.append("9. **缓存**: 所有 API 响应缓存 30 天 (SQLite); 离线模式仅用缓存\n")
 
     return "\n".join(report)
 
@@ -3442,7 +3595,7 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
     
     # Meta section — v0.5 P1-15: include full version metadata
     meta = {
-        "dgra_version": "0.5.0",
+        "dgra_version": "0.7.0",
         "analysis_date": datetime.now().isoformat(),
         "input_format": "vcf",
         "tissue_profile": config.tissue_profile,
@@ -3556,6 +3709,32 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
         }
         variants_json.append(variant_json)
     
+    # v0.7 Phase 4: Phenotype association data for JSON output
+    phenotype_data = []
+    pheno_variants = [v for v in variants if v.tier in (1, 2) and v.phenotype_match_score is not None]
+    for v in pheno_variants:
+        phenotype_data.append({
+            "gene": v.gene,
+            "chrom": v.chrom,
+            "pos": v.pos,
+            "ref": v.ref,
+            "alt": v.alt,
+            "hgvsp": v.hgvsp or None,
+            "hgvsc": v.hgvsc or None,
+            "tier": v.tier,
+            "phenotype_match_score": v.phenotype_match_score,
+            "phenotype_match_confidence": v.phenotype_match_confidence or None,
+            "phenotype_match_explanation": v.phenotype_match_explanation or None,
+            "phenotype_matched_pairs": v.phenotype_matched_pairs,
+            "phenotype_known_list": v.phenotype_known_list,
+        })
+
+    phenotype_association = {
+        "total_tier12_with_phenotype": len(pheno_variants),
+        "high_match_count": len([v for v in pheno_variants if v.phenotype_match_score >= 0.75]),
+        "variants": phenotype_data,
+    }
+
     # Assemble final JSON
     json_report = {
         "meta": meta,
@@ -3563,6 +3742,7 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
         "variants": variants_json,
         "multi_hit_details": multi_hits,
         "qc_summary": qc_summary,  # v0.5 P1-13: input QC flags
+        "phenotype_association": phenotype_association,
         "report_md": report_md,
     }
     
