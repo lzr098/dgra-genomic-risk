@@ -550,15 +550,19 @@ class DGRAAPIClient:
 
         all_results = {}
         total = len(variants)
-        for i in range(0, total, CHUNK_SIZE):
-            chunk = variants[i:i + CHUNK_SIZE]
-            chunk_results = await _query_chunk(chunk)
+        chunks = [variants[i:i + CHUNK_SIZE] for i in range(0, total, CHUNK_SIZE)]
+        
+        # v0.9.3: True concurrency — Semaphore(5) limits to 5 chunks at a time
+        tasks = [_query_chunk(chunk) for chunk in chunks]
+        all_chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for chunk, chunk_results in zip(chunks, all_chunk_results):
+            if isinstance(chunk_results, Exception):
+                # Log error and continue — individual chunk failures don't stop the batch
+                continue
             for v, r in zip(chunk, chunk_results):
                 key = v.get("key", f"{v['chrom']}:{v['pos']}_{v['ref']}>{v['alt']}")
                 all_results[key] = r
-            # Brief pause between chunks
-            if i + CHUNK_SIZE < total:
-                await asyncio.sleep(0.5)
 
         return all_results
 
@@ -932,7 +936,6 @@ class DGRAAPIClient:
             variant(variantId: $variantId, dataset: $datasetId) {{
                 variantId
                 exome {{
-                    af
                     an
                     ac
                     homozygote_count
@@ -941,7 +944,6 @@ class DGRAAPIClient:
                     }}
                 }}
                 genome {{
-                    af
                     an
                     ac
                     homozygote_count
@@ -986,17 +988,21 @@ class DGRAAPIClient:
                     "raw": data,
                 }
             
-            # Combine exome + genome AF
+            # Combine exome + genome AF (v0.9.3: gnomAD removed exome.af/genome.af fields)
             exome = variant_data.get("exome", {}) or {}
             genome = variant_data.get("genome", {}) or {}
             
-            exome_af = exome.get("af")
-            genome_af = genome.get("af")
+            ex_ac = exome.get("ac", 0) or 0
+            ex_an = exome.get("an", 0) or 0
+            gen_ac = genome.get("ac", 0) or 0
+            gen_an = genome.get("an", 0) or 0
+            
+            exome_af = ex_ac / ex_an if ex_an > 0 else None
+            genome_af = gen_ac / gen_an if gen_an > 0 else None
             
             # Use whichever is available, prefer combined
             if exome_af is not None and genome_af is not None:
-                combined_af = (exome_af * exome.get("an", 0) + genome_af * genome.get("an", 0)) / \
-                              (exome.get("an", 0) + genome.get("an", 1))
+                combined_af = (exome_af * ex_an + genome_af * gen_an) / (ex_an + gen_an)
             elif exome_af is not None:
                 combined_af = exome_af
             elif genome_af is not None:

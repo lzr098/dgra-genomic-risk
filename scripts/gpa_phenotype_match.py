@@ -188,8 +188,9 @@ class PhenotypeMatcher:
             }
 
         # Split user phenotypes by common delimiters
+        # v0.9.3: Fixed delimiter order — split first, then clean
         raw = user_phenotypes.replace("。", "、").replace(",", "、").replace(";", "、").replace(" ", "、")
-        user_terms = [t.strip() for t in raw.split("。") if t.strip()]
+        user_terms = [t.strip() for t in raw.split("、") if t.strip()]
 
         matches = []
         max_score = 0.0

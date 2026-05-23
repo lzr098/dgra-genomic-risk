@@ -1,5 +1,28 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.9.3] - 2026-05-23
+
+### P0 Hotfix：gnomAD GraphQL Schema 变更 + 外部审查遗留问题
+
+**严重级别**：Critical — gnomAD `VariantPopulation.af` 字段已移除，当前查询 100% 返回 400 错误。
+
+**修复内容**：
+
+| 问题 | 严重级别 | 修复 | 文件 |
+|------|----------|------|------|
+| **P0-1** | gnomAD GraphQL `VariantPopulation.af` / `exome.af` / `genome.af` 已移除 | 删除查询中的 `af` 字段，解析时从 `ac/an` 手算 AF | `dgra_api.py` |
+| **P0-2** | `_translate_single_cn_header` 缺失 | 确认函数已存在于 `gpa_i18n.py`，`dgra_adapters.py` 导入可用 | — |
+| **P1-1** | `genome.get("an", 1)` 默认值错误 | P0-1 修复时顺带改为 `genome.get("an", 0)` | `dgra_api.py` |
+| **P1-2** | NMD 预测未写入 JSON | `predict_nmd()` 结果同时写入 `v.gene_constraint["nmd_prediction"]` | `dgra_core.py` |
+| **P1-3** | `asyncio.run()` 异步崩溃 | 检测 running loop，async 上下文跳过 LLM 选择（避免崩溃） | `gpa_transcript_selector.py` |
+| **P1-4** | 表型分隔符错误 | `split("。")` → `split("、")`（先替换后 split 顺序正确） | `gpa_phenotype_match.py` |
+| **P1-5** | `__DIRECT__` 被环境变量覆盖 | `from_env()` 跳过 `proxy=="__DIRECT__"` 的 API | `dgra_config.py` |
+| **P1-6** | VEP 批量串行化 | `for chunk: await _query_chunk()` → `asyncio.gather()` 真并发（Semaphore 限制） | `dgra_api.py` |
+
+**测试状态**：26/26 全绿（v0.9.3 测试 11/11 + A-Layer 回归 15/15）。
+
+---
+
 ## [v0.9.2] - 2026-05-23
 
 ### P0 Hotfix：代码审查遗留问题修复

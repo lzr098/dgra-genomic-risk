@@ -143,9 +143,13 @@ class DGRAGlobalConfig:
             config.tissue_profile = tissue
         
         # HTTP/HTTPS proxy support
+        # v0.9.3: Skip env override if proxy is explicitly set to __DIRECT__
         for api_name in config.apis:
             proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
             if proxy:
+                current_proxy = config.apis[api_name].proxy
+                if current_proxy == "__DIRECT__":
+                    continue  # Keep direct connection, don't override with env proxy
                 config.apis[api_name].proxy = proxy
         
         # NCBI API key (increases rate limit from 3/sec to 10/sec)

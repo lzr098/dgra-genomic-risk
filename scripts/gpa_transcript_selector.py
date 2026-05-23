@@ -139,21 +139,32 @@ class TranscriptSelector:
                 s["tx"] for s in scored
                 if top_score - s["score"] < self.ambiguity_threshold
             ][:3]  # Max 3 candidates for LLM
-            llm_choice = asyncio.run(
-                self._llm_assist_select(gene, top_candidates)
-            )
-            if llm_choice:
-                # Reorder: llm_choice becomes primary
-                primary = llm_choice
-                alternatives = [s["tx"] for s in scored if s["tx"] != primary]
-                return TranscriptSelectionResult(
-                    primary=primary,
-                    alternatives=alternatives,
-                    is_ambiguous=True,
-                    method="llm_disease_match",
-                    selection_reason=f"LLM selected based on disease description '{self.disease_description[:50]}...' "
-                                     f"(ambiguous: top scores {top_score} vs {second_score})",
+            
+            # v0.9.3: Avoid asyncio.run() in async contexts
+            try:
+                loop = asyncio.get_running_loop()
+                # We're in an async context — cannot use asyncio.run
+                # Return without LLM selection; caller should use aselect()
+                logging.warning("TranscriptSelector.select() called from async context. "
+                              "LLM-assisted selection skipped. Use await aselect() for full support.")
+                llm_choice = None
+            except RuntimeError:
+                # No running loop — safe to use asyncio.run
+                llm_choice = asyncio.run(
+                    self._llm_assist_select(gene, top_candidates)
                 )
+                if llm_choice:
+                    # Reorder: llm_choice becomes primary
+                    primary = llm_choice
+                    alternatives = [s["tx"] for s in scored if s["tx"] != primary]
+                    return TranscriptSelectionResult(
+                        primary=primary,
+                        alternatives=alternatives,
+                        is_ambiguous=True,
+                        method="llm_disease_match",
+                        selection_reason=f"LLM selected based on disease description '{self.disease_description[:50]}...' "
+                                         f"(ambiguous: top scores {top_score} vs {second_score})",
+                    )
 
         # Step 4: Use rule-based top choice
         primary = scored[0]["tx"]
