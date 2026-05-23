@@ -1,6 +1,6 @@
 # GPA - Genomic Phenotype Association
 
-**GPA (Genomic Phenotype Association)** v0.8.0 是一个用于基因-表型关联分析的自动化分析系统。基于多源注释数据（VEP/ANNOVAR/SnpEff）进行多维度注释、分级和关联评估，帮助识别可能与特定疾病/表型相关的遗传变异。
+**GPA (Genomic Phenotype Association)** v0.8.0 是一个用于基因-表型关联分析的自动化分析系统。基于多源注释数据（VEP/ANNOVAR/SnpEff）进行多维度注释、分级和关联评估，使用各类AI工具（Genos等），帮助识别可能与特定疾病/表型相关的遗传变异。
 
 ---
 
