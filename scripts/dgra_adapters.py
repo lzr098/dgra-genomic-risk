@@ -452,8 +452,8 @@ def auto_detect_adapter(headers: List[str]) -> AnnotationAdapter:
     """Detect annotation format from column headers and return appropriate adapter.
     v0.8.1: Translates Chinese column headers to English before detection."""
     # v0.8.1: Translate Chinese headers to English for downstream adapter detection
-    from gpa_i18n import translate_chinese_header
-    translated_headers = [translate_chinese_header(h) for h in headers]
+    from gpa_i18n import _translate_single_cn_header
+    translated_headers = [_translate_single_cn_header(h) for h in headers]
 
     if ANNOVARAdapter.supports_headers(translated_headers):
         return ANNOVARAdapter()
@@ -474,9 +474,9 @@ def adapt_rows(rows: List[Dict[str, Any]], adapter: Optional[AnnotationAdapter] 
         headers = list(rows[0].keys())
         adapter = auto_detect_adapter(headers)
     # v0.8.1: Translate Chinese row keys to English for adapter matching
-    from gpa_i18n import translate_chinese_header
+    from gpa_i18n import _translate_single_cn_header
     translated_rows = []
     for row in rows:
-        translated = {translate_chinese_header(k): v for k, v in row.items()}
+        translated = {_translate_single_cn_header(k): v for k, v in row.items()}
         translated_rows.append(translated)
     return [adapter.adapt(row) for row in translated_rows]

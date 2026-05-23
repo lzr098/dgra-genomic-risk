@@ -322,7 +322,7 @@ CHINESE_COLUMN_MAP = {
 _SAMPLE_COLUMN_PATTERN = r"样本[:：]\s*\S+"
 
 
-def translate_chinese_header(cn_header: str) -> str:
+def _translate_single_cn_header(cn_header: str) -> str:
     """
     Translate a Chinese VEP CSV column header to DGRA canonical English name.
     Handles exact matches, prefix matches (e.g. "样本: P008"), and returns
