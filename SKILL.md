@@ -73,7 +73,7 @@ description: |
 **不需要任何额外参数**——只要数据量大，自动生效：
 
 ```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --input-file variants.tsv \
   --tissue neurological
 ```
@@ -88,7 +88,7 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 
 **示例：肌病基因子集（2638个变异），分6批处理**
 ```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --input-file myopathy_subset.tsv \
   --tissue neurological \
   --batch-size 500 \
@@ -100,7 +100,7 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 用 `exec` 运行 `dgra_cli_wrapper.py`，传入 variant JSON 数组：
 
 ```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --variants '[{"CHROM":"1","POS":12345,"REF":"A","ALT":"G","GENE":"VWF","IMPACT":"HIGH","Consequence":"missense_variant","HGVSp":"p.Arg1234Cys","HGVSc":"c.3700C>T","CLIN_SIG":"Pathogenic","GT":"0/1","DP":30,"GQ":99,"VAF":0.5}]' \
   --tissue general
 ```
@@ -108,7 +108,7 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 **Somatic / 肿瘤模式**：添加 `--somatic` 标志，GPA 会按肿瘤驱动逻辑分级：
 
 ```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --variants '[...]' \
   --tissue general \
   --somatic
@@ -123,7 +123,7 @@ Somatic 模式下：
 **预过滤（v0.7.1 新增）**：变异数过大时，用 `--filter-preset` 先过滤再分级，减少噪音：
 
 ```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --variants '[...]' \
   --tissue general \
   --filter-preset clinical
@@ -138,14 +138,14 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 **自动分批（v0.7.1）**：当变异数 > 500 时，wrapper 自动分批处理，每批500个：
 
 ```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
   --input-file variants.tsv \
   --tissue neurological \
   --batch-size 500
 ```
 
 ```bash
-python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_core.py \
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_core.py \
   --input /path/to/variants.tsv \
   --tissue general \
   --output /tmp/gpa_report.md \

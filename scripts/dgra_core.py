@@ -23,6 +23,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple, Any
 import argparse
+import aiohttp
 
 # v0.8.0: SpliceAI requires aiohttp for async HTTP queries
 try:
@@ -2333,13 +2334,14 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     # If SpliceAI is enabled and pre-computed result exists, evaluate upgrade/downgrade.
     if getattr(config, 'spliceai_enabled', False) and variant.spliceai_result:
         sa = variant.spliceai_result
-        if sa.get("source") == "spliceai":
-            delta = sa.get("delta_score")
+        source = getattr(sa, 'source', 'unknown')
+        if source == "spliceai":
+            delta = getattr(sa, 'delta_score', None)
             if delta is not None:
-                impact = sa.get("predicted_impact", "none")
+                impact = getattr(sa, 'predicted_impact', 'none')
                 if impact == "strong" and delta >= 0.5:
                     # Strong splice prediction for a Tier 3 variant → upgrade to Tier 2
-                    _add_evidence("SpliceAI", f"SpliceAI strong (delta={delta:.2f}) for {variant.consequence} → upgrade to Tier 2", weight=0.8, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": sa.get("details")})
+                    _add_evidence("SpliceAI", f"SpliceAI strong (delta={delta:.2f}) for {variant.consequence} -> upgrade to Tier 2", weight=0.8, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": getattr(sa, 'raw_response', None)})
                     actions.append("SpliceAI predicts strong splice disruption - confirm via RNA-seq or functional assay")
                     variant.evidence_chain = evidence_chain
                     upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
@@ -2347,13 +2349,13 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
                     return 2, f"SpliceAI strong splice prediction (delta={delta:.2f}) for {gene} {variant.consequence} - upgraded from Tier 3", actions
                 elif impact == "moderate" and delta >= 0.2:
-                    _add_evidence("SpliceAI", f"SpliceAI moderate (delta={delta:.2f}) for {variant.consequence}", weight=0.4, confidence="medium", raw_data={"delta_score": delta, "predicted_impact": impact, "details": sa.get("details")})
+                    _add_evidence("SpliceAI", f"SpliceAI moderate (delta={delta:.2f}) for {variant.consequence}", weight=0.4, confidence="medium", raw_data={"delta_score": delta, "predicted_impact": impact, "details": getattr(sa, 'raw_response', None)})
                 elif impact in ("weak", "none") and delta == 0.0:
                     # No predicted splice change - supports VEP overcall, keep Tier 3
-                    _add_evidence("SpliceAI", f"SpliceAI delta=0 - no splice change predicted for {variant.consequence}", weight=-0.5, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": sa.get("details")})
-        elif sa.get("source") == "api_error":
+                    _add_evidence("SpliceAI", f"SpliceAI delta=0 - no splice change predicted for {variant.consequence}", weight=-0.5, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": getattr(sa, 'raw_response', None)})
+        elif source == "api_error":
             variant.qc_flags.append("SPLICEAI_API_ERROR")
-        elif sa.get("source") == "not_in_db":
+        elif source == "not_in_db":
             _add_evidence("SpliceAI", "Not in SpliceAI database - no splice prediction available", weight=0.0, confidence="low", raw_data={"source": "not_in_db"})
 
     # v0.5 P1-11: Generate upgrade conditions before final tier assignment
