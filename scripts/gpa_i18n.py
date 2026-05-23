@@ -83,7 +83,7 @@ def _normalize_header_key(key: str) -> str:
     return key.strip().replace(" ", "").replace("_", "").replace("-", "").lower()
 
 
-def translate_chinese_header(headers: List[str]) -> List[str]:
+def translate_chinese_headers(headers: List[str]) -> List[str]:
     """将中文VEP CSV表头翻译为英文标准列名。"""
     translated = []
     # Build normalized lookup

@@ -118,9 +118,9 @@ class TSVParser(InputParser):
             reader = csv.DictReader(f, delimiter=delimiter)
             # v0.9.1: Detect and translate Chinese headers before parsing
             raw_fieldnames = reader.fieldnames or []
-            from gpa_i18n import is_chinese_header, translate_chinese_header
+            from gpa_i18n import is_chinese_header, translate_chinese_headers
             if is_chinese_header(raw_fieldnames):
-                translated = translate_chinese_header(raw_fieldnames)
+                translated = translate_chinese_headers(raw_fieldnames)
                 # Rebuild reader with translated headers
                 f.seek(0)
                 # Skip header line
