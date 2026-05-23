@@ -4473,10 +4473,12 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                     mv_results = {}
             
             # v0.8.0 P6: gnomAD variant frequency batch query for variants missing AF data
+            # This fixes the disconnect where query_gnomad_variant() was implemented
+            # but never called — all frequency-based tiering was effectively disabled.
             variants_without_af = [v for v in variants if v.gnomad_af is None and v.chrom and v.pos and v.ref and v.alt]
             if variants_without_af:
                 print(f"[GPA] gnomAD: querying {len(variants_without_af)} variants without AF data")
-                gnomad_sem = asyncio.Semaphore(10)  # v0.9.2: increased from 5 to 10 for better throughput
+                gnomad_sem = asyncio.Semaphore(2)  # v0.9.3: conservative for gnomAD rate limits
                 async def _query_one_gnomad(v):
                     async with gnomad_sem:
                         try:
@@ -4495,6 +4497,9 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                 n_failed = 0
                 n_not_captured = 0
                 for v, result in zip(variants_without_af, gnomad_results):
+                    # v0.9.1: "failed" source added — API returned but variant not found (not a network error).
+                    # Without this, all "Variant not found" GraphQL responses trigger gnomad_af_warning.
+                    # Also preserves v0.9.1 status-based tracking (SUCCESS/NOT_CAPTURED/API_FAILED).
                     if result and result.get("source") in ("gnomad", "cache", "failed"):
                         af = result.get("af")
                         if af is not None:
@@ -4504,6 +4509,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                             n_success += 1
                             print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
                         else:
+                            # API returned but variant not captured in gnomAD dataset
                             v.gnomad_populations = {}
                             v.gnomad_status = result.get("status", "NOT_CAPTURED")
                             n_not_captured += 1
@@ -5213,12 +5219,14 @@ def main():
         from gpa_vcf_annotator import VCFAnnotator
         from gpa_transcript_selector import TranscriptSelector
 
+        annotator_name = args.annotator if hasattr(args, 'annotator') else "auto"
+        vep_cache_path = args.vep_cache if hasattr(args, 'vep_cache') else None
         annotator = VCFAnnotator(
-            annotator=config.annotator if hasattr(config, 'annotator') else "auto",
+            annotator=annotator_name,
             genome="auto",
             max_concurrency=5,
             timeout=30,
-            vep_cache=config.vep_cache if hasattr(config, 'vep_cache') else None,
+            vep_cache=vep_cache_path,
         )
         annotated = asyncio.run(annotator.annotate(args.input))
         annotator.close()

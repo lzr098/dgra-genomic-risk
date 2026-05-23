@@ -90,9 +90,9 @@ class DGRAGlobalConfig:
         "gnomad": APIConfig(
             base_url="https://gnomad.broadinstitute.org/api",
             timeout=15.0,
-            max_retries=2,
+            max_retries=5,       # v0.9.2: increased from 2 → 5 to survive transient 429 rate limits
             retry_delay=2.0,
-            rate_limit_per_sec=2.0,
+            rate_limit_per_sec=0.5,  # v0.9.2: reduced from 2.0 → 0.5 to respect gnomAD API limits
             proxy="__DIRECT__",  # Bypass env proxy (Clash/VPN) — gnomAD needs direct connection
         ),
         "ncbi_eutils": APIConfig(
