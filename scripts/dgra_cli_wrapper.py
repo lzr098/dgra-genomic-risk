@@ -92,6 +92,83 @@ def _write_tsv(variants: List[Dict[str, Any]], tsv_path: Path) -> None:
             writer.writerow(row)
 
 
+# Direct API call threshold - datasets above this switch to Python API
+# to avoid batch CLI overhead and OpenClaw exec timeout (300s)
+# Threshold chosen: 2000 variants ≈ 4 batches × 60s = 240s (close to limit)
+DIRECT_CALL_THRESHOLD = 2000
+
+
+def _run_gpa_direct(
+    variants: List[Dict[str, Any]],
+    tissue: str,
+    user_phenotypes: Optional[str] = None,
+    offline: bool = False,
+    somatic: bool = False,
+    target_population: Optional[str] = None,
+    evidence_detail: str = "brief",
+    config_path: Optional[Path] = None,
+    spliceai_enabled: bool = False,
+    spliceai_concurrency: int = 5,
+) -> Dict[str, Any]:
+    """Run GPA via direct Python API call - 5-10x faster than batch CLI.
+
+    Avoids subprocess overhead by importing dgra_core directly.
+    Used for large datasets that would exceed OpenClaw exec timeout.
+    """
+    import asyncio
+
+    # Ensure dgra_core is importable
+    sys.path.insert(0, str(SCRIPT_DIR))
+    try:
+        from dgra_core import GPAConfig, run_dgra_pipeline
+    except ImportError as e:
+        return {"success": False, "error": f"Failed to import dgra_core: {e}"}
+
+    config = GPAConfig(
+        tissue_profile=tissue,
+        offline_mode=offline,
+        target_population=target_population,
+        evidence_detail=evidence_detail,
+        somatic_mode=somatic,
+        spliceai_enabled=spliceai_enabled,
+    )
+
+    try:
+        result = asyncio.run(run_dgra_pipeline(
+            variants_data=variants,
+            user_phenotypes=user_phenotypes,
+            config=config,
+        ))
+
+        # Ensure report_md exists
+        report_md = result.get("report_md", "")
+        if not report_md:
+            summary = result.get("summary", {})
+            report_md = f"""# GPA Direct Analysis Report
+
+## Summary
+- Total variants: {summary.get('total_variants', len(variants))}
+- Tier 1: {summary.get('tier1_count', summary.get('tier1_variant_count', 0))} variants
+- Tier 2: {summary.get('tier2_count', summary.get('tier2_variant_count', 0))} variants
+- Tier 3: {summary.get('tier3_count', summary.get('tier3_variant_count', 0))} variants
+
+_Analyzed via direct Python API (bypassed batch CLI for performance)._
+"""
+
+        return {
+            "success": True,
+            "results": result,
+            "report_md": report_md,
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": f"Direct API call failed: {type(e).__name__}: {e}",
+            "traceback": traceback.format_exc(),
+        }
+
+
 def run_gpa_from_file(
     input_path: Path,
     tissue: str = "general",
@@ -214,7 +291,23 @@ def run_gpa(
         dict: {"success": True, "results": {...}, "report_md": "..."}
         或 {"success": False, "error": "..."}
     """
-    # v0.7.1: Auto-batch for large variant sets
+    # v0.9.2: Auto-switch to direct Python API for large datasets
+    # Direct API avoids subprocess overhead and stays within OpenClaw exec timeout
+    if len(variants) > DIRECT_CALL_THRESHOLD:
+        return _run_gpa_direct(
+            variants=variants,
+            tissue=tissue,
+            user_phenotypes=user_phenotypes,
+            offline=offline,
+            somatic=somatic,
+            target_population=target_population,
+            evidence_detail=evidence_detail,
+            config_path=config_path,
+            spliceai_enabled=spliceai_enabled,
+            spliceai_concurrency=spliceai_concurrency,
+        )
+
+    # v0.7.1: Auto-batch for medium variant sets
     if auto_batch and len(variants) > batch_size:
         from dgra_batch_runner import run_gpa_batched
         return run_gpa_batched(

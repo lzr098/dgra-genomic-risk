@@ -4368,7 +4368,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
 
         v = Variant(
             chrom=vd.get("CHROM", ""),
-            pos=int(vd.get("POS", 0)),
+            pos=int(vd.get("POS", 0) or 0),
             ref=vd.get("REF", ""),
             alt=vd.get("ALT", ""),
             gene=vd.get("GENE", ""),
