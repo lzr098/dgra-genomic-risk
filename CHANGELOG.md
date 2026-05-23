@@ -1,5 +1,43 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.7.0] - 2026-05-23
+
+### Phase 4: 报告模板重写 + 表型关联评估章节
+
+**目标**：完成 GPA v0.7 品牌化后的报告模板重构，新增表型关联独立评估章节，彻底清理供者/移植相关术语。
+
+**1. 新增表型关联评估章节（`_generate_phenotype_assessment_section()`）**
+- **位置**：Markdown 报告中 Multi-hit 章节之后、Tier 1 之前
+- **汇总表**：基因 / 位点 / 合子型 / VAF / 匹配评分 / 关联等级（🟢高度/🟡中度/🔴低度）/ 假基因状态 / 建议
+- **逐变异分析**：表型匹配评分、解释、匹配对、基因已知表型、当前分级
+- **ClinVar Pathogenic + 低分警告**：明确提示 "ClinVar 致病性标注但与输入表型匹配度低，建议结合临床表现验证"
+- **高分验证建议（≥0.75）**：Sanger / 长读长测序 / 家系共分离 / 功能实验
+
+**2. JSON 报告扩展**
+- 新增 `phenotype_association` 顶层字段：
+  - `total_tier12_with_phenotype`: 执行表型关联的变异数
+  - `high_match_count`: 高分匹配（≥0.75）变异数
+  - `variants[]`: 逐变异表型关联详情（score/confidence/explanation/matched_pairs/known_list）
+
+**3. 供者术语清理**
+- `TIER1_ACTION_GENES["VWF"]`："collection safety" → "vWD risk in patient"
+- `classify_variant_tier()` Priority 1 注释："donor safety logic" → "disease risk logic"
+- Action 字符串："affects collection safety (coagulation gene)" → "in coagulation gene — bleeding risk"
+- Tier 1/2 报告描述："intervention" → "clinical attention"，"patients should be informed" → "clinical significance"
+
+**4. 版本与方法论更新**
+- 报告标题：v0.5 → v0.7
+- `_get_version_info()`: 0.5.3 → 0.7.0
+- 方法学附录：新增 Step 6 "表型关联分析（v0.7）"
+
+**测试**：
+- A-Layer 回归：11/11 ✅
+- Phase 2 表型关联：6/6 ✅
+- Phase 3 分级逻辑：6/6 ✅
+- 自定义报告验证：Markdown + JSON 均正常 ✅
+
+---
+
 ## [v0.6.2] - 2026-05-22
 
 ### 品牌重定位：DGRA → GPA (Genomic Phenotype Association)

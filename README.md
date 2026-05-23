@@ -1,6 +1,6 @@
 # GPA - Genomic Phenotype Association
 
-**GPA (Genomic Phenotype Association)** v0.5.3 是一个用于基因-表型关联分析的自动化分析系统。基于多源注释数据（VEP/ANNOVAR/SnpEff）进行多维度注释、分级和关联评估，帮助识别可能与特定疾病/表型相关的遗传变异。
+**GPA (Genomic Phenotype Association)** v0.7.0 是一个用于基因-表型关联分析的自动化分析系统。基于多源注释数据（VEP/ANNOVAR/SnpEff）进行多维度注释、分级和关联评估，帮助识别可能与特定疾病/表型相关的遗传变异。
 
 ---
 
@@ -247,7 +247,7 @@ json_data = results["json"]
 ### 配置文件示例（`dgra.yaml`）
 
 ```yaml
-dgra_version: "0.5.3"
+dgra_version: "0.7.0"
 
 api_endpoints:
   ensembl:
@@ -488,6 +488,7 @@ with BuildStep("pseudogene_sync") as step:
 
 | 版本 | 日期 | 主题 |
 |------|------|------|
+| **v0.7.0** | **2026-05-23** | **表型关联分析（Phenotype Association）**：LLM语义匹配引擎、Top 100罕见病基因-表型数据库、后置关联分析（仅Tier 1/2）、ClinVar Pathogenic+不匹配→Tier 2、报告新增独立表型评估章节、gnomAD罕见病基因不自动Tier 3、供者逻辑彻底剥离 |
 | **v0.6.0** | **2026-05-22** | **假基因干扰评估（Pseudogene Architecture）**：51个临床相关假基因对、VAF模式检测、**Tier不变confidence降级原则**、独立Markdown报告章节、轻量版设计 |
 | v0.6.1 | 2026-05-22 | **A-Layer 构建流程稳定性**：指数退避重试（429/502/503/504/timeout）、GTF流式下载+断点续传、全局构建状态持久化（`.dgra_build_state.json`）、11项回归测试套件 |
 | **v0.5.2** | 2026-05-21 | **核心逻辑修正**：Multi-hit 不再升级变异（只标记基因）、ClinVar 中文注释支持（致病/良性）、统计格式改为"基因数/突变数"、新增 Priority 1c（ClinVar 致病+HIGH+造血相关→Tier 1）、**Transcript discrepancy 降级**（NR_/XM_非编码转录本→HIGH 降级为 MODERATE）、**VEP Canonical Reannotation**（Step 1.5：Ensembl VEP 用 canonical 重新注释 discrepancy 变异，CRIP2 chr14:105473030 案例验证） |
@@ -538,5 +539,5 @@ MIT License
 ---
 
 **维护者**：[@lzr098](https://github.com/lzr098)  
-**当前版本**：v0.6.0  
-**最后更新**：2026-05-22
+**当前版本**：v0.7.0  
+**最后更新**：2026-05-23
