@@ -424,6 +424,8 @@ dgra-genomic-risk/
     gpa_phenotype_match.py  # LLM 表型语义匹配（v0.7.0 Phase 2）
     gpa_i18n.py             # 中英文 consequence 术语映射（v0.7.1 Phase 2）
     dgra_variant_filter.py  # 预过滤模块：strict/clinical/broad（v0.7.1 Phase 3）
+    gpa_vcf_annotator.py    # Raw VCF → VEP REST API 实时注释（v0.9.0）
+    gpa_transcript_selector.py # 疾病感知转录本选择器（v0.9.0）
   references/
     tissue_context.json     # 组织上下文配置
     dgra.yaml               # 运行时参数配置
