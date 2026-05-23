@@ -1680,6 +1680,55 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     def _add_evidence(source, rule, weight=1.0, confidence="high", raw_data=None):
         evidence_chain.append(Evidence(source=source, rule=rule, weight=weight, confidence=confidence, raw_data=raw_data))
     
+    def _is_unknown(val):
+        return val == _UNKNOWN or val == "" or val is None
+    
+    def _clinvar_is_conflicting(clinvar):
+        """Detect ClinVar conflicting interpretations.
+        v0.7.1: Conflicting = pathogenic AND benign/VUS keywords present simultaneously.
+        Standard composite ratings like 'Pathogenic/Likely_pathogenic' are NOT conflicting.
+        """
+        if _is_unknown(clinvar):
+            return False
+        clinvar_lower = clinvar.lower()
+        if "conflicting" in clinvar_lower:
+            return True
+        pathogenic_keywords = ["pathogenic", "致病", "likely_pathogenic", "可能致病"]
+        benign_or_vus_keywords = ["benign", "良性", "likely_benign", "可能良性", "vus", "意义不明", "uncertain"]
+        has_pathogenic = any(kw in clinvar_lower for kw in pathogenic_keywords)
+        has_benign_or_vus = any(kw in clinvar_lower for kw in benign_or_vus_keywords)
+        if has_pathogenic and has_benign_or_vus:
+            return True
+        if "/" in clinvar and clinvar.count("/") == 1:
+            return False
+        return False
+    
+    def _clinvar_pathogenic(clinvar):
+        """ClinVar pathogenic check — UNKNOWN does NOT trigger this.
+        v0.5.2: Support both English 'Pathogenic' and Chinese '致病'.
+        v0.7.1: Conflicting interpretations return False."""
+        if _clinvar_is_conflicting(clinvar):
+            return False
+        if _is_unknown(clinvar):
+            return False
+        clinvar_lower = clinvar.lower()
+        return ("pathogenic" in clinvar_lower or 
+                "致病" in clinvar or 
+                "likely_pathogenic" in clinvar_lower or
+                "可能致病" in clinvar)
+    
+    def _clinvar_benign(clinvar):
+        """ClinVar benign check — UNKNOWN does NOT trigger this.
+        v0.5.2: Support both English 'Benign' and Chinese '良性'.
+        v0.7.1: Conflicting interpretations return False."""
+        if _clinvar_is_conflicting(clinvar):
+            return False
+        if _is_unknown(clinvar):
+            return False
+        clinvar_lower = clinvar.lower()
+        return (("benign" in clinvar_lower or "良性" in clinvar)
+                and "conflicting" not in clinvar_lower)
+    
     # v0.7.1: ClinVar conflicting interpretation detection
     if _clinvar_is_conflicting(variant.clinvar):
         if "CLINVAR_CONFLICTING" not in variant.qc_flags:
@@ -1839,59 +1888,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     special_lists = tissue_profile.get("special_gene_lists", {})
 
     # v0.5 P0-7: Helpers for conservative UNKNOWN handling
-    def _is_unknown(val):
-        return val == _UNKNOWN or val == "" or val is None
-    
-    def _clinvar_is_conflicting(clinvar):
-        """Detect ClinVar conflicting interpretations.
-        v0.7.1: Conflicting = pathogenic AND benign/VUS keywords present simultaneously.
-        Standard composite ratings like 'Pathogenic/Likely_pathogenic' are NOT conflicting.
-        """
-        if _is_unknown(clinvar):
-            return False
-        clinvar_lower = clinvar.lower()
-        # Explicit conflicting keyword
-        if "conflicting" in clinvar_lower:
-            return True
-        # Check for presence of both pathogenic and benign/VUS terms
-        pathogenic_keywords = ["pathogenic", "致病", "likely_pathogenic", "可能致病"]
-        benign_or_vus_keywords = ["benign", "良性", "likely_benign", "可能良性", "vus", "意义不明", "uncertain"]
-        has_pathogenic = any(kw in clinvar_lower for kw in pathogenic_keywords)
-        has_benign_or_vus = any(kw in clinvar_lower for kw in benign_or_vus_keywords)
-        if has_pathogenic and has_benign_or_vus:
-            return True
-        # Composite ratings like "Pathogenic/Likely_pathogenic" or "Benign/Likely_benign" are NOT conflicting
-        if "/" in clinvar and clinvar.count("/") == 1:
-            # Single slash = standard composite, not conflicting
-            return False
-        return False
-
-    def _clinvar_pathogenic(clinvar):
-        """ClinVar pathogenic check — UNKNOWN does NOT trigger this.
-        v0.5.2: Support both English 'Pathogenic' and Chinese '致病'.
-        v0.7.1: Conflicting interpretations return False."""
-        if _clinvar_is_conflicting(clinvar):
-            return False
-        if _is_unknown(clinvar):
-            return False
-        clinvar_lower = clinvar.lower()
-        return ("pathogenic" in clinvar_lower or 
-                "致病" in clinvar or 
-                "likely_pathogenic" in clinvar_lower or
-                "可能致病" in clinvar)
-    
-    def _clinvar_benign(clinvar):
-        """ClinVar benign check — UNKNOWN does NOT trigger this.
-        v0.5.2: Support both English 'Benign' and Chinese '良性'.
-        v0.7.1: Conflicting interpretations return False."""
-        if _clinvar_is_conflicting(clinvar):
-            return False
-        if _is_unknown(clinvar):
-            return False
-        clinvar_lower = clinvar.lower()
-        return (("benign" in clinvar_lower or "良性" in clinvar)
-                and "conflicting" not in clinvar_lower)
-    
     def _impact_high(impact):
         """Impact HIGH check — UNKNOWN is treated as HIGH (conservative, no downgrade).
         v0.5.2: TRANSCRIPT_DISCREPANCY with non-coding annotator transcript (NR_/XM_/XR_)
