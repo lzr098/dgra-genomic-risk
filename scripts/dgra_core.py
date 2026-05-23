@@ -213,6 +213,8 @@ class GPAConfig:
     somatic_mode: bool = False  # v0.4.5: tumor/somatic driver analysis mode
     multi_organ_profiles: Optional[List[str]] = None  # v0.5 P1-7: multi-organ assessment
     gene_sync_enabled: bool = True  # v0.5 P1-8: auto-sync special_gene_lists
+    filter_stats: Optional[Dict[str, Any]] = None  # v0.7.1: variant pre-filtering statistics
+    filter_preset: Optional[str] = None  # v0.7.1: filter preset name used
     gene_sync_ttl_days: int = 7  # v0.5 P1-8: sync cache TTL
     force_sync: bool = False  # v0.5 P1-8: force sync gene lists (bypass cache)
     evidence_detail: str = "brief"  # v0.5 P1-9: "brief" | "full" — evidence chain detail level in report
@@ -3149,7 +3151,33 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     report.append(f"**Tissue Profile**: `{config.tissue_profile}`\n")
     report.append(f"**Offline Mode**: {'Yes' if config.offline_mode else 'No'}\n")
     report.append(f"**Analysis Date**: {datetime.now().isoformat()}\n")
-    report.append(f"**Total Variants Assessed**: {len(variants)}\n")
+    
+    # v0.7.1: Variant pre-filtering statistics
+    if config.filter_stats:
+        fs = config.filter_stats
+        report.append(f"**Input Variants**: {fs.get('input_count', '?')} → **Assessed**: {fs.get('output_count', '?')} (excluded: {fs.get('excluded', '?')})\n")
+        # Compact impact breakdown
+        impact_parts = []
+        for imp in ['HIGH', 'MODERATE', 'LOW', 'MODIFIER']:
+            cnt = fs.get('by_impact', {}).get(imp, 0)
+            if cnt > 0:
+                impact_parts.append(f"{imp}: {cnt}")
+        if impact_parts:
+            report.append(f"**Impact Distribution (input)**: {' | '.join(impact_parts)}\n")
+        # Retention details
+        retention_parts = []
+        if fs.get('splice_retained', 0) > 0:
+            retention_parts.append(f"splice retained: {fs['splice_retained']}")
+        if fs.get('synonymous_tissue_retained', 0) > 0:
+            retention_parts.append(f"synonymous tissue: {fs['synonymous_tissue_retained']}")
+        if fs.get('clinvar_conflicting_retained', 0) > 0:
+            retention_parts.append(f"ClinVar conflict: {fs['clinvar_conflicting_retained']}")
+        if retention_parts:
+            report.append(f"**Filter Retention**: {' | '.join(retention_parts)}\n")
+        if config.filter_preset:
+            report.append(f"**Filter Preset**: `{config.filter_preset}`\n")
+    else:
+        report.append(f"**Total Variants Assessed**: {len(variants)}\n")
     
     # v0.5 P1-15: Version and provenance metadata
     version_info = _get_version_info(config)
@@ -4569,6 +4597,10 @@ def main():
                         help="Clinical phenotype description for phenotype-gene association analysis. "
                              "e.g. 'distal muscle weakness, myopathic damage, slow progression'. "
                              "Only applied to Tier 1/2 variants. Requires LLM API key for best accuracy.")
+    parser.add_argument("--filter-preset", default=None, choices=["strict", "clinical", "broad"],
+                        help="Filter preset name used for pre-filtering. Displayed in report header. (v0.7.1)")
+    parser.add_argument("--filter-stats", default=None,
+                        help="JSON string of filter statistics. Displayed in report header. (v0.7.1)")
     parser.add_argument("--llm-model", default="gpt-4o-mini",
                         help="LLM model for phenotype semantic matching. Default: gpt-4o-mini. "
                              "Alternative: gpt-4o, claude-3-haiku.")
@@ -4620,6 +4652,13 @@ def main():
         os.environ.setdefault("GPA_LLM_MODEL", args.llm_model)
 
     # Run async pipeline with tissue context
+    filter_stats = None
+    if args.filter_stats:
+        try:
+            filter_stats = json.loads(args.filter_stats)
+        except json.JSONDecodeError:
+            print(f"[GPA] Warning: Invalid --filter-stats JSON, ignoring")
+    
     config = GPAConfig(
         tissue_profile=args.tissue,
         offline_mode=args.offline,
@@ -4628,7 +4667,9 @@ def main():
         multi_organ_profiles=multi_organ,
         force_sync=args.sync_gene_lists,
         evidence_detail=args.evidence_detail,
-        database_version=args.database_version,  # v0.5 P1-15
+        database_version=args.database_version,
+        filter_stats=filter_stats,
+        filter_preset=args.filter_preset,
     )
     
     # v0.5 P2-3: Apply YAML config overrides to user config

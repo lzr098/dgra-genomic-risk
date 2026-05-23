@@ -105,6 +105,8 @@ def run_gpa_from_file(
     evidence_detail: str = "brief",  # v0.5 P1-9
     database_version: Optional[str] = None,  # v0.5 P1-15
     config_path: Optional[Path] = None,  # v0.5 P2-3
+    # v0.7.1: Variant pre-filtering
+    filter_preset: Optional[str] = None,
     # v0.7.1: Auto-batch parameters
     auto_batch: bool = True,
     batch_size: int = 500,
@@ -136,6 +138,8 @@ def run_gpa_from_file(
         evidence_detail=evidence_detail,
         database_version=database_version,
         config_path=config_path,
+        # v0.7.1: variant pre-filtering
+        filter_preset=filter_preset,
         # v0.7.1: batch control
         auto_batch=auto_batch,
         batch_size=batch_size,
@@ -156,6 +160,9 @@ def run_gpa(
     evidence_detail: str = "brief",
     database_version: Optional[str] = None,
     config_path: Optional[Path] = None,
+    # v0.7.1: Variant pre-filtering
+    filter_preset: Optional[str] = None,
+    filter_stats: Optional[Dict[str, Any]] = None,
     # v0.7.1: Auto-batch parameters
     auto_batch: bool = True,
     batch_size: int = 500,
@@ -203,6 +210,18 @@ def run_gpa(
     
     if not variants:
         return {"success": False, "error": "variants list is empty"}
+
+    # v0.7.1: Apply variant pre-filtering if requested
+    filter_stats_out = None
+    if filter_preset:
+        from dgra_variant_filter import filter_variants, get_tissue_relevant_genes
+        tissue_genes = get_tissue_relevant_genes(tissue)
+        variants, filter_stats_out = filter_variants(variants, preset=filter_preset, tissue_relevant_genes=tissue_genes)
+        if not variants:
+            return {
+                "success": False,
+                "error": f"All variants filtered out by preset '{filter_preset}'. Stats: {filter_stats_out}",
+            }
 
     # Validate tissue
     valid_tissues = {"general", "hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
@@ -260,6 +279,12 @@ def run_gpa(
             cmd.extend(["--database-version", database_version])
         if user_phenotypes:
             cmd.extend(["--phenotypes", user_phenotypes])
+        # v0.7.1: filter stats
+        if filter_stats:
+            import json as _json
+            cmd.extend(["--filter-stats", _json.dumps(filter_stats)])
+        if filter_preset:
+            cmd.extend(["--filter-preset", filter_preset])
         # v0.5 P2-3: YAML config file
         if config_path:
             cmd.extend(["--config", str(config_path)])
@@ -307,8 +332,9 @@ def run_gpa(
             "success": True,
             "results": results,
             "report_md": report_md,
-            "json_report": results.get("json_report", {}),  # v0.5 P1-12: structured JSON for downstream
+            "json_report": results.get("json_report", {}),
             "stdout": result.stdout,
+            "filter_stats": filter_stats_out,
         }
 
 
@@ -377,6 +403,10 @@ def main():
     # v0.5 P2-3: YAML config file support
     parser.add_argument("--config", "-c", type=Path, default=None,
                         help="Path to dgra.yaml configuration file. Overrides built-in defaults. (v0.5 P2-3)")
+    parser.add_argument("--filter-preset", choices=["strict", "clinical", "broad"], default=None,
+                        help="Pre-filter variants before analysis. strict=HIGH/MODERATE only; "
+                             "clinical=HIGH/MODERATE + splice + tissue-synonymous (default if set); "
+                             "broad=includes LOW. (v0.7.1)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
@@ -423,6 +453,8 @@ def main():
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
             config_path=args.config,
+            # v0.7.1: variant pre-filtering
+            filter_preset=args.filter_preset,
             # v0.7.1: batch control
             auto_batch=not args.no_auto_batch,
             batch_size=args.batch_size,
@@ -448,6 +480,8 @@ def main():
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
             config_path=args.config,
+            # v0.7.1: variant pre-filtering
+            filter_preset=args.filter_preset,
             # v0.7.1: batch control
             auto_batch=not args.no_auto_batch,
             batch_size=args.batch_size,
@@ -473,6 +507,8 @@ def main():
             evidence_detail=args.evidence_detail,
             database_version=args.database_version,
             config_path=args.config,
+            # v0.7.1: variant pre-filtering
+            filter_preset=args.filter_preset,
             # v0.7.1: batch control
             auto_batch=not args.no_auto_batch,
             batch_size=args.batch_size,
