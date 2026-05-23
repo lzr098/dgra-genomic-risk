@@ -55,7 +55,7 @@ class DGRAAPIClient:
         self._session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=50, limit_per_host=20),
             timeout=aiohttp.ClientTimeout(total=120),
-            trust_env=True,  # Auto-read HTTP_PROXY / HTTPS_PROXY from environment
+            trust_env=False,  # v0.9.2 fix: disable env proxy (Clash/VPN) to avoid gnomAD 429
         )
         return self
     
@@ -1382,11 +1382,11 @@ class DGRAAPIClient:
         """
         Execute batch queries with controlled concurrency.
         
-        Strategy: semaphore (max 20 concurrent) + chunked batches (30 per batch)
+        Strategy: semaphore (max 3 concurrent) + chunked batches (30 per batch)
         to avoid overwhelming public APIs while maintaining throughput.
         """
         CHUNK_SIZE = 30
-        MAX_CONCURRENT = 20
+        MAX_CONCURRENT = 3  # v0.9.2: reduced from 20 → 3 to respect rate limits (especially gnomAD)
         semaphore = asyncio.Semaphore(MAX_CONCURRENT)
         
         async def _query_one(gene: str) -> Dict[str, Any]:

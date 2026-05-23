@@ -4449,61 +4449,56 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             uniprot_data = {g: uniprot_raw.get(g, {}) for g in unique_genes}
             hgnc_data = {g: hgnc_raw.get(g, {}) for g in unique_genes}
             gnomad_constraint_data = {g: gnomad_constraint_raw.get(g, {}) for g in unique_genes}
-        # v0.8.0 P6: gnomAD variant frequency batch query for variants missing AF data
-        # This fixes the disconnect where query_gnomad_variant() was implemented
-        # but never called — all frequency-based tiering was effectively disabled.
-        variants_without_af = [v for v in variants if v.gnomad_af is None and v.chrom and v.pos and v.ref and v.alt]
-        if variants_without_af:
-            print(f"[GPA] gnomAD: querying {len(variants_without_af)} variants without AF data")
-            gnomad_sem = asyncio.Semaphore(5)  # Limit concurrent gnomAD requests
-            async def _query_one_gnomad(v):
-                async with gnomad_sem:
-                    try:
-                        return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
-                    except asyncio.TimeoutError as e:
-                        print(f"[GPA] gnomAD query TIMEOUT for {v.gene} {v.chrom}:{v.pos}: {e}")
-                        return {"status": "API_FAILED", "error": f"timeout: {e}", "source": "failed"}
-                    except aiohttp.ClientError as e:
-                        print(f"[GPA] gnomAD query CLIENT_ERROR for {v.gene} {v.chrom}:{v.pos}: {e}")
-                        return {"status": "API_FAILED", "error": f"client_error: {e}", "source": "failed"}
-                    except Exception as e:
-                        print(f"[GPA] gnomAD query FAILED for {v.gene} {v.chrom}:{v.pos}: {e}")
-                        return {"status": "API_FAILED", "error": str(e), "source": "failed"}
-            gnomad_results = await asyncio.gather(*[_query_one_gnomad(v) for v in variants_without_af])
-            n_success = 0
-            n_failed = 0
-            n_not_captured = 0
-            for v, result in zip(variants_without_af, gnomad_results):
-                # v0.9.1: "failed" source added — API returned but variant not found (not a network error).
-                # Without this, all "Variant not found" GraphQL responses trigger gnomad_af_warning.
-                # Also preserves v0.9.1 status-based tracking (SUCCESS/NOT_CAPTURED/API_FAILED).
-                if result and result.get("source") in ("gnomad", "cache", "failed"):
-                    af = result.get("af")
-                    if af is not None:
-                        v.gnomad_af = af
-                        v.gnomad_populations = result.get("af_populations", {})
-                        v.gnomad_status = "SUCCESS"
-                        n_success += 1
-                        print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
-                    else:
-                        # API returned but variant not captured in gnomAD dataset
+            # v0.8.0 P6: gnomAD variant frequency batch query for variants missing AF data
+            # This fixes the disconnect where query_gnomad_variant() was implemented
+            # but never called — all frequency-based tiering was effectively disabled.
+            variants_without_af = [v for v in variants if v.gnomad_af is None and v.chrom and v.pos and v.ref and v.alt]
+            if variants_without_af:
+                print(f"[GPA] gnomAD: querying {len(variants_without_af)} variants without AF data")
+                gnomad_sem = asyncio.Semaphore(2)  # v0.9.2: reduced from 5 → 2 to respect gnomAD rate limits
+                async def _query_one_gnomad(v):
+                    async with gnomad_sem:
+                        try:
+                            return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
+                        except asyncio.TimeoutError as e:
+                            print(f"[GPA] gnomAD query TIMEOUT for {v.gene} {v.chrom}:{v.pos}: {e}")
+                            return {"status": "API_FAILED", "error": f"timeout: {e}", "source": "failed"}
+                        except aiohttp.ClientError as e:
+                            print(f"[GPA] gnomAD query CLIENT_ERROR for {v.gene} {v.chrom}:{v.pos}: {e}")
+                            return {"status": "API_FAILED", "error": f"client_error: {e}", "source": "failed"}
+                        except Exception as e:
+                            print(f"[GPA] gnomAD query FAILED for {v.gene} {v.chrom}:{v.pos}: {e}")
+                            return {"status": "API_FAILED", "error": str(e), "source": "failed"}
+                gnomad_results = await asyncio.gather(*[_query_one_gnomad(v) for v in variants_without_af])
+                n_success = 0
+                n_failed = 0
+                n_not_captured = 0
+                for v, result in zip(variants_without_af, gnomad_results):
+                    # v0.9.1: "failed" source added — API returned but variant not found (not a network error).
+                    # Without this, all "Variant not found" GraphQL responses trigger gnomad_af_warning.
+                    # Also preserves v0.9.1 status-based tracking (SUCCESS/NOT_CAPTURED/API_FAILED).
+                    if result and result.get("source") in ("gnomad", "cache", "failed"):
+                        af = result.get("af")
+                        if af is not None:
+                            v.gnomad_af = af
+                            v.gnomad_populations = result.get("af_populations", {})
+                            v.gnomad_status = "SUCCESS"
+                            n_success += 1
+                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
+                        else:
+                            # API returned but variant not captured in gnomAD dataset
+                            v.gnomad_populations = {}
+                            v.gnomad_status = result.get("status", "NOT_CAPTURED")
+                            n_not_captured += 1
+                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} NOT_CAPTURED")
+                    elif result and result.get("status") == "API_FAILED":
+                        v.gnomad_status = "API_FAILED"
+                        v.gnomad_error_msg = result.get("error", "unknown")
+                        v.gnomad_af_warning = True
                         v.gnomad_populations = {}
-                        v.gnomad_status = result.get("status", "NOT_CAPTURED")
-                        n_not_captured += 1
-                        print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} NOT_CAPTURED")
-                elif result and result.get("status") == "API_FAILED":
-                    v.gnomad_status = "API_FAILED"
-                    v.gnomad_error_msg = result.get("error", "unknown")
-                    v.gnomad_af_warning = True
-                    v.gnomad_populations = {}
-                    n_failed += 1
-                    print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} API_FAILED ({v.gnomad_error_msg})")
-                    # API call failed entirely (network error, timeout, auth)
-                    v.gnomad_populations = {}
-                    v.gnomad_status = "API_FAILED"
-                    v.gnomad_af_warning = True
-                    n_failed += 1
-            print(f"[GPA] gnomAD results: {n_success} success, {n_not_captured} not in dataset, {n_failed} API failures")
+                        n_failed += 1
+                        print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} API_FAILED ({v.gnomad_error_msg})")
+                print(f"[GPA] gnomAD results: {n_success} success, {n_not_captured} not in dataset, {n_failed} API failures")
         print(f"[GPA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
         # Persist successful API results for future offline use
         for gene in unique_genes:
@@ -5193,12 +5188,14 @@ def main():
         from gpa_vcf_annotator import VCFAnnotator
         from gpa_transcript_selector import TranscriptSelector
 
+        annotator_name = args.annotator if hasattr(args, 'annotator') else "auto"
+        vep_cache_path = args.vep_cache if hasattr(args, 'vep_cache') else None
         annotator = VCFAnnotator(
-            annotator=config.annotator if hasattr(config, 'annotator') else "auto",
+            annotator=annotator_name,
             genome="auto",
             max_concurrency=5,
             timeout=30,
-            vep_cache=config.vep_cache if hasattr(config, 'vep_cache') else None,
+            vep_cache=vep_cache_path,
         )
         annotated = asyncio.run(annotator.annotate(args.input))
         annotator.close()

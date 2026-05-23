@@ -302,7 +302,10 @@ class VCFAnnotator:
         """Annotate via Ensembl VEP REST API with controlled concurrency."""
         if not self._session:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            connector = aiohttp.TCPConnector(force_close=True)
+            self._session = aiohttp.ClientSession(
+                connector=connector, timeout=timeout, trust_env=False
+            )
 
         semaphore = asyncio.Semaphore(self.max_concurrency)
         total = len(variants)
@@ -311,11 +314,13 @@ class VCFAnnotator:
 
         async def _query_batch(start_idx: int, batch: List[Dict[str, Any]]) -> None:
             async with semaphore:
-                # Build VEP region strings: "chrom pos . ref alt . . ."
-                body = [
-                    f"{v['chrom']} {v['pos']} . {v['ref']} {v['alt']} . . ."
-                    for v in batch
-                ]
+                # Build VEP region strings wrapped in {"variants": [...]} per VEP REST API spec
+                body = {
+                    "variants": [
+                        f"{v['chrom']} {v['pos']} . {v['ref']} {v['alt']} . . ."
+                        for v in batch
+                    ]
+                }
                 params = dict(VEP_DEFAULT_PARAMS)
                 if genome == "GRCh37":
                     params["refseq"] = "1"
