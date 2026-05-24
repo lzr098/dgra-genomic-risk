@@ -15,8 +15,14 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# SpliceAI lookup API（Broad Institute）
-SPLICEAI_LOOKUP_URL = "https://spliceailookup.broadinstitute.org/api/variant"
+# SpliceAI lookup API (Broad Institute)
+# v0.9.4: URL migrated from spliceailookup.broadinstitute.org/api/variant (404)
+# to Google Cloud Run endpoints (verified 2026-05-24 via GitHub SpliceAI-lookup README + live test)
+# GRCh38: https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/?hg=38&variant=chr-pos-ref-alt
+# GRCh37: https://spliceai-37-xwkwwwxdwq-uc.a.run.app/spliceai/?hg=37&variant=chr-pos-ref-alt
+# Rate limit: interactive use only (~few req/min). For bulk, run local Docker instance.
+SPLICEAI_BASE_URL_GRCh38 = "https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/"
+SPLICEAI_BASE_URL_GRCh37 = "https://spliceai-37-xwkwwwxdwq-uc.a.run.app/spliceai/"
 
 # 阈值配置（分 consequence 类型）
 SPLICEAI_THRESHOLDS = {
@@ -146,34 +152,42 @@ class SpliceAIPredictor:
         return result
 
     async def _query_with_retry(self, chrom: str, pos: int, ref: str, alt: str, genome: str) -> SpliceAIResult:
-        """带退避重试的 SpliceAI 查询。"""
-        url = f"{SPLICEAI_LOOKUP_URL}"
+        """带退避重试的 SpliceAI 查询。
+        
+        v0.9.4: 适配新 API 格式（Google Cloud Run 端点）。
+        新格式：GET /spliceai/?hg=38&variant=chr-pos-ref-alt
+        响应格式：{"scores": [{ "DS_AG": "0.13", ... }], "source": "..."}
+        """
+        # 选择对应基因组版本的 URL
+        if "37" in genome:
+            base_url = SPLICEAI_BASE_URL_GRCh37
+        else:
+            base_url = SPLICEAI_BASE_URL_GRCh38
+        
+        # 新 API 格式：variant 参数为 chr-pos-ref-alt
+        variant_str = f"{chrom}-{pos}-{ref}-{alt}"
         params = {
-            "chrom": chrom,
-            "pos": pos,
-            "ref": ref,
-            "alt": alt,
-            "hg": genome.replace("GRCh", ""),  # GRCh38 → 38
+            "hg": genome.replace("GRCh", ""),   # GRCh38 → "38"
+            "variant": variant_str,
         }
 
-        # 指数退避：1s → 2s → 4s
-        backoff = [1, 2, 4]
+        # 指数退避：2s → 4s → 8s（新 API 有限流，延迟更长）
+        backoff = [2, 4, 8]
 
         async with self._semaphore:
             for attempt, delay in enumerate(backoff + [None]):
                 try:
                     timeout = aiohttp.ClientTimeout(total=self.timeout)
                     async with aiohttp.ClientSession(timeout=timeout) as session:
-                        async with session.get(url, params=params) as resp:
+                        async with session.get(base_url, params=params) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
                                 return self._parse_response(data, "spliceai_lookup")
                             elif resp.status == 404:
-                                # 不在数据库
+                                # 不在数据库（某些变异可能返回 404 或空 scores）
                                 return SpliceAIResult(source="not_in_db")
                             elif resp.status == 429:
-                                # 限流
-                                retry_after = int(resp.headers.get("Retry-After", delay or 2))
+                                retry_after = int(resp.headers.get("Retry-After", delay or 5))
                                 logger.warning(f"SpliceAI 429, retry after {retry_after}s (attempt {attempt+1})")
                                 if delay is not None:
                                     await asyncio.sleep(retry_after)
@@ -199,27 +213,51 @@ class SpliceAIPredictor:
             return SpliceAIResult(source="api_error")
 
     def _parse_response(self, data: Dict, source: str) -> SpliceAIResult:
-        """解析 SpliceAI lookup API 响应。"""
+        """解析 SpliceAI lookup API 响应。
+        
+        v0.9.4: 适配新 API 格式（Google Cloud Run 端点）。
+        新格式: {"scores": [{"DS_AG": "0.13", "DS_AL": "0.00", ...}, ...], "source": "..."}
+        旧格式（已废弃）: {"delta_scores": {"AG": 0.0, "AL": 0.0, ...}}
+        """
         try:
-            # SpliceAI lookup 返回格式：
-            # {"delta_scores": {"AG": 0.0, "AL": 0.0, "DG": 0.0, "DL": 0.0, "DS_AG": 0.0, ...}}
-            delta_scores = data.get("delta_scores", {})
+            scores_list = data.get("scores", [])
+            
+            if not scores_list:
+                # 无 scores = 无剪接影响
+                return SpliceAIResult(
+                    delta_score=0.0,
+                    source=source,
+                    raw_response=data,
+                )
 
-            # 取四个 delta 中的最大值
-            ag = delta_scores.get("AG", delta_scores.get("DS_AG", 0.0))
-            al = delta_scores.get("AL", delta_scores.get("DS_AL", 0.0))
-            dg = delta_scores.get("DG", delta_scores.get("DS_DG", 0.0))
-            dl = delta_scores.get("DL", delta_scores.get("DS_DL", 0.0))
+            # 取所有 transcript 中 delta score 最大值（保守策略）
+            max_delta = 0.0
+            max_ag = 0.0
+            max_al = 0.0
+            max_dg = 0.0
+            max_dl = 0.0
 
-            max_delta = max(ag, al, dg, dl)
+            for score_entry in scores_list:
+                # 新 API 返回字符串格式的浮点数
+                ag = float(score_entry.get("DS_AG", 0.0) or 0.0)
+                al = float(score_entry.get("DS_AL", 0.0) or 0.0)
+                dg = float(score_entry.get("DS_DG", 0.0) or 0.0)
+                dl = float(score_entry.get("DS_DL", 0.0) or 0.0)
+                entry_max = max(ag, al, dg, dl)
 
-            # 默认 threshold_type 会在外部根据 consequence 判断
+                if entry_max > max_delta:
+                    max_delta = entry_max
+                    max_ag = ag
+                    max_al = al
+                    max_dg = dg
+                    max_dl = dl
+
             return SpliceAIResult(
                 delta_score=max_delta,
-                delta_acceptor_gain=ag,
-                delta_acceptor_loss=al,
-                delta_donor_gain=dg,
-                delta_donor_loss=dl,
+                delta_acceptor_gain=max_ag,
+                delta_acceptor_loss=max_al,
+                delta_donor_gain=max_dg,
+                delta_donor_loss=max_dl,
                 predicted_impact="unknown",  # 外部根据 threshold_type 确定
                 source=source,
                 raw_response=data,
