@@ -2088,6 +2088,11 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     _GLOBAL_COMMON_AF_THRESHOLD = 0.80  # Global AF > 80% → Tier 3 regardless of population
     
     gnomad_af = gnomad_info.get("af")
+    if gnomad_af is not None:
+        try:
+            gnomad_af = float(gnomad_af)
+        except (ValueError, TypeError):
+            gnomad_af = None
     gnomad_af_populations = gnomad_info.get("af_populations", {})
     
     # Check EAS population frequency first (most relevant for Chinese/Asian cohorts)
@@ -2801,7 +2806,12 @@ def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = 
     """
     Detect genes with multiple pathogenic variants that may require phase analysis.
 
-    v0.4.5 新增:自动相位分析,基于 GATK GT 格式和变异间距判断 cis/trans
+    v0.9.4 FIX: Added pairwise phase analysis for close variant pairs.
+    Previously, all pathogenic variants in a gene were passed to determine_phase(),
+    causing distant benign variants to inflate max_gap_bp and incorrectly mark
+    close, clinically-relevant pairs as "infeasible_short_reads".
+    
+    Now: Pairwise analysis for pairs <= 1000bp in addition to whole-gene assessment.
 
     Only counts variants with evidence of pathogenicity:
       - Domain impact, or
@@ -2821,8 +2831,28 @@ def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = 
         pathogenic_vars = [v for v in var_list if _variant_has_pathogenic_evidence(v, gtex_data)]
 
         if len(pathogenic_vars) >= 2:
-            # v0.4.5: 相位分析
+            # v0.4.5: Whole-gene phase analysis (kept for overall assessment)
             phase_result = determine_phase(pathogenic_vars)
+
+            # v0.9.4 FIX: Pairwise phase analysis for close variant pairs
+            pairwise_phases = []
+            for i in range(len(pathogenic_vars)):
+                for j in range(i + 1, len(pathogenic_vars)):
+                    v1, v2 = pathogenic_vars[i], pathogenic_vars[j]
+                    dist = abs(v1.pos - v2.pos)
+                    if dist <= 1000:
+                        pair_phase = determine_phase([v1, v2])
+                        pairwise_phases.append({
+                            "variant1": {"chrom": v1.chrom, "pos": v1.pos, "hgvsp": v1.hgvsp, "impact": v1.impact},
+                            "variant2": {"chrom": v2.chrom, "pos": v2.pos, "hgvsp": v2.hgvsp, "impact": v2.impact},
+                            "distance_bp": dist,
+                            "phase_result": {
+                                "status": pair_phase.phase_status,
+                                "confidence": pair_phase.confidence,
+                                "method": pair_phase.method,
+                                "evidence": pair_phase.evidence,
+                            }
+                        })
 
             # Collect details for each pathogenic variant
             var_details = []
@@ -2869,6 +2899,8 @@ def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = 
                     "n_variants": phase_result.n_variants
                 },
                 "phase_clinical_significance": phase_clinical.get(phase_result.phase_status, "未知"),
+                # v0.9.4 FIX: Add pairwise phase analysis
+                "pairwise_phase_analysis": pairwise_phases,
                 "phases": {
                     "cis": "Both variants on same allele → other allele normal → heterozygous function retained",
                     "trans": "Variants on different alleles → compound heterozygous → function may be severely impaired"
