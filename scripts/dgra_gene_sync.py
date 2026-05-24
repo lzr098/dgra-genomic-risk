@@ -228,7 +228,7 @@ class GeneListSynchronizer:
         connector = aiohttp.TCPConnector(limit=5)
         timeout = aiohttp.ClientTimeout(total=30)
 
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
             for q in queries:
                 orpha_id = q.get("phenotype_orpha_id", "")
                 list_name = q.get("list_name", "")

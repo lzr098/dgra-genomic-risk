@@ -2088,6 +2088,11 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     _GLOBAL_COMMON_AF_THRESHOLD = 0.80  # Global AF > 80% → Tier 3 regardless of population
     
     gnomad_af = gnomad_info.get("af")
+    try:
+        if gnomad_af is not None:
+            gnomad_af = float(gnomad_af)
+    except (ValueError, TypeError):
+        gnomad_af = None
     gnomad_af_populations = gnomad_info.get("af_populations", {})
     
     # Check EAS population frequency first (most relevant for Chinese/Asian cohorts)
@@ -2096,6 +2101,11 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         for pop_code in ("EAS", "eas"):
             if pop_code in gnomad_af_populations:
                 eas_af = gnomad_af_populations[pop_code].get("af")
+                if eas_af is not None:
+                    try:
+                        eas_af = float(eas_af)
+                    except (ValueError, TypeError):
+                        eas_af = None
                 break
     
     # Determine if this is a common polymorphism that should be auto-Tier 3
@@ -4407,8 +4417,15 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             missing.append("GQ")
 
         raw_vaf = str(vd.get("VAF", "")).strip()
-        vaf_val = float(raw_vaf) if raw_vaf else None
-        if not raw_vaf:
+        # v0.9.3 hotfix: handle '.' and empty VAF values
+        if not raw_vaf or raw_vaf == ".":
+            vaf_val = None
+        else:
+            try:
+                vaf_val = float(raw_vaf)
+            except (ValueError, TypeError):
+                vaf_val = None
+        if not raw_vaf or raw_vaf == ".":
             missing.append("VAF")
 
         raw_gnomad = str(vd.get("gnomAD_AF", "")).strip()
@@ -4527,7 +4544,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                     mv_sem = asyncio.Semaphore(5)
                     timeout_obj = aiohttp.ClientTimeout(total=120)
                     mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in variants_needing_enrichment]
-                    async with aiohttp.ClientSession(timeout=timeout_obj) as mv_session:
+                    async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as mv_session:
                         mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem)
                     mv_stats = apply_myvariant_results(variants, mv_results)
                     print(f"[GPA] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, {mv_stats['clinvar_filled']} ClinVar, {mv_stats['cadd_filled']} CADD filled | {mv_stats['not_found']} not_found, {mv_stats['errors']} errors")
@@ -4614,7 +4631,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                         # Reset gnomad_af to None so apply_myvariant_results will fill it
                         for v in _myvariant_fallback_variants:
                             v.gnomad_af = None
-                        async with aiohttp.ClientSession(timeout=mv_fb_timeout) as mv_fb_session:
+                        async with aiohttp.ClientSession(timeout=mv_fb_timeout, trust_env=False) as mv_fb_session:
                             mv_fb_results = await query_myvariant_batch(mv_fb_variants, mv_fb_session, semaphore=mv_fb_sem)
                         mv_fb_stats = apply_myvariant_results(_myvariant_fallback_variants, mv_fb_results)
                         n_myvariant_fallback = mv_fb_stats.get("gnomad_filled", 0)
@@ -4891,7 +4908,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         if spliceai_candidates:
             print(f"[GPA] SpliceAI: querying {len(spliceai_candidates)} splice variants (concurrency={getattr(config, 'spliceai_concurrency', 5)})")
             timeout_obj = aiohttp.ClientTimeout(total=120)
-            async with aiohttp.ClientSession(timeout=timeout_obj) as spliceai_session:
+            async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as spliceai_session:
                 spliceai_results = await query_spliceai_batch(
                     spliceai_candidates, spliceai_session, spliceai_sem
                 )

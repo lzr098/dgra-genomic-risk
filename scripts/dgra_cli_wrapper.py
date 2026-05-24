@@ -169,6 +169,111 @@ _Analyzed via direct Python API (bypassed batch CLI for performance)._
         }
 
 
+def _run_gpa_vcf_direct(
+    input_path: Path,
+    tissue: str = "general",
+    user_phenotypes: Optional[str] = None,
+    offline: bool = False,
+    somatic: bool = False,
+    target_population: Optional[str] = None,
+    multi_organ: Optional[List[str]] = None,
+    force_sync: bool = False,
+    evidence_detail: str = "brief",
+    database_version: Optional[str] = None,
+    config_path: Optional[Path] = None,
+    filter_preset: Optional[str] = None,
+    auto_batch: bool = True,
+    batch_size: int = 500,
+    timeout_per_batch: int = 300,
+    max_batch_retries: int = 0,
+    spliceai_enabled: bool = False,
+    spliceai_concurrency: int = 5,
+    disease_description: Optional[str] = None,
+    annotator: str = "auto",
+    vep_cache: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Pass raw VCF directly to dgra_core.py which handles VEP annotation."""
+    import tempfile, subprocess, json as _json
+    with tempfile.TemporaryDirectory(prefix="dgra_vcf_direct_") as tmpdir:
+        tmp = Path(tmpdir)
+        json_out = tmp / "results.json"
+        md_out = tmp / "report.md"
+
+        cmd = [
+            sys.executable,
+            str(GPA_CORE),
+            "--input", str(input_path),
+            "--output", str(md_out),
+            "--json", str(json_out),
+        ]
+        if multi_organ:
+            cmd.extend(["--multi-organ", ",".join(multi_organ)])
+        else:
+            cmd.extend(["--tissue", tissue])
+        if offline:
+            cmd.append("--offline")
+        if somatic:
+            cmd.append("--somatic")
+        if force_sync:
+            cmd.append("--sync-gene-lists")
+        if target_population:
+            cmd.extend(["--target-population", target_population])
+        if evidence_detail:
+            cmd.extend(["--evidence-detail", evidence_detail])
+        if database_version:
+            cmd.extend(["--database-version", database_version])
+        if user_phenotypes:
+            cmd.extend(["--phenotypes", user_phenotypes])
+        if filter_preset:
+            cmd.extend(["--filter-preset", filter_preset])
+        if config_path:
+            cmd.extend(["--config", str(config_path)])
+        if spliceai_enabled:
+            cmd.append("--spliceai")
+            cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
+        if disease_description:
+            cmd.extend(["--disease-description", disease_description])
+        if annotator and annotator != "auto":
+            cmd.extend(["--annotator", annotator])
+        if vep_cache:
+            cmd.extend(["--vep-cache", vep_cache])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_per_batch,
+                cwd=str(SCRIPT_DIR),
+            )
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": f"VCF analysis timed out after {timeout_per_batch}s"}
+        except Exception as e:
+            return {"success": False, "error": f"Subprocess failed: {e}"}
+
+        if result.returncode != 0:
+            return {
+                "success": False,
+                "error": f"dgra_core.py exited with code {result.returncode}",
+                "stderr": result.stderr,
+                "stdout": result.stdout,
+            }
+
+        try:
+            with open(json_out, "r", encoding="utf-8") as f:
+                results = _json.load(f)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to parse JSON output: {e}"}
+
+        try:
+            with open(md_out, "r", encoding="utf-8") as f:
+                report_md = f.read()
+        except Exception:
+            report_md = ""
+
+        return {"success": True, "results": results, "report_md": report_md}
+
+
 def run_gpa_from_file(
     input_path: Path,
     tissue: str = "general",
@@ -208,6 +313,35 @@ def run_gpa_from_file(
     v0.5 P2-3: Supports config_path for YAML config file.
     v0.9.0: Supports raw VCF annotation with disease-aware transcript selection.
     """
+    # v0.9.0 fix: When input is a raw VCF, pass it directly to dgra_core.py
+    # instead of converting to TSV — the core module has its own VCF annotation
+    # pipeline that handles VEP API + transcript selection.
+    is_vcf = str(input_path).lower().endswith(('.vcf', '.vcf.gz', '.bcf'))
+    if is_vcf:
+        return _run_gpa_vcf_direct(
+            input_path=input_path,
+            tissue=tissue,
+            user_phenotypes=user_phenotypes,
+            offline=offline,
+            somatic=somatic,
+            target_population=target_population,
+            multi_organ=multi_organ,
+            force_sync=force_sync,
+            evidence_detail=evidence_detail,
+            database_version=database_version,
+            config_path=config_path,
+            filter_preset=filter_preset,
+            auto_batch=auto_batch,
+            batch_size=batch_size,
+            timeout_per_batch=timeout_per_batch,
+            max_batch_retries=max_batch_retries,
+            spliceai_enabled=spliceai_enabled,
+            spliceai_concurrency=spliceai_concurrency,
+            disease_description=disease_description,
+            annotator=annotator,
+            vep_cache=vep_cache,
+        )
+
     try:
         variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
     except Exception as e:
@@ -408,6 +542,13 @@ def run_gpa(
         if spliceai_enabled:
             cmd.append("--spliceai")
             cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
+        # v0.9.0: VCF annotation + disease-aware transcript selection
+        if disease_description:
+            cmd.extend(["--disease-description", disease_description])
+        if annotator and annotator != "auto":
+            cmd.extend(["--annotator", annotator])
+        if vep_cache:
+            cmd.extend(["--vep-cache", vep_cache])
 
         # 执行
         try:
@@ -599,6 +740,10 @@ def main():
             # v0.8.0: SpliceAI
             spliceai_enabled=args.spliceai,
             spliceai_concurrency=args.spliceai_concurrency,
+            # v0.9.0: VCF annotation + disease-aware transcript selection
+            disease_description=args.disease_description,
+            annotator=args.annotator,
+            vep_cache=args.vep_cache,
         )
     elif args.free_text:
         try:

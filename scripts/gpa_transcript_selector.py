@@ -304,7 +304,7 @@ class TranscriptSelector:
 
         try:
             timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
                 async with session.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={

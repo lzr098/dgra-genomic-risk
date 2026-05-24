@@ -110,7 +110,7 @@ class PhenotypeMatcher:
 
         try:
             import aiohttp
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=False) as session:
                 async with session.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={

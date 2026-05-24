@@ -514,7 +514,7 @@ def apply_myvariant_results(
 
 async def _test_myvariant():
     """Self-test with a known common variant."""
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=False) as session:
         # Known variant: chr1:218631822 G>A (common in AFR)
         result = await query_myvariant_single("chr1", 218631822, "G", "A", session)
         print(f"Single query test:")

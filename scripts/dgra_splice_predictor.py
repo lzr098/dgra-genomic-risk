@@ -178,7 +178,7 @@ class SpliceAIPredictor:
             for attempt, delay in enumerate(backoff + [None]):
                 try:
                     timeout = aiohttp.ClientTimeout(total=self.timeout)
-                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
                         async with session.get(base_url, params=params) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
