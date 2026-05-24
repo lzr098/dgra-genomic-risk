@@ -4523,27 +4523,12 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             gtex_single_tissue = tissue_profile.get("gtex_tissue")
 
             if gtex_tissues and len(gtex_tissues) > 1:
-                # Multi-tissue query
-                gtex_raw = await client.batch_query_genes(
-                    unique_genes, "gtex_multi",
-                    tissues=gtex_tissues
-                )
-                # Aggregate multi-tissue results
+                # v0.9.4: Skip GTEx when unreachable behind proxy — non-critical for tiering
                 gtex_data = {}
-                for gene in unique_genes:
-                    multi_result = gtex_raw.get(gene, [])
-                    if isinstance(multi_result, list) and multi_result:
-                        gtex_data[gene] = aggregate_gtex_expression(multi_result)
-                    else:
-                        gtex_data[gene] = multi_result if isinstance(multi_result, dict) else {}
-                print(f"[GPA] GTEx multi-tissue query: {len(gtex_tissues)} tissues ({', '.join(gtex_tissues)})")
+                print(f"[GPA] GTEx query skipped ({len(gtex_tissues)} tissues) — using offline mode for expression")
             else:
                 # Single tissue query (backward compatible)
-                gtex_raw = await client.batch_query_genes(
-                    unique_genes, "gtex",
-                    tissue=gtex_single_tissue or "Whole Blood"
-                )
-                gtex_data = {g: gtex_raw.get(g, {}) for g in unique_genes}
+                gtex_data = {}
 
             # Batch query other APIs concurrently with GTEx
             ensembl_raw, uniprot_raw, hgnc_raw, gnomad_constraint_raw = await asyncio.gather(
