@@ -4568,11 +4568,11 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                 print(f"[GPA] MyVariant.info: batch querying {len(variants_needing_enrichment)} variants for gnomAD/ClinVar/CADD")
                 try:
                     from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
-                    mv_sem = asyncio.Semaphore(5)
-                    timeout_obj = aiohttp.ClientTimeout(total=120)
+                    mv_sem = asyncio.Semaphore(10)  # v0.9.4: increased from 5 for large VCFs
+                    timeout_obj = aiohttp.ClientTimeout(total=300)  # v0.9.4: increased from 120 for large batches
                     mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in variants_needing_enrichment]
                     async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as mv_session:
-                        mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem)
+                        mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
                     mv_stats = apply_myvariant_results(variants, mv_results)
                     print(f"[GPA] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, {mv_stats['clinvar_filled']} ClinVar, {mv_stats['cadd_filled']} CADD filled | {mv_stats['not_found']} not_found, {mv_stats['errors']} errors")
                 except Exception as e:
@@ -4652,14 +4652,14 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                     print(f"[GPA] MyVariant.info fallback: querying {len(_myvariant_fallback_variants)} variants not found in gnomAD GraphQL")
                     try:
                         from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
-                        mv_fb_sem = asyncio.Semaphore(5)
-                        mv_fb_timeout = aiohttp.ClientTimeout(total=60)
+                        mv_fb_sem = asyncio.Semaphore(10)
+                        mv_fb_timeout = aiohttp.ClientTimeout(total=120)
                         mv_fb_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in _myvariant_fallback_variants]
                         # Reset gnomad_af to None so apply_myvariant_results will fill it
                         for v in _myvariant_fallback_variants:
                             v.gnomad_af = None
                         async with aiohttp.ClientSession(timeout=mv_fb_timeout, trust_env=False) as mv_fb_session:
-                            mv_fb_results = await query_myvariant_batch(mv_fb_variants, mv_fb_session, semaphore=mv_fb_sem)
+                            mv_fb_results = await query_myvariant_batch(mv_fb_variants, mv_fb_session, semaphore=mv_fb_sem, batch_size=1000)
                         mv_fb_stats = apply_myvariant_results(_myvariant_fallback_variants, mv_fb_results)
                         n_myvariant_fallback = mv_fb_stats.get("gnomad_filled", 0)
                         # Restore gnomAD status context on variants that got MyVariant data
