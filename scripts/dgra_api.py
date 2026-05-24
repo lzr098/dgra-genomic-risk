@@ -973,8 +973,39 @@ class DGRAAPIClient:
         if result["data"] and result["http_status"] == 200:
             data = result["data"]
             variant_data = data.get("data", {}).get("variant", {})
-            
+
+            # === P0 FIX 2026-05-24: Check for GraphQL errors before declaring NOT_CAPTURED ===
+            # Distinguish "variant truly not in gnomAD" from "query failed (e.g., removed field)"
+            gql_errors = data.get("errors", [])
+            gql_error_msgs = []
+            if gql_errors:
+                gql_error_msgs = [e.get("message", str(e)) for e in gql_errors]
+                # Cache this failed result with very short TTL to avoid persistent false negatives
+                self.cache.set(
+                    api_name="gnomad",
+                    response_data={"error": "GraphQL error", "errors": gql_error_msgs},
+                    http_status=200,
+                    confidence="low",
+                    ttl_days=0.0035,  # ~5 minutes for query errors
+                    url=f"{self.config.apis['gnomad'].base_url}/",
+                    **{"queryVariant": variant_id, "dataset": dataset},
+                )
+
             if not variant_data:
+                if gql_error_msgs:
+                    return {
+                        "variant_id": variant_id,
+                        "af": None,
+                        "af_popmax": None,
+                        "af_populations": {},
+                        "status": "QUERY_ERROR",
+                        "source": "gnomad",
+                        "confidence": "low",
+                        "note": f"gnomAD GraphQL query returned errors: {'; '.join(gql_error_msgs[:3])}. "
+                                "Data may exist but query failed — fallback recommended.",
+                        "raw": data,
+                        "graphql_errors": gql_error_msgs,
+                    }
                 return {
                     "variant_id": variant_id,
                     "af": None,
@@ -983,7 +1014,7 @@ class DGRAAPIClient:
                     "status": "NOT_CAPTURED",
                     "source": "gnomad",
                     "confidence": "medium",
-                    "note": "Variant not in gnomAD dataset",
+                    "note": "Variant not in gnomAD dataset (no GraphQL errors — confirmed absent)",
                     "raw": data,
                 }
             
@@ -1176,11 +1207,25 @@ class DGRAAPIClient:
     # NCBI E-utilities (ClinVar, Gene)
     # =====================================================================
     
-    async def query_ncbi_clinvar(self, gene: str, hgvs: Optional[str] = None) -> Dict[str, Any]:
+    async def query_ncbi_clinvar(self, gene: str, hgvs: Optional[str] = None,
+                                  chrom: Optional[str] = None, pos: Optional[int] = None) -> Dict[str, Any]:
         """
         Query ClinVar via NCBI E-utilities for clinical significance.
         
+        v0.9.4 P0 FIX 2026-05-24: Added variant-level search via chromosomal position.
+        Previously gene-level search (`{gene}[Gene] AND ClinVar[Title]`) could only find
+        gene records, not specific variant records. Now supports:
+        1. Position-based search: `{chrom}[chr] AND {pos}[pos]` — finds exact variant
+        2. Gene + position: `{gene}[Gene] AND {chrom}[chr] AND {pos}[pos]`
+        3. Fallback to gene-level: `{gene}[Gene] AND ClinVar[Title]`
+        
         Uses esearch to find ClinVar records, then efetch for details.
+        
+        Args:
+            gene: Gene symbol
+            hgvs: HGVS notation (e.g., "NM_007294.4:c.68_69del")
+            chrom: Chromosome (e.g., "1", "chr1", "X")
+            pos: Genomic position (1-based)
         
         Returns:
         {
@@ -1192,34 +1237,60 @@ class DGRAAPIClient:
             "confidence": "medium",
         }
         """
-        # Step 1: esearch
-        search_term = f"{gene}[Gene] AND ClinVar[Title]"
+        # Step 1: esearch with variant-level search strategies
+        # Strategy priority: position-based > gene+position > gene+HGVS > gene-only
+        search_terms = []
+        
+        if chrom and pos:
+            # Strip "chr" prefix for NCBI queries
+            chrom_std = chrom.replace("chr", "").replace("CHR", "")
+            # Variant-level: position-based search (most specific)
+            search_terms.append(f"{chrom_std}[chr] AND {pos}[pos]")
+            # Gene + position combined
+            search_terms.append(f"{gene}[Gene] AND {chrom_std}[chr] AND {pos}[pos]")
+        
         if hgvs:
-            search_term += f" AND {hgvs}"
+            search_terms.append(f"{gene}[Gene] AND {hgvs}")
         
-        search_result = await self._request_with_retry(
-            api_name="clinvar_eutils",
-            endpoint="/esearch.fcgi",
-            params={
-                "db": "clinvar",
-                "term": search_term,
-                "retmode": "json",
-                "retmax": 5,
-            },
-        )
+        # Gene-level fallback (original behavior)
+        search_terms.append(f"{gene}[Gene] AND ClinVar[Title]")
         
-        if not (search_result["data"] and search_result["http_status"] == 200):
+        search_data = None
+        idlist = []
+        used_search = ""
+        
+        for search_term in search_terms:
+            search_result = await self._request_with_retry(
+                api_name="clinvar_eutils",
+                endpoint="/esearch.fcgi",
+                params={
+                    "db": "clinvar",
+                    "term": search_term,
+                    "retmode": "json",
+                    "retmax": 5,
+                },
+            )
+            
+            if not (search_result["data"] and search_result["http_status"] == 200):
+                continue
+            
+            search_data = search_result["data"]
+            idlist = search_data.get("esearchresult", {}).get("idlist", [])
+            used_search = search_term
+            
+            if idlist:
+                # Found results with this search strategy — stop here
+                break
+        
+        if not search_data or not (search_result.get("data") and search_result.get("http_status") == 200):
             return {
                 "gene": gene,
                 "clinvar_id": None,
                 "clinical_significance": None,
                 "source": "failed",
                 "confidence": "low",
-                "error": search_result.get("error"),
+                "error": search_result.get("error") if search_result else "All ClinVar search strategies failed",
             }
-        
-        search_data = search_result["data"]
-        idlist = search_data.get("esearchresult", {}).get("idlist", [])
         
         if not idlist:
             return {
@@ -1228,7 +1299,7 @@ class DGRAAPIClient:
                 "clinical_significance": None,
                 "source": "clinvar",
                 "confidence": "medium",
-                "note": "No ClinVar records found",
+                "note": f"No ClinVar records found (searched: {used_search})",
             }
         
         # Step 2: efetch first record
@@ -1444,6 +1515,182 @@ class DGRAAPIClient:
                 await asyncio.sleep(0.5)
         
         return results
+    
+    # =====================================================================
+    # v0.9.4 P2: Runtime API Health Check
+    # =====================================================================
+    
+    async def probe_api_health(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Probe all configured APIs with lightweight queries to verify availability.
+        
+        Returns dict mapping api_name → {status, latency_ms, error_msg, details}.
+        
+        Status values:
+        - "OK": API responded successfully within timeout
+        - "SLOW": API responded but exceeded latency threshold
+        - "ERROR": API returned error or timeout
+        - "SKIPPED": API not probed (offline mode or no probe query defined)
+        """
+        health = {}
+        
+        # Probe queries for each API (lightweight, fast, unlikely to be rate-limited)
+        PROBE_QUERIES = {
+            "ensembl": {
+                "method": "GET",
+                "endpoint": "/lookup/symbol/homo_sapiens/BRCA1?content-type=application/json",
+                "timeout": 10,
+                "latency_threshold_ms": 3000,
+            },
+            "uniprot": {
+                "method": "GET", 
+                "endpoint": "/uniprotkb/P04637?format=json&fields=accession,gene_names",
+                "timeout": 15,
+                "latency_threshold_ms": 5000,
+            },
+            "gtex": {
+                "method": "GET",
+                "endpoint": "/expression/medianGeneExpression",
+                "params": {
+                    "gencodeId": "ENSG00000012048.23",
+                    "datasetId": "gtex_v8",
+                    "tissueSiteDetailIds": "Whole_Blood",
+                    "format": "json",
+                },
+                "timeout": 15,
+                "latency_threshold_ms": 5000,
+            },
+            "gnomad": {
+                "method": "POST",
+                "endpoint": "/",
+                "json_body": {
+                    "query": "query { gene(gene_symbol: \"BRCA1\", reference_genome: GRCh38) { gene_id } }",
+                    "variables": {},
+                },
+                "timeout": 10,
+                "latency_threshold_ms": 3000,
+            },
+            "ncbi_eutils": {
+                "method": "GET",
+                "endpoint": "/esearch.fcgi?db=gene&term=BRCA1[Gene]&retmax=1&retmode=json",
+                "timeout": 10,
+                "latency_threshold_ms": 3000,
+            },
+            "hgnc": {
+                "method": "GET",
+                "endpoint": "/search/symbol/BRCA1",
+                "timeout": 10,
+                "latency_threshold_ms": 2000,
+            },
+        }
+        
+        for api_name, probe in PROBE_QUERIES.items():
+            if api_name not in self.config.apis:
+                health[api_name] = {"status": "SKIPPED", "reason": "API not configured"}
+                continue
+            
+            cfg = self.config.apis[api_name]
+            url = f"{cfg.base_url}/{probe['endpoint'].lstrip('/')}"
+            timeout = probe.get("timeout", 10)
+            latency_threshold = probe.get("latency_threshold_ms", 3000)
+            
+            try:
+                await self._rate_limit(api_name)
+                start = time.time()
+                
+                async with self._session.request(
+                    method=probe["method"],
+                    url=url,
+                    params=probe.get("params"),
+                    json=probe.get("json_body"),
+                    proxy=None if cfg.proxy == "__DIRECT__" else cfg.proxy,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as resp:
+                    elapsed_ms = (time.time() - start) * 1000
+                    status = resp.status
+                    
+                    if status == 200:
+                        rating = "OK" if elapsed_ms < latency_threshold else "SLOW"
+                        health[api_name] = {
+                            "status": rating,
+                            "latency_ms": round(elapsed_ms, 1),
+                            "http_status": status,
+                            "details": f"Responded in {elapsed_ms:.0f}ms",
+                        }
+                    elif status == 429:
+                        health[api_name] = {
+                            "status": "ERROR",
+                            "latency_ms": round(elapsed_ms, 1),
+                            "http_status": 429,
+                            "error_msg": "Rate limited (429) — API may be overloaded",
+                            "details": "Consider reducing rate_limit_per_sec or adding delays",
+                        }
+                    else:
+                        health[api_name] = {
+                            "status": "ERROR",
+                            "latency_ms": round(elapsed_ms, 1),
+                            "http_status": status,
+                            "error_msg": f"HTTP {status}",
+                            "details": "Unexpected response status",
+                        }
+                        
+            except asyncio.TimeoutError:
+                health[api_name] = {
+                    "status": "ERROR",
+                    "latency_ms": timeout * 1000,
+                    "http_status": None,
+                    "error_msg": f"Timeout after {timeout}s",
+                    "details": "API may be unreachable or too slow",
+                }
+            except aiohttp.ClientError as e:
+                health[api_name] = {
+                    "status": "ERROR",
+                    "latency_ms": 0,
+                    "http_status": None,
+                    "error_msg": f"Connection error: {str(e)[:100]}",
+                    "details": "Network or DNS issue — check connectivity and proxy settings",
+                }
+            except Exception as e:
+                health[api_name] = {
+                    "status": "ERROR",
+                    "latency_ms": 0,
+                    "http_status": None,
+                    "error_msg": f"Unexpected: {type(e).__name__}: {str(e)[:100]}",
+                    "details": "Unknown error during health check",
+                }
+        
+        return health
+    
+    @staticmethod
+    def format_health_report(health: Dict[str, Dict[str, Any]]) -> str:
+        """Format health check results into a human-readable report."""
+        lines = ["=== GPA API Health Check ===\n"]
+        
+        ok_count = 0
+        slow_count = 0
+        error_count = 0
+        
+        for api_name, result in sorted(health.items()):
+            status = result.get("status", "UNKNOWN")
+            latency = result.get("latency_ms", 0)
+            
+            if status == "OK":
+                icon = "✅"
+                ok_count += 1
+            elif status == "SLOW":
+                icon = "⚠️"
+                slow_count += 1
+            elif status == "ERROR":
+                icon = "❌"
+                error_count += 1
+            else:
+                icon = "⏭️"
+            
+            detail = result.get("error_msg") or result.get("details", "")
+            lines.append(f"  {icon} {api_name:12s} {status:6s} ({latency:.0f}ms)  {detail}")
+        
+        lines.append(f"\n  Summary: {ok_count} OK, {slow_count} SLOW, {error_count} ERROR\n")
+        return "\n".join(lines)
 
 
 # =============================================================================

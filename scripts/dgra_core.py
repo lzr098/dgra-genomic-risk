@@ -2070,6 +2070,69 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
 
             return 1, f"Known AML driver {gene} with {variant.consequence} - core somatic driver", actions
 
+    # =====================================================================
+    # v0.9.4 P0 FIX 2026-05-24: Population frequency guard — EAS AF > 50% auto-Tier 3
+    # Prevents false Tier 1 calls for common polymorphisms (e.g., MAD2L2 rs2233004
+    # with EAS AF=93.5%, OR2B11 p.Phe8SerfsTer2 with AF=48%).
+    # 
+    # Applied BEFORE Tier 1 checks. A variant with population frequency >50% in
+    # the target population (default: EAS) is extremely unlikely to be pathogenic.
+    # 
+    # Exceptions:
+    # - Autosomal recessive carrier screening: homozygous common LOF in AR genes
+    #   may still be relevant if ClinVar pathogenic AND rare disease gene
+    # - Pharmacogenomic variants: common PGx alleles are not pathogenic but clinically
+    #   actionable (handled by separate PGx module)
+    # =====================================================================
+    _EAS_COMMON_AF_THRESHOLD = 0.50   # EAS AF > 50% → Tier 3
+    _GLOBAL_COMMON_AF_THRESHOLD = 0.80  # Global AF > 80% → Tier 3 regardless of population
+    
+    gnomad_af = gnomad_info.get("af")
+    gnomad_af_populations = gnomad_info.get("af_populations", {})
+    
+    # Check EAS population frequency first (most relevant for Chinese/Asian cohorts)
+    eas_af = None
+    if gnomad_af_populations:
+        for pop_code in ("EAS", "eas"):
+            if pop_code in gnomad_af_populations:
+                eas_af = gnomad_af_populations[pop_code].get("af")
+                break
+    
+    # Determine if this is a common polymorphism that should be auto-Tier 3
+    force_tier3_frequency = False
+    frequency_override_reason = ""
+    
+    if eas_af is not None and eas_af > _EAS_COMMON_AF_THRESHOLD:
+        force_tier3_frequency = True
+        frequency_override_reason = (
+            f"EAS population frequency {eas_af:.1%} > {_EAS_COMMON_AF_THRESHOLD:.0%} threshold "
+            f"— extremely common in Asian populations, cannot be pathogenic"
+        )
+    elif gnomad_af is not None and gnomad_af > _GLOBAL_COMMON_AF_THRESHOLD:
+        # Global AF > 80% but EAS may not be available
+        force_tier3_frequency = True
+        frequency_override_reason = (
+            f"Global AF {gnomad_af:.1%} > {_GLOBAL_COMMON_AF_THRESHOLD:.0%} — "
+            f"near-fixation variant, cannot be pathogenic"
+        )
+    
+    if force_tier3_frequency:
+        _add_evidence("Frequency", frequency_override_reason,
+                     weight=-1.0, confidence="high",
+                     raw_data={"gnomad_af": gnomad_af, "eas_af": eas_af,
+                              "gnomad_status": gnomad_info.get("status")})
+        actions.append(f"⚠️ {frequency_override_reason}")
+        actions.append("Auto Tier 3 — population frequency incompatible with monogenic disease")
+        # Clear any pre-existing ClinVar pathogenic evidence since it's overridden by frequency
+        if _clinvar_pathogenic(variant.clinvar):
+            actions.append(f"ClinVar pathogenic call ({variant.clinvar}) overridden by population frequency")
+        variant.evidence_chain = evidence_chain
+        upgrade_conditions = []  # Tier 3: no upgrade
+        variant.upgrade_conditions = upgrade_conditions
+        variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+        variant.qc_flags.append("POPULATION_FREQUENCY_OVERRIDE")
+        return 3, f"Auto Tier 3: {frequency_override_reason}", actions
+
     # Priority 1: Tier 1 checks (germline disease risk logic)
     # 1a. Known high-risk special gene lists with pathogenic variant
     for list_name, gene_list in special_lists.items():
@@ -4496,24 +4559,42 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                 n_success = 0
                 n_failed = 0
                 n_not_captured = 0
+                n_query_error = 0
+                n_myvariant_fallback = 0
+                
+                # v0.9.4 P1: Collect NOT_CAPTURED/QUERY_ERROR variants for MyVariant single-query fallback
+                _myvariant_fallback_variants = []
+                
                 for v, result in zip(variants_without_af, gnomad_results):
                     # v0.9.1: "failed" source added — API returned but variant not found (not a network error).
                     # Without this, all "Variant not found" GraphQL responses trigger gnomad_af_warning.
                     # Also preserves v0.9.1 status-based tracking (SUCCESS/NOT_CAPTURED/API_FAILED).
                     if result and result.get("source") in ("gnomad", "cache", "failed"):
                         af = result.get("af")
+                        gnomad_status = result.get("status", "NOT_CAPTURED")
                         if af is not None:
                             v.gnomad_af = af
                             v.gnomad_populations = result.get("af_populations", {})
                             v.gnomad_status = "SUCCESS"
                             n_success += 1
                             print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
+                        elif gnomad_status == "QUERY_ERROR":
+                            # v0.9.4 P1: GraphQL error — NOT the same as NOT_CAPTURED
+                            v.gnomad_status = "QUERY_ERROR"
+                            v.gnomad_error_msg = result.get("note", "gnomAD GraphQL query error")
+                            v.gnomad_af_warning = True
+                            v.gnomad_populations = result.get("af_populations", {})
+                            n_query_error += 1
+                            _myvariant_fallback_variants.append(v)
+                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} QUERY_ERROR → will try MyVariant fallback")
                         else:
                             # API returned but variant not captured in gnomAD dataset
                             v.gnomad_populations = {}
                             v.gnomad_status = result.get("status", "NOT_CAPTURED")
                             n_not_captured += 1
-                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} NOT_CAPTURED")
+                            # v0.9.4 P1: Try MyVariant fallback for NOT_CAPTURED too
+                            _myvariant_fallback_variants.append(v)
+                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} NOT_CAPTURED → will try MyVariant fallback")
                     elif result and result.get("status") == "API_FAILED":
                         v.gnomad_status = "API_FAILED"
                         v.gnomad_error_msg = result.get("error", "unknown")
@@ -4521,7 +4602,33 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                         v.gnomad_populations = {}
                         n_failed += 1
                         print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} API_FAILED ({v.gnomad_error_msg})")
-                print(f"[GPA] gnomAD results: {n_success} success, {n_not_captured} not in dataset, {n_failed} API failures")
+                
+                # v0.9.4 P1: MyVariant.info single-variant fallback for NOT_CAPTURED/QUERY_ERROR
+                if _myvariant_fallback_variants:
+                    print(f"[GPA] MyVariant.info fallback: querying {len(_myvariant_fallback_variants)} variants not found in gnomAD GraphQL")
+                    try:
+                        from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
+                        mv_fb_sem = asyncio.Semaphore(5)
+                        mv_fb_timeout = aiohttp.ClientTimeout(total=60)
+                        mv_fb_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in _myvariant_fallback_variants]
+                        # Reset gnomad_af to None so apply_myvariant_results will fill it
+                        for v in _myvariant_fallback_variants:
+                            v.gnomad_af = None
+                        async with aiohttp.ClientSession(timeout=mv_fb_timeout) as mv_fb_session:
+                            mv_fb_results = await query_myvariant_batch(mv_fb_variants, mv_fb_session, semaphore=mv_fb_sem)
+                        mv_fb_stats = apply_myvariant_results(_myvariant_fallback_variants, mv_fb_results)
+                        n_myvariant_fallback = mv_fb_stats.get("gnomad_filled", 0)
+                        # Restore gnomAD status context on variants that got MyVariant data
+                        for v in _myvariant_fallback_variants:
+                            if v.gnomad_af is not None:
+                                # MyVariant had data — upgrade status
+                                v.gnomad_status = "MYVARIANT_FALLBACK"
+                                v.gnomad_af_warning = False
+                        print(f"[GPA] MyVariant.info fallback: {n_myvariant_fallback} variants filled with gnomAD data")
+                    except Exception as e:
+                        print(f"[GPA] MyVariant.info fallback failed (non-critical): {type(e).__name__}: {e}")
+                
+                print(f"[GPA] gnomAD results: {n_success} success, {n_not_captured} not in dataset, {n_query_error} query errors, {n_failed} API failures | {n_myvariant_fallback} recovered via MyVariant fallback")
         print(f"[GPA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
         # Persist successful API results for future offline use
         for gene in unique_genes:

@@ -235,6 +235,63 @@ class DGRACache:
             conn.execute("DELETE FROM cache_stats")
             conn.commit()
     
+    def invalidate(self, api_name: str, **params) -> bool:
+        """
+        v0.9.4 P2: Invalidate (delete) a specific cache entry.
+        
+        Used when API returns error data that should not persist (e.g., GraphQL errors
+        that will be fixed upstream). Returns True if entry was found and deleted.
+        
+        Args:
+            api_name: Which API
+            **params: Same params passed to set() for key construction
+        """
+        cache_key = self._make_key(api_name, **params)
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM api_cache WHERE cache_key = ?",
+                (cache_key,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def set_short_ttl(self, api_name: str, response_data: Any,
+                       ttl_minutes: int = 5, **params) -> None:
+        """
+        v0.9.4 P2: Set cache with very short TTL (in minutes).
+        
+        Convenience wrapper for error/uncertain results that should expire quickly.
+        
+        Args:
+            api_name: Which API
+            response_data: Data to cache
+            ttl_minutes: Time to live in minutes (default 5)
+            **params: Query params for key construction
+        """
+        ttl_days = ttl_minutes / (24 * 60)
+        self.set(api_name, response_data, ttl_days=ttl_days, **params)
+    
+    def invalidate_pattern(self, api_name: str, pattern: str = "%") -> int:
+        """
+        v0.9.4 P2: Invalidate all cache entries for an API matching a key pattern.
+        
+        Useful for bulk cache cleanup, e.g., after fixing a query bug.
+        
+        Args:
+            api_name: Which API
+            pattern: SQL LIKE pattern for cache_key (default "%" = all)
+            
+        Returns:
+            Number of entries deleted
+        """
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM api_cache WHERE api_name = ? AND cache_key LIKE ?",
+                (api_name, pattern)
+            )
+            conn.commit()
+            return cursor.rowcount
+    
     def warm_cache(self, api_name: str, entries: List[Dict[str, Any]], ttl_days: int = 30) -> int:
         """
         Bulk-load pre-computed entries into cache (for offline mode or seeding).
