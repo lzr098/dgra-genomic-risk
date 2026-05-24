@@ -26,13 +26,15 @@ def main():
         ("L1 Static", "test_l1_static.py"),
         ("L2 Unit", "test_l2_unit.py"),
         ("L3 Integration", "test_l3_integration.py"),
+        ("L4 Performance", "test_l4_performance.py"),
+        ("L5 Edge/Boundary", "test_l5_edge.py"),
     ]
 
     total_passed = 0
     total_failed = 0
 
     print("=" * 70)
-    print("GPA v0.9.4 Test Suite — L1 / L2 / L3")
+    print("GPA v0.9.4 Test Suite — L1 / L2 / L3 / L4 / L5")
     print("=" * 70)
 
     for name, filename in modules:
