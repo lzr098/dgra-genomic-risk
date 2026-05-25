@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GPA Transcript Selector Module (v0.9.0)
+GPA Transcript Selector Module (v0.10.0)
 
 Disease-aware transcript selection for genes with multiple isoforms.
 1. Rule-based scoring (canonical, MANE, tissue expression, impact)
@@ -145,8 +145,11 @@ class TranscriptSelector:
                 loop = asyncio.get_running_loop()
                 # We're in an async context — cannot use asyncio.run
                 # Return without LLM selection; caller should use aselect()
-                logging.warning("TranscriptSelector.select() called from async context. "
-                              "LLM-assisted selection skipped. Use await aselect() for full support.")
+                logging.warning(
+                    "TranscriptSelector.select() called from async context. "
+                    "LLM-assisted selection skipped. "
+                    "Use 'await selector.aselect(gene, transcripts)' for full LLM support in async contexts."
+                )
                 llm_choice = None
             except RuntimeError:
                 # No running loop — safe to use asyncio.run
@@ -165,6 +168,83 @@ class TranscriptSelector:
                         selection_reason=f"LLM selected based on disease description '{self.disease_description[:50]}...' "
                                          f"(ambiguous: top scores {top_score} vs {second_score})",
                     )
+
+        # Step 4: Use rule-based top choice
+        primary = scored[0]["tx"]
+        alternatives = [s["tx"] for s in scored[1:]]
+        method = (
+            "ambiguous" if is_ambiguous else
+            ("tissue_expression" if any("tissue" in r for r in scored[0]["reasons"]) else "canonical")
+        )
+        return TranscriptSelectionResult(
+            primary=primary,
+            alternatives=alternatives,
+            is_ambiguous=is_ambiguous,
+            method=method,
+            selection_reason="; ".join(scored[0]["reasons"]),
+        )
+
+    async def aselect(
+        self,
+        gene: str,
+        transcripts: List[Dict[str, Any]],
+    ) -> TranscriptSelectionResult:
+        """Async version of select() with full LLM-assisted support.
+
+        Use this when calling from an async context (e.g., within the dgra pipeline).
+        Unlike select(), this method can await LLM-assisted selection without
+        triggering RuntimeError from nested asyncio.run().
+        """
+        if not transcripts:
+            return TranscriptSelectionResult(
+                primary={},
+                alternatives=[],
+                is_ambiguous=False,
+                method="none",
+                selection_reason="No transcript consequences available",
+            )
+
+        if len(transcripts) == 1:
+            tx = transcripts[0]
+            return TranscriptSelectionResult(
+                primary=tx,
+                alternatives=[],
+                is_ambiguous=False,
+                method="canonical" if tx.get("canonical") else "single",
+                selection_reason="Only one transcript available",
+            )
+
+        # Step 1: Rule-based scoring
+        scored = []
+        for tx in transcripts:
+            score, reasons = self._score_transcript(tx, gene)
+            scored.append({"tx": tx, "score": score, "reasons": reasons})
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+
+        # Step 2: Ambiguity detection
+        top_score = scored[0]["score"]
+        second_score = scored[1]["score"] if len(scored) > 1 else 0
+        is_ambiguous = (top_score - second_score) < self.ambiguity_threshold
+
+        # Step 3: LLM assist if ambiguous and disease description provided
+        if is_ambiguous and self.disease_description and self.llm_api_key:
+            top_candidates = [
+                s["tx"] for s in scored
+                if top_score - s["score"] < self.ambiguity_threshold
+            ][:3]
+            llm_choice = await self._llm_assist_select(gene, top_candidates)
+            if llm_choice:
+                primary = llm_choice
+                alternatives = [s["tx"] for s in scored if s["tx"] != primary]
+                return TranscriptSelectionResult(
+                    primary=primary,
+                    alternatives=alternatives,
+                    is_ambiguous=True,
+                    method="llm_disease_match",
+                    selection_reason=f"LLM selected based on disease description '{self.disease_description[:50]}...' "
+                                     f"(ambiguous: top scores {top_score} vs {second_score})",
+                )
 
         # Step 4: Use rule-based top choice
         primary = scored[0]["tx"]

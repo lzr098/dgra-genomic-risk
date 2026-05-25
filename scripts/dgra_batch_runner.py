@@ -138,61 +138,65 @@ def run_batch(
         }
 
 
+def _variant_signature(v: Dict[str, Any]) -> str:
+    """Generate unique signature for a variant dict (handles both upper/lower case keys)."""
+    chrom = str(v.get("chrom", v.get("CHROM", "")))
+    pos = str(v.get("pos", v.get("POS", "")))
+    ref = str(v.get("ref", v.get("REF", "")))
+    alt = str(v.get("alt", v.get("ALT", "")))
+    return f"{chrom}:{pos}:{ref}>{alt}"
+
+
 def merge_batch_results(batch_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge multiple batch results into a single report."""
-    
-    # Collect all variants by tier
-    tier1_all = []
-    tier2_all = []
-    tier3_all = []
+    """Merge multiple batch results into a single report.
+
+    Deduplication strategy:
+    - Same variant appearing in different tiers -> keep highest tier (tier1 > tier2 > tier3)
+    - Same variant in same tier -> keep first occurrence
+    - O(n) complexity using a single dict lookup
+    """
+    tier_priority = {"tier1": 3, "tier2": 2, "tier3": 1}
+
+    all_variants: Dict[str, Dict[str, Any]] = {}  # sig -> {"variant": v, "tier": str}
     all_meta = []
-    total_time = 0
+    total_time = 0.0
     total_variants = 0
-    
-    # Track gene-variant mapping for multi-hit recalculation
-    gene_variants = {}  # gene -> set of variant signatures
-    
+    gene_variants: Dict[str, set] = {}
+
     for br in batch_results:
         if not br.get("success"):
             continue
         results = br["results"]
         total_variants += br.get("variant_count", 0)
         total_time += br.get("elapsed_seconds", 0)
-        
-        # Track meta
+
         if "meta" in results:
             all_meta.append(results["meta"])
-        
-        # Collect variants
-        for v in results.get("tier1_variants", []):
-            sig = f"{v.get('chrom', v.get('CHROM', ''))}:{v.get('pos', v.get('POS', ''))}:{v.get('ref', v.get('REF', ''))}>{v.get('alt', v.get('ALT', ''))}"
-            if sig not in {f"{x.get('chrom', x.get('CHROM', ''))}:{x.get('pos', x.get('POS', ''))}:{x.get('ref', x.get('REF', ''))}>{x.get('alt', x.get('ALT', ''))}" for x in tier1_all}:
-                tier1_all.append(v)
-            gene = v.get("gene", v.get("GENE", ""))
-            if gene:
-                gene_variants.setdefault(gene, set()).add(sig)
-                
-        for v in results.get("tier2_variants", []):
-            sig = f"{v.get('chrom', v.get('CHROM', ''))}:{v.get('pos', v.get('POS', ''))}:{v.get('ref', v.get('REF', ''))}>{v.get('alt', v.get('ALT', ''))}"
-            if sig not in {f"{x.get('chrom', x.get('CHROM', ''))}:{x.get('pos', x.get('POS', ''))}:{x.get('ref', x.get('REF', ''))}>{x.get('alt', x.get('ALT', ''))}" for x in tier1_all + tier2_all}:
-                tier2_all.append(v)
-            gene = v.get("gene", v.get("GENE", ""))
-            if gene:
-                gene_variants.setdefault(gene, set()).add(sig)
-                
-        for v in results.get("tier3_variants", []):
-            sig = f"{v.get('chrom', v.get('CHROM', ''))}:{v.get('pos', v.get('POS', ''))}:{v.get('ref', v.get('REF', ''))}>{v.get('alt', v.get('ALT', ''))}"
-            # Only include tier3 if not already in tier1/2
-            existing = {f"{x.get('chrom', x.get('CHROM', ''))}:{x.get('pos', x.get('POS', ''))}:{x.get('ref', x.get('REF', ''))}>{x.get('alt', x.get('ALT', ''))}" for x in tier1_all + tier2_all}
-            if sig not in existing:
-                tier3_all.append(v)
-            gene = v.get("gene", v.get("GENE", ""))
-            if gene:
-                gene_variants.setdefault(gene, set()).add(sig)
-    
+
+        for tier_name in ["tier1", "tier2", "tier3"]:
+            for v in results.get(f"{tier_name}_variants", []):
+                sig = _variant_signature(v)
+                gene = v.get("gene", v.get("GENE", ""))
+
+                if gene:
+                    gene_variants.setdefault(gene, set()).add(sig)
+
+                if sig not in all_variants:
+                    all_variants[sig] = {"variant": v, "tier": tier_name}
+                else:
+                    # Keep higher-priority tier
+                    current_tier = all_variants[sig]["tier"]
+                    if tier_priority[tier_name] > tier_priority[current_tier]:
+                        all_variants[sig] = {"variant": v, "tier": tier_name}
+
+    # Build tier lists
+    tier1_all = [item["variant"] for item in all_variants.values() if item["tier"] == "tier1"]
+    tier2_all = [item["variant"] for item in all_variants.values() if item["tier"] == "tier2"]
+    tier3_all = [item["variant"] for item in all_variants.values() if item["tier"] == "tier3"]
+
     # Recalculate multi-hit: genes with >=2 distinct variants
     multi_hit_genes = [g for g, sigs in gene_variants.items() if len(sigs) >= 2]
-    
+
     # Build merged result
     merged = {
         "success": True,
@@ -247,7 +251,7 @@ Multi-hit genes: {', '.join(sorted(multi_hit_genes)) if multi_hit_genes else 'No
     for br in batch_results
         ),
     }
-    
+
     return merged
 
 

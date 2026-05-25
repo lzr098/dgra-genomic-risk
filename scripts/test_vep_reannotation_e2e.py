@@ -23,16 +23,15 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 
 from dgra_core import (
     Variant,
-    DGRAConfig,
+    GPAConfig,
     correct_transcript_priority,
     map_variant_to_domain,
     assess_tissue_relevance,
     classify_gnomad_frequency,
-    classify_variant_tier,
     detect_multi_hit_genes,
-    generate_tier_report,
-    _format_vep_reannotation_note,
 )
+from gpa_report import generate_tier_report, _format_vep_reannotation_note
+from gpa_tier_classifier import classify_variant_tier
 
 
 async def test_crip2_vep_reannotation_e2e():
@@ -168,7 +167,7 @@ async def test_crip2_vep_reannotation_e2e():
     # ------------------------------------------------------------------
     tw_dict = json.loads(v.transcript_warning) if v.transcript_warning else None
     pw_dict = json.loads(v.pseudogene_warning) if v.pseudogene_warning else None
-    config = DGRAConfig(tissue_profile="hematopoietic")
+    config = GPAConfig(tissue_profile="hematopoietic")
 
     tier, reason, actions = classify_variant_tier(
         v, v.domain_info, tissue, gnomad_info,
@@ -197,7 +196,7 @@ async def test_crip2_vep_reannotation_e2e():
     # Generate a mini-report to ensure no exceptions
     report_md = generate_tier_report(
         [v], config, tissue_profile,
-        multi_hits=[], cross_check=[],
+        multi_hits=[],
     )
     assert "CRIP2" in report_md
     assert "⚠️ 后果已按 canonical transcript" in report_md

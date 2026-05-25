@@ -56,6 +56,10 @@ class DGRAGlobalConfig:
     
     # Tissue context profile name
     tissue_profile: str = "general"
+
+    # v0.9.5: Global proxy setting for aiohttp ClientSession
+    # None = use system proxy (trust_env=True), "__DIRECT__" = disable proxy (trust_env=False)
+    proxy: Optional[str] = None
     
     # v0.5 P1-7: Multi-organ assessment — evaluate multiple profiles simultaneously
     # Each profile runs independently; joint report takes max tier across profiles

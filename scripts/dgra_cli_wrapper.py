@@ -109,6 +109,13 @@ def _run_gpa_direct(
     config_path: Optional[Path] = None,
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    multi_organ: Optional[List[str]] = None,
+    database_version: Optional[str] = None,
+    # v0.10.0: Parameters previously only available via CLI subprocess
+    disease_description: Optional[str] = None,
+    annotator: str = "auto",
+    vep_cache: Optional[str] = None,
+    force_sync: bool = False,
 ) -> Dict[str, Any]:
     """Run GPA via direct Python API call - 5-10x faster than batch CLI.
 
@@ -120,7 +127,8 @@ def _run_gpa_direct(
     # Ensure dgra_core is importable
     sys.path.insert(0, str(SCRIPT_DIR))
     try:
-        from dgra_core import GPAConfig, run_dgra_pipeline
+        from dgra_core import GPAConfig
+        from gpa_pipeline import run_dgra_pipeline
     except ImportError as e:
         return {"success": False, "error": f"Failed to import dgra_core: {e}"}
 
@@ -131,6 +139,12 @@ def _run_gpa_direct(
         evidence_detail=evidence_detail,
         somatic_mode=somatic,
         spliceai_enabled=spliceai_enabled,
+        multi_organ_profiles=multi_organ,
+        database_version=database_version,
+        disease_description=disease_description,
+        annotator=annotator,
+        vep_cache=vep_cache,
+        force_sync=force_sync,
     )
 
     try:
@@ -439,6 +453,8 @@ def run_gpa(
             config_path=config_path,
             spliceai_enabled=spliceai_enabled,
             spliceai_concurrency=spliceai_concurrency,
+            multi_organ=multi_organ,
+            database_version=database_version,
         )
 
     # v0.7.1: Auto-batch for medium variant sets
@@ -490,113 +506,25 @@ def run_gpa(
                 "error": f"Invalid multi-organ profile(s): {', '.join(invalid)}. Valid: {', '.join(sorted(valid_tissues))}",
             }
 
-    # 创建临时文件
-    with tempfile.TemporaryDirectory(prefix="dgra_wrapper_") as tmpdir:
-        tmp = Path(tmpdir)
-        tsv_path = tmp / "variants.tsv"
-        json_out = tmp / "results.json"
-        md_out = tmp / "report.md"
-
-        # 写输入
-        try:
-            _write_tsv(variants, tsv_path)
-        except Exception as e:
-            return {"success": False, "error": f"Failed to write TSV: {e}"}
-
-        # 构造命令行
-        cmd = [
-            sys.executable,
-            str(GPA_CORE),
-            "--input", str(tsv_path),
-            "--output", str(md_out),
-            "--json", str(json_out),
-        ]
-        if multi_organ:
-            cmd.extend(["--multi-organ", ",".join(multi_organ)])
-        else:
-            cmd.extend(["--tissue", tissue])
-        if offline:
-            cmd.append("--offline")
-        if somatic:
-            cmd.append("--somatic")
-        if force_sync:
-            cmd.append("--sync-gene-lists")
-        if target_population:
-            cmd.extend(["--target-population", target_population])
-        if evidence_detail:
-            cmd.extend(["--evidence-detail", evidence_detail])
-        if database_version:
-            cmd.extend(["--database-version", database_version])
-        if user_phenotypes:
-            cmd.extend(["--phenotypes", user_phenotypes])
-        # v0.7.1: filter stats
-        if filter_stats:
-            import json as _json
-            cmd.extend(["--filter-stats", _json.dumps(filter_stats)])
-        if filter_preset:
-            cmd.extend(["--filter-preset", filter_preset])
-        # v0.5 P2-3: YAML config file
-        if config_path:
-            cmd.extend(["--config", str(config_path)])
-        # v0.8.0: SpliceAI
-        if spliceai_enabled:
-            cmd.append("--spliceai")
-            cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
-        # v0.9.0: VCF annotation + disease-aware transcript selection
-        if disease_description:
-            cmd.extend(["--disease-description", disease_description])
-        if annotator and annotator != "auto":
-            cmd.extend(["--annotator", annotator])
-        if vep_cache:
-            cmd.extend(["--vep-cache", vep_cache])
-
-        # 执行
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,  # 5 分钟上限
-                cwd=str(SCRIPT_DIR),
-            )
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "DGRA analysis timed out after 5 minutes"}
-        except Exception as e:
-            return {"success": False, "error": f"Subprocess failed: {e}"}
-
-        if result.returncode != 0:
-            return {
-                "success": False,
-                "error": f"dgra_core.py exited with code {result.returncode}",
-                "stderr": result.stderr,
-                "stdout": result.stdout,
-            }
-
-        # 解析输出
-        try:
-            with open(json_out, "r", encoding="utf-8") as f:
-                results = json.load(f)
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to parse JSON output: {e}",
-                "stdout": result.stdout,
-            }
-
-        try:
-            with open(md_out, "r", encoding="utf-8") as f:
-                report_md = f.read()
-        except Exception:
-            report_md = ""
-
-        return {
-            "success": True,
-            "results": results,
-            "report_md": report_md,
-            "json_report": results.get("json_report", {}),
-            "stdout": result.stdout,
-            "filter_stats": filter_stats_out,
-        }
+    # v0.10.0: Unified direct API call — eliminates subprocess overhead and CLI dual-path
+    return _run_gpa_direct(
+        variants=variants,
+        tissue=tissue,
+        user_phenotypes=user_phenotypes,
+        offline=offline,
+        somatic=somatic,
+        target_population=target_population,
+        evidence_detail=evidence_detail,
+        config_path=config_path,
+        spliceai_enabled=spliceai_enabled,
+        spliceai_concurrency=spliceai_concurrency,
+        multi_organ=multi_organ,
+        database_version=database_version,
+        disease_description=disease_description,
+        annotator=annotator,
+        vep_cache=vep_cache,
+        force_sync=force_sync,
+    )
 
 
 def main():

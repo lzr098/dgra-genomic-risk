@@ -353,3 +353,41 @@ def _translate_single_cn_header(cn_header: str) -> str:
 
     # Pass through — will be handled by dgra_adapters auto-detection
     return clean
+
+
+# =============================================================================
+# ANNOVAR Exonic Function Mapping (English → SO terms)
+# =============================================================================
+
+EXONIC_FUNC_MAP = {
+    "frameshift substitution": "frameshift_variant",
+    "frameshift deletion": "frameshift_variant",
+    "frameshift insertion": "frameshift_variant",
+    "nonframeshift substitution": "inframe_variant",
+    "nonframeshift deletion": "inframe_deletion",
+    "nonframeshift insertion": "inframe_insertion",
+    "nonsynonymous snv": "missense_variant",
+    "synonymous snv": "synonymous_variant",
+    "stopgain": "stop_gained",
+    "stoploss": "stop_lost",
+    "unknown": "",
+}
+
+# =============================================================================
+# ANNOVAR Exonic Function Mapping (Chinese → SO terms)
+# =============================================================================
+
+CN_EXONIC_FUNC_MAP = {
+    "移码变异": "frameshift_variant",
+    "错义变异": "missense_variant",
+    "非移码缺失": "inframe_deletion",
+    "非移码插入": "inframe_insertion",
+    "无义变异": "stop_gained",
+    "终止密码子获得": "stop_gained",
+    "剪接位点变异": "splice_variant",
+    "剪接受体位点变异": "splice_acceptor_variant",
+    "剪接供体位点变异": "splice_donor_variant",
+    "剪接区域变异": "splice_region_variant",
+    "同义变异": "synonymous_variant",
+    "未知": "unknown",
+}

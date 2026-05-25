@@ -20,6 +20,11 @@ from typing import List, Dict, Any, Optional
 # VEP CSQ column mapping (canonical order from VEP default output)
 # =============================================================================
 
+# v0.10.0 P2-3: Configurable VEP annotation field name.
+# Default "CSQ" works for standard VEP VCF output.
+# Use "ANN" for SnpEff or custom VEP --vcf_info_field values.
+VEP_ANNOTATION_FIELD: str = "CSQ"
+
 VEP_CSQ_FIELDS = [
     "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature",
     "Feature_type", "EXON", "INTRON", "HGVSc", "HGVSp", "cDNA_position",
@@ -263,7 +268,7 @@ class VCFParser(InputParser):
             # INFO/CSQ parsing
             csq_raw = None
             try:
-                csq_raw = record.INFO.get("CSQ")
+                csq_raw = record.INFO.get(VEP_ANNOTATION_FIELD)
             except Exception:
                 pass
 

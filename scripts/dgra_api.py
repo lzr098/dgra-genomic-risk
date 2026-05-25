@@ -52,10 +52,13 @@ class DGRAAPIClient:
         self._last_request_time: Dict[str, float] = {}  # api_name -> timestamp
     
     async def __aenter__(self):
+        # v0.9.5: Respect global proxy config. None → use system proxy (trust_env=True),
+        # "__DIRECT__" → disable proxy (trust_env=False).
+        trust_env = self.config.proxy != "__DIRECT__"
         self._session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=50, limit_per_host=20),
             timeout=aiohttp.ClientTimeout(total=120),
-            trust_env=False,  # v0.9.2 fix: disable env proxy (Clash/VPN) to avoid gnomAD 429
+            trust_env=trust_env,
         )
         return self
     

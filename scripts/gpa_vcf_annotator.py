@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GPA VCF Annotator Module (v0.9.0)
+GPA VCF Annotator Module (v0.10.0)
 
 Handles raw (unannotated) VCF input by:
 1. Detecting whether a VCF is already annotated (CSQ/INFO fields)
@@ -20,10 +20,13 @@ import logging
 import re
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
+
+from dgra_input_parsers import VEP_ANNOTATION_FIELD
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,10 @@ class VCFAnnotator:
         max_concurrency: int = 5,
         timeout: int = 30,
         vep_cache: Optional[str] = None,
+        proxy: Optional[str] = None,
+        vep_params: Optional[Dict[str, str]] = None,
+        shard_dir: Optional[str] = None,
+        resume: bool = False,
     ):
         """
         Args:
@@ -63,6 +70,12 @@ class VCFAnnotator:
             max_concurrency: max concurrent API requests
             timeout: request timeout in seconds
             vep_cache: path to local VEP cache (for vep_local)
+            proxy: None = use system proxy, "__DIRECT__" = disable proxy
+            vep_params: extra VEP API parameters merged with defaults,
+                e.g. {"check_existing": "1", "SIFT": "1", "PolyPhen": "1", "CADD": "1"}
+            shard_dir: directory for shard-based incremental annotation storage.
+                When set, VEP results are saved per-shard (1k variants each).
+            resume: when True and shard_dir is set, skip already-annotated shards.
         """
         self.annotator = annotator
         self.genome = genome
@@ -70,6 +83,10 @@ class VCFAnnotator:
         self.max_concurrency = max_concurrency
         self.timeout = timeout
         self.vep_cache = vep_cache
+        self.proxy = proxy
+        self.vep_params = vep_params or {}
+        self.shard_dir = shard_dir
+        self.resume = resume
         self._session: Optional[aiohttp.ClientSession] = None
 
     # ------------------------------------------------------------------
@@ -138,12 +155,12 @@ class VCFAnnotator:
     def is_annotated_vcf(self, vcf_path: str) -> bool:
         """Check if VCF already contains annotation (CSQ in INFO)."""
         path = Path(vcf_path)
-        opener = gzip.open if str(path).endswith(".gz") else open
+        opener = self._vcf_opener(path)
         try:
             with opener(path, "rt") as fh:
                 for line in fh:
                     if line.startswith("#"):
-                        if "CSQ" in line or "Consequence" in line:
+                        if VEP_ANNOTATION_FIELD in line or "Consequence" in line:
                             return True
                     else:
                         # Only scan first 50 non-header lines
@@ -158,7 +175,7 @@ class VCFAnnotator:
 
     def _detect_genome(self, vcf_path: Path) -> str:
         """Infer genome build from VCF header."""
-        opener = gzip.open if str(vcf_path).endswith(".gz") else open
+        opener = self._vcf_opener(vcf_path)
         with opener(vcf_path, "rt") as fh:
             for line in fh:
                 if not line.startswith("##"):
@@ -171,13 +188,24 @@ class VCFAnnotator:
         # Fallback: count variants on chrM length as heuristic (crude)
         return "GRCh38"
 
+    def _vcf_opener(self, vcf_path: Path):
+        """Return appropriate file opener based on actual file content, not just extension."""
+        try:
+            with open(vcf_path, "rb") as fh:
+                magic = fh.read(2)
+                if magic == b'\x1f\x8b':
+                    return gzip.open
+        except Exception:
+            pass
+        return open
+
     # ------------------------------------------------------------------
     # VCF parsing
     # ------------------------------------------------------------------
 
     def _parse_vcf(self, vcf_path: Path) -> List[Dict[str, Any]]:
         """Extract CHROM, POS, REF, ALT, QUAL, FILTER, DP, GT from VCF."""
-        opener = gzip.open if str(vcf_path).endswith(".gz") else open
+        opener = self._vcf_opener(vcf_path)
         variants: List[Dict[str, Any]] = []
         with opener(vcf_path, "rt") as fh:
             for line in fh:
@@ -290,6 +318,83 @@ class VCFAnnotator:
             return False
 
     # ------------------------------------------------------------------
+    # Shard-based incremental annotation (P1 fix: architecture + resume)
+    # ------------------------------------------------------------------
+
+    SHARD_SIZE = 1000  # variants per shard
+
+    def _shard_path(self, shard_idx: int) -> Path:
+        """Get path for a shard's annotation JSON file."""
+        return Path(self.shard_dir) / f"shard_{shard_idx:05d}.json"
+
+    def _index_path(self) -> Path:
+        """Get path for the missing-by-shard index file."""
+        return Path(self.shard_dir) / "missing_by_shard.json"
+
+    def _get_completed_shards(self) -> set:
+        """Return set of shard indices that already have complete annotation files."""
+        if not self.shard_dir:
+            return set()
+        index_path = self._index_path()
+        if not index_path.exists():
+            return set()
+        try:
+            with open(index_path, "r") as f:
+                missing = json.load(f)
+            total_shards = missing.get("total_shards", 0)
+            done = missing.get("completed_shards", [])
+            return set(done)
+        except Exception:
+            return set()
+
+    def _save_shard_atomic(self, shard_idx: int, data: list) -> None:
+        """Atomically write a shard annotation file (tmp → rename)."""
+        import os as _os
+        shard_path = self._shard_path(shard_idx)
+        tmp_path = Path(str(shard_path) + ".tmp")
+        with open(tmp_path, "w") as f:
+            json.dump(data, f, ensure_ascii=False)
+        _os.replace(str(tmp_path), str(shard_path))
+
+    def _mark_shard_complete(self, shard_idx: int) -> None:
+        """Update missing-by-shard index after completing a shard."""
+        index_path = self._index_path()
+        tmp_path = Path(str(index_path) + ".tmp")
+        try:
+            if index_path.exists():
+                with open(index_path, "r") as f:
+                    index = json.load(f)
+            else:
+                index = {}
+            completed = set(index.get("completed_shards", []))
+            completed.add(shard_idx)
+            index["completed_shards"] = sorted(completed)
+            index["updated_at"] = datetime.now().isoformat()
+            with open(tmp_path, "w") as f:
+                json.dump(index, f, ensure_ascii=False)
+            import os as _os
+            _os.replace(str(tmp_path), str(index_path))
+        except Exception:
+            pass
+
+    def _init_shard_dir(self, total_variants: int) -> None:
+        """Initialize shard directory with missing_by_shard.json."""
+        if not self.shard_dir:
+            return
+        Path(self.shard_dir).mkdir(parents=True, exist_ok=True)
+        total_shards = (total_variants + self.SHARD_SIZE - 1) // self.SHARD_SIZE
+        index_path = self._index_path()
+        if not index_path.exists() or not self.resume:
+            index = {
+                "total_shards": total_shards,
+                "shard_size": self.SHARD_SIZE,
+                "completed_shards": [],
+                "created_at": datetime.now().isoformat(),
+            }
+            with open(index_path, "w") as f:
+                json.dump(index, f, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
     # VEP API annotation
     # ------------------------------------------------------------------
 
@@ -303,8 +408,9 @@ class VCFAnnotator:
         if not self._session:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             connector = aiohttp.TCPConnector(force_close=True)
+            trust_env = self.proxy != "__DIRECT__"
             self._session = aiohttp.ClientSession(
-                connector=connector, timeout=timeout, trust_env=False
+                connector=connector, timeout=timeout, trust_env=trust_env
             )
 
         semaphore = asyncio.Semaphore(self.max_concurrency)
@@ -322,6 +428,8 @@ class VCFAnnotator:
                     ]
                 }
                 params = dict(VEP_DEFAULT_PARAMS)
+                # Merge user-specified VEP params (user overrides defaults)
+                params.update(self.vep_params)
                 if genome == "GRCh37":
                     params["refseq"] = "1"
 
@@ -401,7 +509,10 @@ class VCFAnnotator:
     def _parse_vep_response(
         data: List[Dict[str, Any]], batch: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Parse VEP REST API response into per-variant annotation dicts."""
+        """Parse VEP REST API response into per-variant annotation dicts.
+
+        Guarantees output length == len(batch) even if VEP returns fewer/more results.
+        """
         results = []
         # VEP returns one entry per input line
         for entry, v in zip(data, batch):
@@ -444,6 +555,17 @@ class VCFAnnotator:
                 "transcript_consequences": tx_list,
                 "vep_summary": summary,
             })
+
+        # v0.10.0 P2-2: VEP may return fewer results than input batch (filtered rows)
+        # Pad remaining slots with error-marked entries so caller gets exactly len(batch) items
+        missing = len(batch) - len(results)
+        if missing > 0:
+            for _ in range(missing):
+                results.append({
+                    "transcript_consequences": [],
+                    "vep_summary": {"error": "VEP response shorter than input batch"},
+                })
+
         return results
 
     # ------------------------------------------------------------------
@@ -529,7 +651,7 @@ class VCFAnnotator:
     ) -> List[Dict[str, Any]]:
         """Parse VEP-local output VCF (with CSQ in INFO)."""
         results = []
-        opener = gzip.open if out_path.endswith(".gz") else open
+        opener = self._vcf_opener(Path(out_path))
         with opener(out_path, "rt") as fh:
             for line in fh:
                 if line.startswith("#"):
@@ -538,8 +660,8 @@ class VCFAnnotator:
                 if len(parts) < 8:
                     continue
                 info = parts[7]
-                # Extract CSQ
-                csq_match = re.search(r"CSQ=([^;]+)", info)
+                # Extract VEP annotation field
+                csq_match = re.search(rf"{VEP_ANNOTATION_FIELD}=([^;]+)", info)
                 if not csq_match:
                     results.append({
                         "transcript_consequences": [],

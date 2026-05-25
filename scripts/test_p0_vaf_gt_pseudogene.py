@@ -12,12 +12,12 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from dgra_core import (
-    Variant, DGRAConfig,
+    Variant, GPAConfig,
     _run_qc_checks,
     detect_pseudogene_artifact,
     _load_pseudogene_database,
-    classify_variant_tier,
 )
+from gpa_tier_classifier import classify_variant_tier
 
 
 def test_vaf_gt_mismatch_heterozygous_low():
@@ -118,7 +118,7 @@ def test_tier_confidence_downgrade_vaf_gt_mismatch():
     
     tier, reason, actions = classify_variant_tier(
         v, domain_info, tissue, gnomad_info,
-        None, None, {"display_name": "test"}, DGRAConfig()
+        None, None, {"display_name": "test"}, GPAConfig()
     )
     assert v.tier_confidence == "LOW", f"Expected LOW confidence with VAF_GT_MISMATCH, got {v.tier_confidence}"
     print("[PASS] VAF_GT_MISMATCH → tier_confidence=LOW")
@@ -140,7 +140,7 @@ def test_tier_confidence_downgrade_pseudogene_interference():
     
     tier, reason, actions = classify_variant_tier(
         v, domain_info, tissue, gnomad_info,
-        None, pw, {"display_name": "test"}, DGRAConfig()
+        None, pw, {"display_name": "test"}, GPAConfig()
     )
     assert v.tier_confidence == "LOW", f"Expected LOW confidence with PSEUDOGENE_INTERFERENCE, got {v.tier_confidence}"
     print("[PASS] PSEUDOGENE_INTERFERENCE → tier_confidence=LOW")

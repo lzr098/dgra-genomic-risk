@@ -15,6 +15,8 @@ and returns a normalized dict with keys matching dgra_core REQUIRED_COLS.
 import re
 from typing import List, Dict, Any, Optional
 
+from gpa_i18n import EXONIC_FUNC_MAP, CN_EXONIC_FUNC_MAP
+
 # =============================================================================
 # DGRA canonical column set (must match dgra_core.py REQUIRED_COLS)
 # =============================================================================
@@ -196,20 +198,6 @@ class ANNOVARAdapter(AnnotationAdapter):
     }
 
     # ExonicFunc → Consequence mapping
-    EXONIC_FUNC_MAP = {
-        "frameshift substitution": "frameshift_variant",
-        "frameshift deletion": "frameshift_variant",
-        "frameshift insertion": "frameshift_variant",
-        "nonframeshift substitution": "inframe_variant",
-        "nonframeshift deletion": "inframe_deletion",
-        "nonframeshift insertion": "inframe_insertion",
-        "nonsynonymous snv": "missense_variant",
-        "synonymous snv": "synonymous_variant",
-        "stopgain": "stop_gained",
-        "stoploss": "stop_lost",
-        "unknown": "",
-    }
-
     @classmethod
     def supports_headers(cls, headers: List[str]) -> bool:
         score = 0
@@ -242,9 +230,9 @@ class ANNOVARAdapter(AnnotationAdapter):
         exonic_func = out.pop("_exonic_func", "")
         if exonic_func:
             # v0.8.0 P2: Support Chinese exonic function terms
-            consequence = self.EXONIC_FUNC_MAP.get(exonic_func.lower())
+            consequence = EXONIC_FUNC_MAP.get(exonic_func.lower())
             if not consequence:
-                consequence = self.CN_EXONIC_FUNC_MAP.get(exonic_func.strip())
+                consequence = CN_EXONIC_FUNC_MAP.get(exonic_func.strip())
             if not consequence:
                 consequence = exonic_func
             out["Consequence"] = consequence
@@ -304,21 +292,6 @@ class ANNOVARAdapter(AnnotationAdapter):
         from gpa_i18n import infer_impact_from_consequence
         return infer_impact_from_consequence(consequence)
 
-    # v0.8.0 P2: Add Chinese terms to EXONIC_FUNC_MAP for direct lookup
-    CN_EXONIC_FUNC_MAP = {
-        "移码变异": "frameshift_variant",
-        "错义变异": "missense_variant",
-        "非移码缺失": "inframe_deletion",
-        "非移码插入": "inframe_insertion",
-        "无义变异": "stop_gained",
-        "终止密码子获得": "stop_gained",
-        "剪接位点变异": "splice_variant",
-        "剪接受体位点变异": "splice_acceptor_variant",
-        "剪接供体位点变异": "splice_donor_variant",
-        "剪接区域变异": "splice_region_variant",
-        "同义变异": "synonymous_variant",
-        "未知": "unknown",
-    }
 
 
 # =============================================================================
