@@ -62,6 +62,11 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     # Convert user config to global config
     global_config = config.to_global()
 
+    # v0.9.5: Respect global proxy config for all standalone aiohttp sessions
+    # (DGRAAPIClient already handles this; these sessions need it too)
+    # None → use system proxy (trust_env=True), "__DIRECT__" → disable proxy (trust_env=False)
+    _trust_env = getattr(global_config, 'proxy', None) != "__DIRECT__"
+
     # Load tissue profile (keeps tier_rules + special_gene_lists)
     tissue_profile = config.get_tissue_profile()
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
@@ -249,7 +254,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                     mv_sem = asyncio.Semaphore(10)  # v0.9.4: increased from 5 for large VCFs
                     timeout_obj = aiohttp.ClientTimeout(total=300)  # v0.9.4: increased from 120 for large batches
                     mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in variants_needing_enrichment]
-                    async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as mv_session:
+                    async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=_trust_env) as mv_session:
                         mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
                     mv_stats = apply_myvariant_results(variants, mv_results)
                     print(f"[GPA] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, {mv_stats['clinvar_filled']} ClinVar, {mv_stats['cadd_filled']} CADD filled | {mv_stats['not_found']} not_found, {mv_stats['errors']} errors")
@@ -336,7 +341,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                         # Reset gnomad_af to None so apply_myvariant_results will fill it
                         for v in _myvariant_fallback_variants:
                             v.gnomad_af = None
-                        async with aiohttp.ClientSession(timeout=mv_fb_timeout, trust_env=False) as mv_fb_session:
+                        async with aiohttp.ClientSession(timeout=mv_fb_timeout, trust_env=_trust_env) as mv_fb_session:
                             mv_fb_results = await query_myvariant_batch(mv_fb_variants, mv_fb_session, semaphore=mv_fb_sem, batch_size=1000)
                         mv_fb_stats = apply_myvariant_results(_myvariant_fallback_variants, mv_fb_results)
                         n_myvariant_fallback = mv_fb_stats.get("gnomad_filled", 0)
@@ -613,10 +618,9 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         if spliceai_candidates:
             print(f"[GPA] SpliceAI: querying {len(spliceai_candidates)} splice variants (concurrency={getattr(config, 'spliceai_concurrency', 5)})")
             timeout_obj = aiohttp.ClientTimeout(total=120)
-            async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as spliceai_session:
-                spliceai_results = await query_spliceai_batch(
-                    spliceai_candidates, spliceai_session, spliceai_sem
-                )
+            spliceai_results = await query_spliceai_batch(
+                spliceai_candidates, spliceai_sem
+            )
             # Attach results back to variants
             for v in variants:
                 from dgra_splice_predictor import _cache_key as _splice_key

@@ -127,7 +127,7 @@ class VCFAnnotator:
             return []
 
         # 3. Resolve annotator
-        resolved = self._resolve_annotator()
+        resolved = self._resolve_annotator(len(filtered_variants))
         logger.info(f"[VCFAnnotator] Using annotator: {resolved}")
 
         # 4. Annotate
@@ -294,10 +294,22 @@ class VCFAnnotator:
     # Annotator resolution
     # ------------------------------------------------------------------
 
-    def _resolve_annotator(self) -> str:
-        """Resolve auto → concrete annotator."""
+    def _resolve_annotator(self, n_variants: int = 0) -> str:
+        """Resolve auto → concrete annotator.
+
+        v0.9.5: Large datasets (>5000 variants) always use VEP API regardless
+        of local VEP availability. Local VEP subprocess is too slow and
+        memory-intensive for large VCFs.
+        """
         if self.annotator != "auto":
             return self.annotator
+        LOCAL_VEP_MAX_VARIANTS = 5000
+        if n_variants > LOCAL_VEP_MAX_VARIANTS:
+            logger.info(
+                f"[VCFAnnotator] {n_variants} variants > {LOCAL_VEP_MAX_VARIANTS} threshold — "
+                f"forcing VEP API (local VEP too slow for large datasets)"
+            )
+            return "vep_api"
         # Check if local VEP is available
         if self._vep_local_available():
             return "vep_local"
@@ -696,17 +708,13 @@ class VCFAnnotator:
     # ------------------------------------------------------------------
 
     async def close(self):
-        """Close aiohttp session."""
+        """Close aiohttp session.
+
+        IMPORTANT: Callers MUST explicitly await close() when done.
+        Do NOT rely on garbage collection — aiohttp.ClientSession.close()
+        is async and cannot be safely triggered from __del__ without
+        RuntimeWarning: coroutine 'ClientSession.close' was never awaited.
+        """
         if self._session:
             await self._session.close()
             self._session = None
-
-    def __del__(self):
-        if self._session and not self._session.closed:
-            # Best-effort close; callers should await close() explicitly
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self._session.close())
-            except Exception:
-                pass

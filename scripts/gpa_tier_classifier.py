@@ -395,8 +395,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 upgrade_conditions = []  # Tier 1: no upgrade
                 variant.upgrade_conditions = upgrade_conditions
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                upgrade_conditions = []  # Tier 1: no upgrade possible
-
                 return 1, reason, actions
 
         # 1c. Known AML driver genes with HIGH impact = Tier 1
@@ -407,8 +405,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             upgrade_conditions = []  # Tier 1: no upgrade
             variant.upgrade_conditions = upgrade_conditions
             variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-            upgrade_conditions = []  # Tier 1: no upgrade possible
-
             return 1, f"Known AML driver {gene} with {variant.consequence} - core somatic driver", actions
 
     # =====================================================================
@@ -556,8 +552,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 upgrade_conditions = []  # Tier 1: no upgrade
                 variant.upgrade_conditions = upgrade_conditions
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                upgrade_conditions = []  # Tier 1: no upgrade possible
-
                 return 1, f"{gene} pathogenic variant in coagulation gene - bleeding risk", actions
             if "fa_dna_repair" in list_name.lower() and _clinvar_pathogenic(variant.clinvar):
                 actions.append("Assess if patient has Fanconi anemia phenotype")
@@ -566,8 +560,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 upgrade_conditions = []  # Tier 1: no upgrade
                 variant.upgrade_conditions = upgrade_conditions
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                upgrade_conditions = []  # Tier 1: no upgrade possible
-
                 return 1, f"{gene} pathogenic variant in FA pathway - marrow failure risk", actions
 
     # 1b. Homozygous truncating in primary tissue gene
@@ -670,8 +662,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
                     variant.upgrade_conditions = upgrade_conditions
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-
                     return 2, reason, actions  # Tier 2, not Tier 1
                 else:
                     reason = f"ClinVar pathogenic variant in LOF-intolerant gene {gene}"
@@ -683,8 +673,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
                     variant.upgrade_conditions = upgrade_conditions
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-
                     return 2, reason, actions
         elif nmd_status == "unknown":
             # NMD uncertain - conservative: apply PVS1 but annotate uncertainty
@@ -699,8 +687,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     upgrade_conditions = []  # Tier 1: no upgrade
                     variant.upgrade_conditions = upgrade_conditions
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                    upgrade_conditions = []  # Tier 1: no upgrade possible
-
                     return 1, reason, actions
                 else:
                     reason = f"ClinVar pathogenic variant in LOF-intolerant gene {gene}"
@@ -712,8 +698,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
                     variant.upgrade_conditions = upgrade_conditions
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-
                     return 2, reason, actions
         else:
             # NMD sensitive - classic PVS1 applies
@@ -729,21 +713,30 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     upgrade_conditions = []  # Tier 1: no upgrade
                     variant.upgrade_conditions = upgrade_conditions
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                    upgrade_conditions = []  # Tier 1: no upgrade possible
 
-                    # v0.8.0: SpliceAI downgrade check for HIGH-impact variants ascribed to canonical splice
-                    # If SpliceAI delta=0, VEP's HIGH impact call is likely an overcall → downgrade to Tier 2.
+                    # v0.9.5: SpliceAI evidence for Tier 1 splice variants.
+                    # Strong SpliceAI (delta >= 0.5) strengthens PP3 evidence.
+                    # Delta=0 suggests VEP HIGH may be overcalled → downgrade to Tier 2.
+                    _VALID_SA_SOURCES = {"spliceai", "spliceai_lookup", "vep_rest"}
                     if getattr(config, 'spliceai_enabled', False) and variant.spliceai_result:
                         sa = variant.spliceai_result
-                        if getattr(sa, "source", "") == "spliceai" and getattr(sa, "delta_score", 0.0) == 0.0:
-                            _add_evidence("SpliceAI", f"SpliceAI delta=0 — no splice change predicted for {variant.consequence}, downgrading from Tier 1", weight=-0.5, confidence="high", raw_data={"delta_score": 0.0, "predicted_impact": "none"})
-                            actions.append("SpliceAI predicts no splice disruption — VEP HIGH may be overcalled; consider RNA-seq validation")
-                            variant.evidence_chain = evidence_chain
-                            upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-                            variant.upgrade_conditions = upgrade_conditions
-                            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                            return 2, f"SpliceAI delta=0 — no splice change for {gene} {variant.consequence}, downgraded from Tier 1", actions
+                        sa_source = getattr(sa, "source", "")
+                        sa_delta = getattr(sa, "delta_score", 0.0) or 0.0
+                        if sa_source in _VALID_SA_SOURCES:
+                            if sa_delta >= 0.5:
+                                _add_evidence("SpliceAI", f"SpliceAI strong (delta={sa_delta:.2f}) for {variant.consequence} — strengthens Tier 1 splice evidence", weight=0.6, confidence="high", raw_data={"delta_score": sa_delta, "details": getattr(sa, 'raw_response', None)})
+                                actions.append(f"SpliceAI predicts strong splice disruption (delta={sa_delta:.2f}) — confirm via RNA-seq")
+                            elif sa_delta == 0.0:
+                                _add_evidence("SpliceAI", f"SpliceAI delta=0 — no splice change predicted for {variant.consequence}, downgrading from Tier 1", weight=-0.5, confidence="high", raw_data={"delta_score": 0.0, "predicted_impact": "none"})
+                                actions.append("SpliceAI predicts no splice disruption — VEP HIGH may be overcalled; consider RNA-seq validation")
+                                variant.evidence_chain = evidence_chain
+                                upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                                variant.upgrade_conditions = upgrade_conditions
+                                variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+                                return 2, f"SpliceAI delta=0 — no splice change for {gene} {variant.consequence}, downgraded from Tier 1", actions
 
+                    variant.evidence_chain = evidence_chain
+                    variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
                     return 1, reason, actions
                 else:
                     reason = f"ClinVar pathogenic variant in LOF-intolerant gene {gene}"
@@ -755,8 +748,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
                     variant.upgrade_conditions = upgrade_conditions
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                    upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-
                     return 2, reason, actions
 
     # Priority 2: Tier 2 checks
@@ -773,12 +764,13 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
             variant.upgrade_conditions = upgrade_conditions
             variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-            upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
 
             # v0.8.0: SpliceAI downgrade check for HIGH-impact variants ascribed to canonical splice in Tier 2
+            # v0.9.5: Accept both "spliceai" and "vep_rest" as valid SpliceAI sources.
+            _VALID_SA_SOURCES = {"spliceai", "spliceai_lookup", "vep_rest"}
             if getattr(config, 'spliceai_enabled', False) and variant.spliceai_result:
                 sa = variant.spliceai_result
-                if getattr(sa, "source", "") == "spliceai" and getattr(sa, "delta_score", 0.0) == 0.0:
+                if getattr(sa, "source", "") in _VALID_SA_SOURCES and getattr(sa, "delta_score", 0.0) == 0.0:
                     _add_evidence("SpliceAI", f"SpliceAI delta=0 — no splice change predicted for {variant.consequence}, downgrading from Tier 2", weight=-0.5, confidence="high", raw_data={"delta_score": 0.0, "predicted_impact": "none"})
                     actions.append("SpliceAI predicts no splice disruption — VEP HIGH may be overcalled; consider RNA-seq validation")
                     variant.evidence_chain = evidence_chain
@@ -801,8 +793,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
                 variant.upgrade_conditions = upgrade_conditions
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-
                 return 2, reason, actions
             elif missense_eval.get("tier_recommendation") == 3:
                 # Missense is tolerated - continue to Priority 3
@@ -818,8 +808,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
         variant.upgrade_conditions = upgrade_conditions
         variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-        upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-
         return 2, f"ClinVar pathogenic variant in {gene} - patient's own health may be affected", actions
 
     # 2c. Drug metabolism genes (if applicable to this tissue context)
@@ -830,8 +818,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
         variant.upgrade_conditions = upgrade_conditions
         variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-        upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
-
         return 2, f"Drug metabolism variant may affect pharmacokinetics", actions
 
     # Priority 3: Tier 3 - everything else
@@ -859,11 +845,13 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     _add_evidence("Frequency", f"Common polymorphism / benign / no tissue relevance → Tier 3", weight=0.2, confidence="high", raw_data={"gnomad_status": gnomad_info.get("status"), "clinvar": variant.clinvar, "relevance": tissue_assessment.get("relevance")})
 
     # v0.8.0: SpliceAI evidence for Tier 3 splice variants (default OFF)
+    # v0.9.5: Accept both "spliceai" and "vep_rest" as valid SpliceAI sources.
     # If SpliceAI is enabled and pre-computed result exists, evaluate upgrade/downgrade.
+    _VALID_SA_SOURCES = {"spliceai", "spliceai_lookup", "vep_rest"}
     if getattr(config, 'spliceai_enabled', False) and variant.spliceai_result:
         sa = variant.spliceai_result
         source = getattr(sa, 'source', 'unknown')
-        if source == "spliceai":
+        if source in _VALID_SA_SOURCES:
             delta = getattr(sa, 'delta_score', None)
             if delta is not None:
                 impact = getattr(sa, 'predicted_impact', 'none')
@@ -887,11 +875,8 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             _add_evidence("SpliceAI", "Not in SpliceAI database - no splice prediction available", weight=0.0, confidence="low", raw_data={"source": "not_in_db"})
 
     # v0.5 P1-11: Generate upgrade conditions before final tier assignment
-    upgrade_conditions = _generate_upgrade_conditions(variant, tier=3, tissue_assessment=tissue_assessment, gnomad_info=gnomad_info)
-    variant.upgrade_conditions = upgrade_conditions
-
-    variant.evidence_chain = evidence_chain
     upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
     variant.upgrade_conditions = upgrade_conditions
+    variant.evidence_chain = evidence_chain
     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
     return 3, reason, []

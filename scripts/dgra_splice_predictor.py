@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 SPLICEAI_BASE_URL_GRCh38 = "https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/"
 SPLICEAI_BASE_URL_GRCh37 = "https://spliceai-37-xwkwwwxdwq-uc.a.run.app/spliceai/"
 
+# v0.9.5: Add Ensembl VEP REST API as fallback source for SpliceAI scores.
+# The Broad Institute endpoints are frequently rate-limited or unavailable.
+# VEP REST provides SpliceAI via plugin with high reliability.
+# Format: GET /vep/human/region/:region/:allele?content-type=application/json&SpliceAI=1
+# Supports batch POST (max 200 variants/request).
+VEP_REST_BASE_URL = "https://rest.ensembl.org"
+
 # 阈值配置（分 consequence 类型）
 SPLICEAI_THRESHOLDS = {
     "canonical": {  # splice_acceptor_variant / splice_donor_variant
@@ -74,9 +81,10 @@ class SpliceAIResult:
 class SpliceAIPredictor:
     """SpliceAI 预测器，支持异步批量查询、缓存、退避重试。"""
 
-    def __init__(self, max_concurrency: int = 5, timeout: int = 30):
+    def __init__(self, max_concurrency: int = 5, timeout: int = 30, vep_enabled: bool = True):
         self.max_concurrency = max_concurrency
         self.timeout = timeout
+        self.vep_enabled = vep_enabled  # v0.9.5: fallback to VEP REST when Broad endpoint fails
         self._cache: Dict[str, SpliceAIResult] = {}
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
@@ -151,9 +159,13 @@ class SpliceAIPredictor:
         self._cache[cache_key] = result
         return result
 
-    async def _query_with_retry(self, chrom: str, pos: int, ref: str, alt: str, genome: str) -> SpliceAIResult:
-        """带退避重试的 SpliceAI 查询。
-        
+    async def _query_with_retry(self, chrom: str, pos: int, ref: str, alt: str, genome: str = "GRCh38") -> SpliceAIResult:
+        """带退避重试的 SpliceAI 查询，支持 VEP REST fallback。
+
+        v0.9.5: 查询顺序：
+        1. Broad Institute SpliceAI lookup (primary)
+        2. Ensembl VEP REST SpliceAI plugin (fallback)
+
         v0.9.4: 适配新 API 格式（Google Cloud Run 端点）。
         新格式：GET /spliceai/?hg=38&variant=chr-pos-ref-alt
         响应格式：{"scores": [{ "DS_AG": "0.13", ... }], "source": "..."}
@@ -163,7 +175,7 @@ class SpliceAIPredictor:
             base_url = SPLICEAI_BASE_URL_GRCh37
         else:
             base_url = SPLICEAI_BASE_URL_GRCh38
-        
+
         # 新 API 格式：variant 参数为 chr-pos-ref-alt
         variant_str = f"{chrom}-{pos}-{ref}-{alt}"
         params = {
@@ -175,6 +187,7 @@ class SpliceAIPredictor:
         backoff = [2, 4, 8]
 
         async with self._semaphore:
+            # Step 1: Try Broad Institute endpoint
             for attempt, delay in enumerate(backoff + [None]):
                 try:
                     timeout = aiohttp.ClientTimeout(total=self.timeout)
@@ -208,8 +221,137 @@ class SpliceAIPredictor:
                         await asyncio.sleep(delay)
                         continue
 
-            # 所有重试失败
-            logger.error(f"SpliceAI query failed after {len(backoff)} retries: {chrom}:{pos}:{ref}:{alt}")
+            # Step 2: Fallback to Ensembl VEP REST (v0.9.5)
+            if self.vep_enabled:
+                logger.info(f"SpliceAI Broad endpoint failed, falling back to VEP REST for {chrom}:{pos}:{ref}:{alt}")
+                return await self._query_vep_rest(chrom, pos, ref, alt)
+
+            # 所有重试失败且 fallback 关闭
+            logger.error(f"SpliceAI query failed after {len(backoff)} retries (no fallback): {chrom}:{pos}:{ref}:{alt}")
+            return SpliceAIResult(source="api_error")
+
+    async def _query_vep_rest(self, chrom: str, pos: int, ref: str, alt: str, genome: str = "GRCh38") -> SpliceAIResult:
+        """通过 Ensembl VEP REST API 查询 SpliceAI 分数。
+
+        v0.9.5: Fallback source when Broad Institute endpoint is unavailable.
+        URL: GET /vep/human/region/:region/:allele?content-type=application/json&SpliceAI=1
+        Response: transcript_consequences[].spliceai = {DS_AG, DS_AL, DS_DG, DS_DL, DP_AG, ...}
+
+        Args:
+            chrom: 染色体（支持 "chr16" 或 "16"）
+            pos: 1-based 坐标
+            ref: 参考碱基
+            alt: 变异碱基
+            genome: 基因组版本（仅支持 GRCh38，GRCh37需用不同端点）
+
+        Returns:
+            SpliceAIResult 对象（source="vep_rest"）
+        """
+        chrom_std = chrom.replace("chr", "") if chrom.startswith("chr") else chrom
+        region = f"{chrom_std}:{pos}-{pos}:1"
+        url = f"{VEP_REST_BASE_URL}/vep/human/region/{region}/{alt}"
+        params = {
+            "content-type": "application/json",
+            "SpliceAI": "1",
+        }
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+                async with session.get(url, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return self._parse_vep_response(data[0] if isinstance(data, list) else data)
+                    elif resp.status == 400:
+                        # 可能是 reference allele mismatch
+                        logger.warning(f"VEP REST 400 for {chrom}:{pos}:{ref}:{alt} — possible REF mismatch")
+                        return SpliceAIResult(source="api_error", raw_response={"status": 400, "reason": "REF mismatch"})
+                    else:
+                        logger.warning(f"VEP REST HTTP {resp.status} for SpliceAI query")
+                        return SpliceAIResult(source="api_error", raw_response={"status": resp.status})
+        except asyncio.TimeoutError:
+            logger.warning(f"VEP REST timeout for SpliceAI query {chrom}:{pos}:{ref}:{alt}")
+            return SpliceAIResult(source="api_error")
+        except aiohttp.ClientError as e:
+            logger.warning(f"VEP REST client error: {e}")
+            return SpliceAIResult(source="api_error")
+
+    def _parse_vep_response(self, data: Dict) -> SpliceAIResult:
+        """解析 VEP REST API 返回的 SpliceAI 数据。
+
+        v0.9.5: VEP REST returns SpliceAI scores in transcript_consequences[].spliceai:
+        {
+          "transcript_consequences": [
+            {
+              "transcript_id": "ENST00000300036",
+              "spliceai": {
+                "DS_AG": 0.98, "DS_AL": 0.0, "DS_DG": 0.0, "DS_DL": 0.0,
+                "DP_AG": -2, "DP_AL": -5, "DP_DG": -2, "DP_DL": 0,
+                "SYMBOL": "MYH11"
+              }
+            },
+            ...
+          ]
+        }
+        策略：在所有转录本中取 max(DS_AG, DS_AL, DS_DG, DS_DL)，并记录各分项最大值。
+        """
+        try:
+            tc_list = data.get("transcript_consequences", [])
+            if not tc_list:
+                # No transcript consequences with SpliceAI data
+                return SpliceAIResult(source="not_in_db", raw_response=data)
+
+            max_delta = 0.0
+            max_ag = 0.0
+            max_al = 0.0
+            max_dg = 0.0
+            max_dl = 0.0
+            best_symbol = ""
+            best_tx = ""
+
+            for tc in tc_list:
+                sa = tc.get("spliceai")
+                if not sa:
+                    continue
+                ag = float(sa.get("DS_AG", 0.0) or 0.0)
+                al = float(sa.get("DS_AL", 0.0) or 0.0)
+                dg = float(sa.get("DS_DG", 0.0) or 0.0)
+                dl = float(sa.get("DS_DL", 0.0) or 0.0)
+                entry_max = max(ag, al, dg, dl)
+
+                if entry_max > max_delta:
+                    max_delta = entry_max
+                    max_ag = ag
+                    max_al = al
+                    max_dg = dg
+                    max_dl = dl
+                    best_symbol = sa.get("SYMBOL", "")
+                    best_tx = tc.get("transcript_id", "")
+
+            if max_delta == 0.0:
+                # All transcripts have DS=0
+                return SpliceAIResult(
+                    delta_score=0.0,
+                    source="vep_rest",
+                    raw_response=data,
+                )
+
+            return SpliceAIResult(
+                delta_score=max_delta,
+                delta_acceptor_gain=max_ag,
+                delta_acceptor_loss=max_al,
+                delta_donor_gain=max_dg,
+                delta_donor_loss=max_dl,
+                predicted_impact="unknown",  # determined externally by threshold_type
+                source="vep_rest",
+                raw_response={
+                    "symbol": best_symbol,
+                    "transcript_id": best_tx,
+                    "vep_data": data,
+                },
+            )
+        except Exception as e:
+            logger.error(f"VEP SpliceAI parse error: {e}, data={data}")
             return SpliceAIResult(source="api_error")
 
     def _parse_response(self, data: Dict, source: str) -> SpliceAIResult:
@@ -339,16 +481,18 @@ def reset_spliceai_cache() -> None:
 
 async def query_spliceai_batch(
     variants: List[Any],
-    session: Any,
     semaphore: Any,
     max_concurrency: int = 5,
     timeout: int = 30,
 ) -> Dict[str, SpliceAIResult]:
-    """批量查询 SpliceAI，供 dgra_core.py 调用。
+    """批量查询 SpliceAI，供 gpa_pipeline.py 调用。
+
+    v0.9.5: Removed unused 'session' parameter. Each SpliceAIPredictor
+    creates its own aiohttp ClientSession internally (with retry/fallback
+    logic) — passing an external session was never actually used.
 
     Args:
         variants: 需要查询的变异列表（需有 chrom, pos, ref, alt 属性）
-        session: aiohttp ClientSession（由调用方管理生命周期）
         semaphore: asyncio.Semaphore（由调用方管理并发）
         max_concurrency: 最大并发数
         timeout: 请求超时（秒）
