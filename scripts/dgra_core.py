@@ -274,6 +274,8 @@ class GPAConfig:
     disease_description: Optional[str] = None
     annotator: str = "auto"
     vep_cache: Optional[str] = None
+    # v0.10.1: Two-phase pipeline for large VCF optimization
+    two_phase: bool = False
 
     def to_global(self) -> GPAGlobalConfig:
         gc = GPAGlobalConfig()
@@ -1893,6 +1895,12 @@ def main():
     parser.add_argument("--vep-cache", default=None,
                         help="Path to local VEP cache directory. Required for --annotator vep_local. (v0.9.0)")
 
+    # v0.10.1: Two-phase pipeline for large VCF datasets
+    parser.add_argument("--two-phase", action="store_true",
+                        help="Enable two-phase pipeline: fast local triage first, then API enrichment only for "
+                             "Tier 1/2 candidates. Reduces API calls by 50-200x for large VCFs. "
+                             "Recommended for VCF input with > 1000 variants. (v0.10.1)")
+
     args = parser.parse_args()
 
     # v0.5 P2-3: Load YAML config if provided or default exists
@@ -2009,6 +2017,8 @@ def main():
         disease_description=args.disease_description,
         annotator=args.annotator,
         vep_cache=args.vep_cache,
+        # v0.10.1: Two-phase pipeline
+        two_phase=getattr(args, 'two_phase', False),
     )
 
     # v0.5 P2-3: Apply YAML config overrides to user config
@@ -2054,7 +2064,13 @@ def main():
         return
 
     # Single-organ path (original behavior)
-    results = asyncio.run(run_dgra_pipeline(variants_data, user_phenotypes=args.phenotypes, config=config))
+    # v0.10.1: Two-phase pipeline for large VCF datasets
+    if getattr(args, 'two_phase', False) or getattr(config, 'two_phase', False):
+        print("[GPA] Two-phase pipeline enabled — Phase 1: fast local triage, Phase 2: API enrichment for candidates only")
+        from gpa_two_phase import run_two_phase_pipeline
+        results = asyncio.run(run_two_phase_pipeline(variants_data, config=config, user_phenotypes=args.phenotypes))
+    else:
+        results = asyncio.run(run_dgra_pipeline(variants_data, user_phenotypes=args.phenotypes, config=config))
 
     # Write report
     with open(args.output, 'w') as f:

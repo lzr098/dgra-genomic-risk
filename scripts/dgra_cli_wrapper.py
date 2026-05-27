@@ -205,6 +205,7 @@ def _run_gpa_vcf_direct(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
+    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """Pass raw VCF directly to dgra_core.py which handles VEP annotation."""
     import tempfile, subprocess, json as _json
@@ -251,6 +252,8 @@ def _run_gpa_vcf_direct(
             cmd.extend(["--annotator", annotator])
         if vep_cache:
             cmd.extend(["--vep-cache", vep_cache])
+        if two_phase:
+            cmd.append("--two-phase")
 
         try:
             result = subprocess.run(
@@ -316,6 +319,8 @@ def run_gpa_from_file(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
+    # v0.10.1: Two-phase pipeline
+    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -354,8 +359,8 @@ def run_gpa_from_file(
             disease_description=disease_description,
             annotator=annotator,
             vep_cache=vep_cache,
+            two_phase=two_phase,
         )
-
     try:
         variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
     except Exception as e:
@@ -613,6 +618,9 @@ def main():
     parser.add_argument("--vep-cache", default=None,
                         help="Path to local VEP cache directory. Required for --annotator vep_local. (v0.9.0)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
+    parser.add_argument("--two-phase", action="store_true",
+                        help="Enable two-phase pipeline: fast local triage then API enrichment "
+                             "only for Tier 1/2 candidates. 50-200x fewer API calls. (v0.10.1)")
 
     args = parser.parse_args()
 
@@ -672,6 +680,8 @@ def main():
             disease_description=args.disease_description,
             annotator=args.annotator,
             vep_cache=args.vep_cache,
+            # v0.10.1: Two-phase pipeline
+            two_phase=args.two_phase,
         )
     elif args.free_text:
         try:

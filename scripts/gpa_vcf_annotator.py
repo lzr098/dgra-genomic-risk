@@ -560,6 +560,9 @@ class VCFAnnotator:
                     "exon": tc.get("exon", ""),
                     "intron": tc.get("intron", ""),
                     "protein_domains": tc.get("domains", []),
+                    # v0.10.1: Capture ClinVar from VEP to avoid MyVariant re-query
+                    "clin_sig": tc.get("clin_sig", ""),
+                    "clin_sig_allele": tc.get("clin_sig_allele", ""),
                 }
                 tx_list.append(tx)
 

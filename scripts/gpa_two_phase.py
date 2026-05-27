@@ -1,0 +1,794 @@
+#!/usr/bin/env python3
+"""
+GPA Two-Phase Pipeline (v0.10.1)
+
+Optimization for large VCF datasets: splits analysis into
+  Phase 1: Fast local triage using only VEP annotation + local gene lists
+  Phase 2: API enrichment (gnomAD, SpliceAI, phenotype LLM) ONLY for Tier 1/2 candidates
+
+This reduces API calls by 50-200x for typical germline VCFs where >95% of variants
+are common SNPs or low-impact.
+
+Usage:
+    from gpa_two_phase import run_two_phase_pipeline
+    results = await run_two_phase_pipeline(variants_data, config, user_phenotypes)
+"""
+
+import asyncio
+import json
+import time
+from typing import List, Dict, Optional, Any, Tuple, Set
+
+# Import from core (lazy to avoid circular)
+from dgra_core import (
+    Variant, GPAConfig, _UNKNOWN, classify_gnomad_frequency,
+    normalize_gene_symbols, map_variant_to_domain, assess_tissue_relevance,
+    predict_nmd, correct_transcript_priority, detect_pseudogene_artifact,
+    _save_offline_archive, _load_offline_archive,
+)
+from dgra_cache import DGRACache
+from dgra_api import DGRAAPIClient
+
+
+# ─── Phase 1: Fast Local Triage ────────────────────────────────────────────
+
+# Impact categories for pre-filtering
+_HIGH_IMPACT_TERMS = {"HIGH"}
+_MODERATE_IMPACT_TERMS = {"MODERATE"}
+
+# Known neuromuscular disease genes (supplement to tissue_context.json lists)
+# These are genes where MODERATE impact variants warrant Phase 2 enrichment
+# even without prior ClinVar pathogenicity
+_NEUROMUSCULAR_DISEASE_GENES: Set[str] = {
+    # Muscular Dystrophies
+    "DMD", "DYSF", "CAPN3", "SGCA", "SGCB", "SGCG", "SGCD",
+    "FKRP", "FKTN", "POMT1", "POMT2", "POMGNT1", "LARGE1",
+    "DAG1", "LMNA", "EMD", "SYNE1", "SYNE2", "TMEM43",
+    "TTN", "MYOT", "FLNC", "BAG3", "DES", "CRYAB", "LDB3",
+    "MYH7", "ACTA1", "TPM2", "TPM3", "TNNT1", "NEB",
+    "RYR1", "CACNA1S", "MTM1", "DNM2", "BIN1", "AMPH",
+    "SPEG", "CNTN1", "TRIM32", "TCAP", "ANO5", "PLEC",
+    "COL6A1", "COL6A2", "COL6A3", "LAMA2", "ITGA7",
+    "PABPN1", "GNE", "MYH2", "MATR3", "VCP", "HNRNPA1",
+    "HNRNPA2B1", "SQSTM1", "TIA1",
+
+    # Distal Myopathies
+    "MYH7", "TIA1", "DNAJB6", "CRYAB",
+
+    # Myotonic Disorders
+    "CLCN1", "SCN4A", "DMPK", "CNBP",
+
+    # Congenital Myopathies
+    "ACTA1", "NEB", "TPM2", "TPM3", "TNNT1", "CFL2",
+    "RYR1", "SEPN1", "MTM1", "DNM2", "BIN1", "TTN",
+    "MYH7", "KLHL40", "KLHL41", "LMOD3",
+
+    # Metabolic Myopathies
+    "GAA", "AGL", "PYGM", "PFKM", "PGAM2", "LDHA",
+    "CPT2", "ETFDH", "ETFA", "ETFB",
+
+    # Motor Neuron / ALS
+    "SOD1", "TARDBP", "FUS", "C9orf72", "UBQLN2",
+    "OPTN", "TBK1", "CHCHD10", "KIF5A", "NEK1",
+
+    # Charcot-Marie-Tooth / Neuropathy
+    "PMP22", "MPZ", "GJB1", "MFN2", "GDAP1", "NEFL",
+    "HSPB1", "HSPB8", "LITAF", "EGR2",
+
+    # Mitochondrial
+    "POLG", "TK2", "RRM2B", "SUCLA2", "SUCLG1",
+    "OPA1", "MFN2",
+
+    # Other Neuromuscular
+    "SMN1", "SMN2", "IGHMBP2", "DYNC1H1", "BICD2",
+    "CHRNA1", "CHRNB1", "CHRND", "CHRNE", "RAPSN",
+    "DOK7", "MUSK", "AGRN", "COLQ",
+}
+
+
+def _parse_variants_phase1(variants_data: List[Dict]) -> List[Variant]:
+    """Parse variant dicts into Variant objects (shared with main pipeline)."""
+    # Chinese impact/consequence mapping (copied from gpa_pipeline.py)
+    _IMPACT_CN_MAP = {"高": "HIGH", "中等": "MODERATE", "低": "LOW", "修饰": "MODIFIER"}
+    _CONSEQUENCE_CN_MAP = {
+        "错义变异": "missense_variant", "无义变异": "stop_gained",
+        "获得终止密码子": "stop_gained", "移码变异": "frameshift_variant",
+        "框内插入": "inframe_insertion", "剪接位点变异": "splice_donor_variant",
+        "剪接区域变异": "splice_region_variant",
+        "剪接供体区域变异": "splice_donor_variant",
+        "剪接供体第5位碱基变异": "splice_donor_variant",
+        "剪接多嘧啶束变异": "splice_polypyrimidine_tract_variant",
+        "内含子变异": "intron_variant", "基因上游变异": "upstream_gene_variant",
+        "基因下游变异": "downstream_gene_variant", "同义变异": "synonymous_variant",
+        "非翻译区变异": "UTR_variant",
+        "3'非翻译区变异": "3_prime_UTR_variant",
+        "5'非翻译区变异": "5_prime_UTR_variant",
+        "非编码转录本外显子变异": "non_coding_transcript_exon_variant",
+    }
+
+    variants = []
+    for vd in variants_data:
+        raw_impact = str(vd.get("IMPACT", "")).strip()
+        if raw_impact in _IMPACT_CN_MAP:
+            raw_impact = _IMPACT_CN_MAP[raw_impact]
+        if not raw_impact:
+            raw_impact = _UNKNOWN
+
+        raw_consequence = str(vd.get("Consequence", "")).strip()
+        if raw_consequence in _CONSEQUENCE_CN_MAP:
+            raw_consequence = _CONSEQUENCE_CN_MAP[raw_consequence]
+        if not raw_consequence:
+            raw_consequence = _UNKNOWN
+
+        raw_clinvar = str(vd.get("CLIN_SIG", "")).strip()
+        if not raw_clinvar:
+            raw_clinvar = _UNKNOWN
+
+        raw_dp = str(vd.get("DP", "")).strip()
+        try:
+            dp_val = int(float(raw_dp)) if raw_dp and raw_dp != _UNKNOWN else 0
+        except ValueError:
+            dp_val = 0
+
+        raw_gq = str(vd.get("GQ", "")).strip()
+        try:
+            gq_val = float(raw_gq) if raw_gq and raw_gq not in ("", _UNKNOWN, "None") else 0.0
+        except (ValueError, TypeError):
+            gq_val = 0.0
+
+        raw_vaf = str(vd.get("VAF", "")).strip()
+        if not raw_vaf or raw_vaf == ".":
+            vaf_val = None
+        else:
+            try:
+                vaf_val = float(raw_vaf)
+            except (ValueError, TypeError):
+                vaf_val = None
+
+        raw_gnomad = str(vd.get("gnomAD_AF", "")).strip()
+        gnomad_val = float(raw_gnomad) if raw_gnomad and raw_gnomad != "N/A" else None
+
+        gene = vd.get("GENE", "") or vd.get("Gene", "")
+
+        v = Variant(
+            chrom=vd.get("CHROM", ""),
+            pos=int(vd.get("POS", 0) or 0),
+            ref=vd.get("REF", ""),
+            alt=vd.get("ALT", ""),
+            gene=gene,
+            transcript=vd.get("Feature", ""),
+            exon=vd.get("EXON", ""),
+            impact=raw_impact,
+            consequence=raw_consequence,
+            hgvsp=vd.get("HGVSp", ""),
+            hgvsc=vd.get("HGVSc", ""),
+            clinvar=raw_clinvar,
+            dp=dp_val,
+            gq=gq_val,
+            gt=vd.get("GT", ""),
+            vaf=vaf_val,
+            gnomad_af=gnomad_val,
+        )
+        variants.append(v)
+    return variants
+
+
+# v0.10.2: Consequence terms that are LOW impact in VEP but potentially pathogenic
+_SPLICE_RELEVANT_CONSEQUENCES = {
+    "splice_region_variant",
+    "splice_donor_5th_base_variant",
+    "splice_donor_region_variant",
+    "splice_polypyrimidine_tract_variant",
+    "splice_acceptor_variant",
+    "incomplete_terminal_codon_variant",
+}
+
+
+def _is_potentially_pathogenic(v: Variant) -> bool:
+    """Phase 1 fast check: does this variant warrant deeper investigation?
+
+    v0.10.2 enhancements:
+    - Consequence-aware: splice_region variants (LOW impact) now pass through
+    - VEP gnomAD AF pre-filter: common missense (EAS AF > 1%) excluded
+    """
+    # ── EAS AF pre-filter (applies to MODERATE impact missense) ──
+    # Use VEP-provided gnomAD AF if available (already in v.gnomad_af)
+    # This avoids passing large numbers of common polymorphisms to Phase 2
+    if v.impact == "MODERATE" and v.gene not in _NEUROMUSCULAR_DISEASE_GENES:
+        if v.gnomad_af is not None and v.gnomad_af > 0.01:
+            # Common variant (AF > 1%) in a non-disease gene → skip
+            return False
+
+    # 1. HIGH impact (stop_gained, frameshift, splice donor/acceptor)
+    if v.impact == "HIGH":
+        # Skip common homozygous (AF=1.00 ref mismatches)
+        if v.gnomad_af and v.gnomad_af > 0.95 and v.gt == "1/1":
+            return False
+        return True
+
+    # 2. MODERATE impact
+    if v.impact == "MODERATE":
+        # 2a. ClinVar Pathogenic/Likely_pathogenic
+        clinvar_lower = (v.clinvar or "").lower()
+        if any(kw in clinvar_lower for kw in ("pathogenic", "致病", "likely_pathogenic", "可能致病")):
+            return True
+        # 2b. Known neuromuscular disease gene
+        if v.gene in _NEUROMUSCULAR_DISEASE_GENES:
+            # For disease genes, still exclude if AF > 5% (clearly benign)
+            if v.gnomad_af is not None and v.gnomad_af > 0.05:
+                return False
+            return True
+        # 2c. Very rare (AF < 0.001 if known, or unknown)
+        if v.gnomad_af is not None and v.gnomad_af < 0.001:
+            return True
+        if v.gnomad_af is None:
+            # Unknown frequency → conservative: include for enrichment
+            return True
+
+    # 3. LOW/MODIFIER impact: consequence-aware filtering (v0.10.2)
+    if v.impact in ("LOW", "MODIFIER"):
+        # 3a. Splice-relevant consequences → pass through (may disrupt splicing)
+        if v.consequence in _SPLICE_RELEVANT_CONSEQUENCES:
+            return True
+        # 3b. ClinVar Pathogenic (rare but possible for regulatory variants)
+        if v.clinvar not in (_UNKNOWN, ""):
+            clinvar_lower = (v.clinvar or "").lower()
+            if any(kw in clinvar_lower for kw in ("pathogenic", "致病")):
+                return True
+
+    return False
+
+
+def _fast_tier_classification(v: Variant) -> Tuple[int, str]:
+    """
+    Phase 1: Fast local-only tier assignment.
+    Conservative: errs on the side of higher tier.
+    Phase 2 will refine with API data.
+    """
+    if not _is_potentially_pathogenic(v):
+        return 3, "Pre-filtered: low impact, no pathogenic evidence, not in disease gene list"
+
+    # Candidate — assign preliminary tier
+    if v.impact == "HIGH":
+        return 1, "PRELIMINARY: HIGH impact variant (Phase 2 enrichment pending)"
+    elif v.clinvar and ("pathogenic" in (v.clinvar or "").lower() or "致病" in (v.clinvar or "")):
+        return 1, "PRELIMINARY: ClinVar Pathogenic (Phase 2 enrichment pending)"
+    elif v.consequence in _SPLICE_RELEVANT_CONSEQUENCES:
+        return 1, "PRELIMINARY: Splice-relevant consequence (Phase 2 SpliceAI pending)"
+    else:
+        return 2, "PRELIMINARY: Candidate variant (Phase 2 enrichment pending)"
+
+
+# ─── Phase 2: Deep Enrichment for Candidates ───────────────────────────────
+
+async def _enrich_candidate_genes(
+    variants: List[Variant],
+    candidate_indices: List[int],
+    config: GPAConfig,
+    tissue_profile: Dict,
+) -> Tuple[Dict, Dict, Dict]:
+    """
+    Phase 2: API enrichment ONLY for candidate genes.
+    Returns (ensembl_data, uniprot_data, gnomad_constraint_data).
+    """
+    if not candidate_indices:
+        return {}, {}, {}
+
+    candidate_genes = list({variants[i].gene for i in candidate_indices})
+    global_config = config.to_global()
+
+    if config.offline_mode:
+        ensembl_data, uniprot_data, gnomad_constraint_data = {}, {}, {}
+        for gene in candidate_genes:
+            archive = _load_offline_archive(gene)
+            if archive:
+                ensembl_data[gene] = archive.get("ensembl", {})
+                uniprot_data[gene] = archive.get("uniprot", {})
+                gc = archive.get("gnomad_constraint")
+                if gc and gc.get("status") == "CAPTURED":
+                    gnomad_constraint_data[gene] = gc
+        return ensembl_data, uniprot_data, gnomad_constraint_data
+
+    cache = DGRACache(global_config.cache_db_path)
+    async with DGRAAPIClient(global_config, cache) as client:
+        ensembl_raw, uniprot_raw, gnomad_constraint_raw = await asyncio.gather(
+            client.batch_query_genes(candidate_genes, "ensembl"),
+            client.batch_query_genes(candidate_genes, "uniprot"),
+            client.batch_query_genes(candidate_genes, "gnomad_constraint"),
+        )
+        ensembl_data = {g: ensembl_raw.get(g, {}) for g in candidate_genes}
+        uniprot_data = {g: uniprot_raw.get(g, {}) for g in candidate_genes}
+        gnomad_constraint_data = {g: gnomad_constraint_raw.get(g, {}) for g in candidate_genes}
+
+    return ensembl_data, uniprot_data, gnomad_constraint_data
+
+
+# ─── v0.10.3: Consequence-aware API enrichment rules ───────────────────────
+
+# ClinVar only needed for variants where functional impact is uncertain
+_CLINVAR_RELEVANT_CONSEQUENCES = {
+    "missense_variant",
+    "splice_region_variant",
+    "splice_donor_5th_base_variant",
+    "splice_donor_region_variant",
+    "splice_polypyrimidine_tract_variant",
+    "inframe_deletion",
+    "inframe_insertion",
+    "frameshift_variant",
+    "incomplete_terminal_codon_variant",
+}
+
+# SpliceAI only needed for splice-site-proximal variants
+_SPLICEAI_RELEVANT_CONSEQUENCES = {
+    "splice_acceptor_variant",
+    "splice_donor_variant",
+    "splice_donor_5th_base_variant",
+    "splice_donor_region_variant",
+    "splice_polypyrimidine_tract_variant",
+    "splice_region_variant",
+}
+
+def _variant_needs_clinvar(v: Variant) -> bool:
+    """Check if variant's consequence warrants ClinVar lookup."""
+    cons = v.consequence or ""
+    # Check if any relevant consequence term is present (VEP consequences are comma-separated)
+    cons_terms = set(c.strip() for c in cons.split(","))
+    return bool(cons_terms & _CLINVAR_RELEVANT_CONSEQUENCES)
+
+def _variant_needs_spliceai(v: Variant) -> bool:
+    """Check if variant's consequence warrants SpliceAI lookup."""
+    cons = v.consequence or ""
+    cons_terms = set(c.strip() for c in cons.split(","))
+    # Direct splice consequence match
+    if bool(cons_terms & _SPLICEAI_RELEVANT_CONSEQUENCES):
+        return True
+    # intron_variant within 50bp of splice site is also relevant
+    # (we check distance if exon boundary info available in vcf_info)
+    if "intron_variant" in cons_terms:
+        intron_dist = getattr(v, 'vcf_info', {}).get('SPLICE_DIST')
+        if intron_dist is not None and abs(int(intron_dist)) <= 50:
+            return True
+    return False
+
+
+async def _enrich_variant_frequencies(
+    variants: List[Variant],
+    candidate_indices: List[int],
+    config: GPAConfig,
+    _trust_env: bool,
+) -> None:
+    """
+    Phase 2: gnomAD frequency lookup ONLY for candidate variants.
+    """
+    if not candidate_indices:
+        return
+
+    import aiohttp
+    global_config = config.to_global()
+    candidates_no_af = [
+        variants[i] for i in candidate_indices
+        if variants[i].gnomad_af is None
+    ]
+
+    if not candidates_no_af:
+        print(f"[GPA Phase 2] All candidates already have AF data — skipping gnomAD queries")
+        return
+
+    print(f"[GPA Phase 2] gnomAD: querying {len(candidates_no_af)} candidate variants for AF")
+
+    # Try MyVariant.info batch first — query ALL candidates for gnomAD AF,
+    # but only request ClinVar/CADD for variants where functional impact is uncertain
+    try:
+        from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
+        mv_sem = asyncio.Semaphore(10)
+        timeout_obj = aiohttp.ClientTimeout(total=120)
+        mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in candidates_no_af]
+        async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=_trust_env) as mv_session:
+            mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
+        # v0.10.3: per-variant ClinVar/CADD control
+        # Split candidates into those that need ClinVar/CADD vs those that don't
+        clinvar_needed = [v for v in candidates_no_af if _variant_needs_clinvar(v)]
+        clinvar_skipped = [v for v in candidates_no_af if not _variant_needs_clinvar(v)]
+        # Apply with per-variant flags
+        mv_stats = {"gnomad_filled": 0, "clinvar_filled": 0, "cadd_filled": 0, "not_found": 0, "errors": 0, "total_queried": 0}
+        # For variants needing ClinVar: fill all fields
+        if clinvar_needed:
+            s1 = apply_myvariant_results(clinvar_needed, mv_results, fill_clinvar=True, fill_cadd=True)
+            for k in mv_stats:
+                mv_stats[k] += s1.get(k, 0)
+        # For variants NOT needing ClinVar: fill only gnomAD AF
+        if clinvar_skipped:
+            s2 = apply_myvariant_results(clinvar_skipped, mv_results, fill_clinvar=False, fill_cadd=False)
+            mv_stats["gnomad_filled"] += s2.get("gnomad_filled", 0)
+            mv_stats["not_found"] += s2.get("not_found", 0)
+            mv_stats["errors"] += s2.get("errors", 0)
+            mv_stats["total_queried"] += s2.get("total_queried", 0)
+        print(f"[GPA Phase 2] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, "
+              f"{mv_stats['clinvar_filled']} ClinVar, "
+              f"{mv_stats['cadd_filled']} CADD filled "
+              f"(ClinVar skipped for {len(clinvar_skipped)} variants with certain impact)")
+    except Exception as e:
+        print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
+
+    # Fallback: gnomAD GraphQL ONLY for candidates still without AF
+    still_no_af = [v for v in candidates_no_af if v.gnomad_af is None]
+    if not still_no_af:
+        return
+
+    print(f"[GPA Phase 2] gnomAD GraphQL: querying {len(still_no_af)} candidates without AF")
+    cache = DGRACache(global_config.cache_db_path)
+    async with DGRAAPIClient(global_config, cache) as client:
+        gnomad_sem = asyncio.Semaphore(2)
+        async def _query_one(v):
+            async with gnomad_sem:
+                try:
+                    return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
+                except Exception as e:
+                    return {"status": "API_FAILED", "error": str(e), "source": "failed"}
+        results = await asyncio.gather(*[_query_one(v) for v in still_no_af])
+        for v, result in zip(still_no_af, results):
+            if result and result.get("source") in ("gnomad", "cache", "failed"):
+                af = result.get("af")
+                if af is not None:
+                    v.gnomad_af = af
+                    v.gnomad_populations = result.get("af_populations", {})
+                    v.gnomad_status = "SUCCESS"
+
+
+async def _enrich_spliceai(
+    variants: List[Variant],
+    candidate_indices: List[int],
+    config: GPAConfig,
+) -> None:
+    """Phase 2: SpliceAI ONLY for candidate splice variants."""
+    if not getattr(config, 'spliceai_enabled', False):
+        return
+    if not candidate_indices:
+        return
+
+    from dgra_splice_predictor import (
+        query_spliceai_batch, should_query_spliceai, _cache_key as _splice_key
+    )
+
+    candidates = [variants[i] for i in candidate_indices]
+    # v0.10.3: Use our consequence-aware filter in addition to should_query_spliceai
+    splice_candidates = [v for v in candidates if _variant_needs_spliceai(v)]
+
+    if not splice_candidates:
+        print(f"[GPA Phase 2] SpliceAI: no splice-relevant variants among candidates — skipping")
+        return
+
+    print(f"[GPA Phase 2] SpliceAI: querying {len(splice_candidates)} candidate splice-relevant variants "
+          f"(concurrency={getattr(config, 'spliceai_concurrency', 5)})")
+
+    spliceai_sem = asyncio.Semaphore(getattr(config, 'spliceai_concurrency', 5))
+    spliceai_results = await query_spliceai_batch(splice_candidates, spliceai_sem)
+
+    for v in candidates:
+        key = _splice_key(v.chrom, v.pos, v.ref, v.alt)
+        if key in spliceai_results:
+            v.spliceai_result = spliceai_results[key]
+        elif _variant_needs_spliceai(v):
+            v.spliceai_result = {"source": "not_in_db", "delta_score": None, "predicted_impact": None}
+
+    print(f"[GPA Phase 2] SpliceAI: batch complete")
+
+
+async def _enrich_phenotype(
+    variants: List[Variant],
+    candidate_indices: List[int],
+    user_phenotypes: Optional[str],
+) -> None:
+    """Phase 2: Phenotype LLM matching ONLY for candidate genes with local DB data."""
+    if not user_phenotypes or not candidate_indices:
+        return
+
+    candidate_genes = sorted({variants[i].gene for i in candidate_indices})
+
+    # v0.10.3: Pre-filter — only query genes that have known phenotype data locally
+    try:
+        from gpa_phenotype_match import PhenotypeMatcher
+        matcher = PhenotypeMatcher()
+        # Check which genes have local phenotype entries by reading _local_db directly
+        genes_with_data = []
+        genes_without_data = []
+        for gene in candidate_genes:
+            known = []
+            if matcher._local_db and gene in matcher._local_db:
+                entries = matcher._local_db[gene].get("phenotypes", [])
+                known = [e.get("name", "") for e in entries if e.get("name")]
+            if known:
+                genes_with_data.append(gene)
+            else:
+                genes_without_data.append(gene)
+        if genes_without_data:
+            print(f"[GPA Phase 2] Phenotype: {len(genes_without_data)} genes skipped (no local phenotype data): {', '.join(genes_without_data[:5])}{'...' if len(genes_without_data) > 5 else ''}")
+        if not genes_with_data:
+            print("[GPA Phase 2] Phenotype: no candidate genes with known phenotype data — skipping LLM calls")
+            for i in candidate_indices:
+                v = variants[i]
+                v.phenotype_match_score = 0.0
+                v.phenotype_match_explanation = "No known phenotypes found for this gene in local database."
+                v.phenotype_match_confidence = "low"
+            return
+    except Exception as e:
+        print(f"[GPA Phase 2] Phenotype pre-filter error (proceeding with all): {e}")
+        genes_with_data = candidate_genes
+        genes_without_data = []
+
+    print(f"[GPA Phase 2] Phenotype matching: {len(genes_with_data)} candidate genes (with local data)")
+
+    try:
+        from gpa_phenotype_match import PhenotypeMatcher
+        matcher = PhenotypeMatcher()
+        match_results = await matcher.match_batch(genes_with_data, user_phenotypes)
+
+        # Map results back by gene
+        gene_results = {gene: mr for gene, mr in zip(genes_with_data, match_results)}
+        # Add zero scores for genes without data
+        for gene in genes_without_data:
+            gene_results[gene] = {
+                "score": 0.0,
+                "explanation": "No known phenotypes found for this gene in local database.",
+                "confidence": "low",
+                "matched_pairs": [],
+                "known_phenotypes": [],
+            }
+
+        for i in candidate_indices:
+            v = variants[i]
+            mr = gene_results.get(v.gene, {})
+            v.phenotype_match_score = mr.get("score")
+            v.phenotype_match_explanation = mr.get("explanation", "")
+            v.phenotype_match_confidence = mr.get("confidence", "")
+            v.phenotype_matched_pairs = mr.get("matched_pairs", [])
+            v.phenotype_known_list = mr.get("known_phenotypes", [])
+    except Exception as e:
+        print(f"[GPA Phase 2] Phenotype matching failed (non-critical): {type(e).__name__}: {e}")
+
+
+# ─── Main Two-Phase Entry Point ────────────────────────────────────────────
+
+async def run_two_phase_pipeline(
+    variants_data: List[Dict],
+    config: Optional[GPAConfig] = None,
+    user_phenotypes: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Two-phase GPA pipeline optimized for large VCF datasets.
+
+    Phase 1: Fast local triage (VEP data + local gene lists → preliminary tiers)
+    Phase 2: API enrichment + final classification ONLY for Tier 1/2 candidates
+
+    Returns dict with report_markdown, summary, tier1/2/3_variants, etc.
+    """
+    if config is None:
+        config = GPAConfig()
+
+    t0 = time.time()
+    global_config = config.to_global()
+    _trust_env = getattr(global_config, 'proxy', None) != "__DIRECT__"
+    tissue_profile = config.get_tissue_profile()
+    profile_name = tissue_profile.get("display_name", config.tissue_profile)
+
+    # ── Phase 0: Parse all variants ──
+    variants = _parse_variants_phase1(variants_data)
+    unique_genes = list({v.gene for v in variants})
+    n_total = len(variants)
+    print(f"[GPA Two-Phase] {n_total} variants across {len(unique_genes)} unique genes")
+    print(f"[GPA Two-Phase] Tissue profile: {profile_name} | Offline: {config.offline_mode}")
+
+    # ── Phase 1: Fast Local Triage ──
+    phase1_start = time.time()
+
+    # Phase 1.1: Pre-filter — identify candidate variants
+    candidate_indices = []
+    for i, v in enumerate(variants):
+        if _is_potentially_pathogenic(v):
+            candidate_indices.append(i)
+
+    n_candidates = len(candidate_indices)
+    reduction = (1 - n_candidates / n_total) * 100 if n_total > 0 else 0
+    print(f"[GPA Phase 1] Fast triage complete: {n_candidates}/{n_total} candidates "
+          f"({reduction:.1f}% reduction) in {time.time() - phase1_start:.1f}s")
+
+    # Phase 1.2: Assign preliminary tiers to ALL variants
+    candidate_tier1 = []
+    candidate_tier2 = []
+    candidate_gene_set = set()
+    for i in candidate_indices:
+        tier, reason = _fast_tier_classification(variants[i])
+        if tier == 1:
+            candidate_tier1.append(i)
+        else:
+            candidate_tier2.append(i)
+        candidate_gene_set.add(variants[i].gene)
+
+    # Non-candidates → Tier 3
+    non_candidate_indices = [i for i in range(n_total) if i not in candidate_indices]
+    for i in non_candidate_indices:
+        variants[i].tier = 3
+        variants[i].tier_reason = "Pre-filtered: low impact, no ClinVar pathogenicity, not in disease gene list"
+        variants[i].tier_actions = ["Archive only"]
+
+    print(f"[GPA Phase 1] Preliminary tiers: {len(candidate_tier1)} Tier 1, "
+          f"{len(candidate_tier2)} Tier 2, {len(non_candidate_indices)} Tier 3 "
+          f"({len(candidate_gene_set)} candidate genes)")
+
+    # If no candidates, skip Phase 2
+    if not candidate_indices:
+        print(f"[GPA Two-Phase] No candidates — skipping Phase 2 enrichment. "
+              f"Total: {time.time() - t0:.1f}s")
+        return _build_output(
+            variants, [], tissue_profile, config, profile_name,
+            "Phase 1 only (no candidates found)"
+        )
+
+    # ── Phase 2: Deep Enrichment for Candidates ONLY ──
+    phase2_start = time.time()
+    all_candidate_indices = list(set(candidate_tier1 + candidate_tier2))
+
+    print(f"[GPA Phase 2] Starting enrichment for {len(all_candidate_indices)} candidates "
+          f"({len(candidate_gene_set)} genes)...")
+
+    # Phase 2.1: Per-gene API enrichment (Ensembl/UniProt/gnomAD_constraint)
+    ensembl_data, uniprot_data, gnomad_constraint_data = await _enrich_candidate_genes(
+        variants, all_candidate_indices, config, tissue_profile
+    )
+    print(f"[GPA Phase 2] Gene APIs: Ensembl={len(ensembl_data)}, "
+          f"UniProt={len(uniprot_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
+
+    # Phase 2.2: gnomAD frequency enrichment
+    await _enrich_variant_frequencies(variants, all_candidate_indices, config, _trust_env)
+
+    # Phase 2.3: SpliceAI (if enabled)
+    await _enrich_spliceai(variants, all_candidate_indices, config)
+
+    # Phase 2.4: Phenotype LLM matching
+    await _enrich_phenotype(variants, all_candidate_indices, user_phenotypes)
+
+    # Phase 2.5: Process candidate genes with enriched data
+    # NMD prediction for truncating variants
+    lof_terms = {"frameshift", "nonsense", "stop_gained", "start_lost"}
+    for i in all_candidate_indices:
+        v = variants[i]
+        if any(term in v.consequence.lower() for term in lof_terms):
+            v.nmd_prediction = predict_nmd(v, ensembl_data.get(v.gene, {}))
+            v.gene_constraint = {"nmd_prediction": v.nmd_prediction}
+
+    # Transcript correction
+    for i in all_candidate_indices:
+        v = variants[i]
+        v, warning = await correct_transcript_priority(v, ensembl_data)
+        if warning:
+            v.transcript_warning = json.dumps(warning)
+
+    # Pseudogene detection
+    for i in all_candidate_indices:
+        pg_warning = detect_pseudogene_artifact(variants[i])
+        if pg_warning:
+            variants[i].pseudogene_warning = json.dumps(pg_warning)
+
+    # gnomAD classification
+    for i in all_candidate_indices:
+        v = variants[i]
+        gnomad_info = classify_gnomad_frequency(
+            v.gnomad_af, v.gene,
+            af_by_population=getattr(v, 'gnomad_populations', None),
+            target_population=getattr(config, 'target_population', None)
+        )
+        v.gnomad_status = gnomad_info.get("status", v.gnomad_status or "UNKNOWN")
+
+    # Domain mapping
+    for i in all_candidate_indices:
+        variants[i].domain_info = map_variant_to_domain(variants[i], uniprot_data)
+
+    # Tissue relevance
+    tissue_assessments = {}
+    for i in all_candidate_indices:
+        v = variants[i]
+        tissue = assess_tissue_relevance(v, tissue_profile, {})  # GTEx data not needed for Phase 2
+        tissue_assessments[v.gene] = tissue
+        v.tissue_relevance = tissue
+
+    # Phase 2.6: Final tier classification for candidates
+    from gpa_tier_classifier import classify_variant_tier
+    for i in all_candidate_indices:
+        v = variants[i]
+        tissue = tissue_assessments.get(v.gene, {})
+        gnomad_info = classify_gnomad_frequency(
+            v.gnomad_af, v.gene,
+            af_by_population=getattr(v, 'gnomad_populations', None),
+            target_population=getattr(config, 'target_population', None)
+        )
+        tw = json.loads(v.transcript_warning) if v.transcript_warning else None
+        pw = json.loads(v.pseudogene_warning) if v.pseudogene_warning else None
+
+        tier, reason, actions = classify_variant_tier(
+            v, v.domain_info, tissue, gnomad_info, tw, pw, tissue_profile, config
+        )
+        v.tier = tier
+        v.tier_reason = reason
+        v.tier_actions = actions
+
+    phase2_duration = time.time() - phase2_start
+    total_duration = time.time() - t0
+    print(f"[GPA Phase 2] Enrichment complete in {phase2_duration:.1f}s")
+    print(f"[GPA Two-Phase] Total: {total_duration:.1f}s")
+
+    return _build_output(
+        variants, all_candidate_indices, tissue_profile, config, profile_name,
+        f"Two-phase: Phase 1 filtered {n_total}→{n_candidates} candidates, "
+        f"Phase 2 enriched {len(candidate_gene_set)} genes"
+    )
+
+
+def _build_output(
+    variants: List[Variant],
+    enriched_indices: List[int],
+    tissue_profile: Dict,
+    config: GPAConfig,
+    profile_name: str,
+    method_note: str,
+) -> Dict[str, Any]:
+    """Build standardized output dict for report generation."""
+    from gpa_report import generate_tier_report, generate_json_report
+    from gpa_qc import _run_qc_checks
+
+    enriched_set = set(enriched_indices)
+
+    tier1 = [v for v in variants if v.tier == 1]
+    tier2 = [v for v in variants if v.tier == 2]
+    tier3 = [v for v in variants if v.tier == 3]
+
+    # Multi-hit detection on all variants
+    from gpa_multi_hit import detect_multi_hit_genes
+    multi_hits = detect_multi_hit_genes(variants, {})
+
+    # QC checks
+    qc_summary = _run_qc_checks(variants)
+
+    # Mark enrichment status
+    for v in variants:
+        idx = variants.index(v)
+        if idx not in enriched_set and v.tier == 3:
+            v.tier_reason = f"[PRELIMINARY] {v.tier_reason}"
+
+    report_md = generate_tier_report(
+        variants, config, tissue_profile, multi_hits
+    )
+
+    json_report = generate_json_report(
+        variants, config, tissue_profile, multi_hits, report_md, qc_summary
+    )
+
+    # Build summary
+    summary = {
+        "tier1_gene_count": len({v.gene for v in tier1}),
+        "tier1_variant_count": len(tier1),
+        "tier2_gene_count": len({v.gene for v in tier2}),
+        "tier2_variant_count": len(tier2),
+        "tier3_gene_count": len({v.gene for v in tier3}),
+        "tier3_variant_count": len(tier3),
+        "multi_hit_genes": [mh["gene"] for mh in multi_hits],
+        "total_variants": len(variants),
+        "enriched_candidates": len(enriched_indices),
+        "method": method_note,
+    }
+
+    return {
+        "report_markdown": report_md,
+        "summary": summary,
+        "tier1_variants": [v.__dict__ for v in tier1],
+        "tier2_variants": [v.__dict__ for v in tier2],
+        "tier3_variants": [v.__dict__ for v in tier3],
+        "multi_hit_details": multi_hits,
+        "meta": {
+            "tissue_profile": config.tissue_profile,
+            "profile_display_name": profile_name,
+            "total_variants": len(variants),
+            "offline_mode": config.offline_mode,
+            "method": method_note,
+        },
+        "json_report": json_report,
+    }

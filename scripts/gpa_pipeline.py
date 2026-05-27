@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import re
+
+import aiohttp
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path

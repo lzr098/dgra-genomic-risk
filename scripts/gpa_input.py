@@ -140,6 +140,8 @@ def variants_from_vep_annotation(
                 "IMPACT": primary.get("impact", ""),
                 "HGVSc": primary.get("hgvsc", ""),
                 "HGVSp": primary.get("hgvsp", ""),
+                # v0.10.1: Extract ClinVar from VEP annotation (saves MyVariant re-query)
+                "CLIN_SIG": primary.get("clin_sig", ""),
                 "DP": str(v.get("dp", "")),
                 "QUAL": str(v.get("qual", "")),
                 "GT": v.get("gt", ""),

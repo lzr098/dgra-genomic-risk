@@ -42,6 +42,8 @@ def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = 
     # Group variants by gene
     gene_variants = {}
     for v in variants:
+        if not v.gene or v.gene.strip() == "":
+            continue
         gene_variants.setdefault(v.gene, []).append(v)
 
     multi_hits = []
