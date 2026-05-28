@@ -288,6 +288,11 @@ class GPAConfig:
         gc.common_af_threshold = self.common_af_threshold
         gc.low_af_threshold = self.low_af_threshold
         gc.vaf_deviation_threshold = self.vaf_deviation_threshold
+        # v0.10.3: Allow cache DB override for sandboxed environments
+        import os
+        cache_override = os.environ.get("DGRA_CACHE_DB_PATH")
+        if cache_override:
+            gc.cache_db_path = Path(cache_override)
         return gc
 
     def get_tissue_profile(self, force_sync: bool = False) -> Dict:

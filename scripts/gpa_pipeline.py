@@ -12,6 +12,9 @@ import asyncio
 import json
 import logging
 import re
+
+import aiohttp  # v0.10.3-fix: required for gnomad query exception handling
+
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
