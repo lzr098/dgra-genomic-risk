@@ -1,5 +1,72 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.10.0] - 2026-05-25
+
+### God Module 拆分重构
+
+**目标**：`dgra_core.py` 从 2098 行单文件拆分为 6 个独立模块，提升可维护性和可测试性。
+
+| 模块 | 行数 | 职责 |
+|------|------|------|
+| `gpa_pipeline.py` | ~500 | Pipeline 主流程（async 编排、Step 1~7 调度） |
+| `gpa_tier_classifier.py` | ~650 | 三级分级 + 证据链 + ACMG/NMD/Missense 逻辑 |
+| `gpa_report.py` | ~450 | Markdown/JSON 报告生成 |
+| `gpa_phaser.py` | ~200 | 相位分析（GATK/distance/trio） |
+| `gpa_multi_hit.py` | ~150 | 多基因命中检测 |
+| `gpa_qc.py` | ~100 | QC 检查与 flag 管理 |
+
+`dgra_core.py` 保留为入口（~200 行），`from ... import *` 重新导出所有公共 API，向后兼容。
+
+---
+
+## [v0.9.5] - 2026-05-24
+
+### P0/P1 热修：假阳性修正 + SpliceAI 迁移 + 相位 Bug
+
+**P0-1**：MAD2L2 剪接受体变异 c.3131-2A>T 误判 Tier 1 — 实为常见良性多态性。修复 gnomAD 频率守卫逻辑（AF>1% → Tier 3，除非 ClinVar Pathogenic 且 expert_panel 审核）。
+
+**P0-2**：OR2B11 嗅觉受体 LOF 变异误判 Tier 1 — 嗅觉受体假基因密集区，常规分析无需关注。
+
+**P1-1**：SpliceAI Broad Institute API 404 迁移 — 原始端点 `https://spliceailookup.broadinstitute.org` 下线，新增 Ensembl VEP REST SpliceAI plugin 作为 fallback。
+
+**P1-2**：Pairwise 相位分析 Bug — 近距离变异对（<50bp）的相位计算在边界条件下返回错误的 `unphased` 结果。
+
+### v0.9.5 Patch 2（2026-05-26）
+
+**外部审查 + 自查修复**：
+
+| 问题 | 严重级别 | 修复 | 文件 |
+|------|----------|------|------|
+| `trust_env=False` 硬编码 ×3 | P1 | 从 `global_config.proxy` 推导 `_trust_env` | `gpa_pipeline.py` |
+| VCF 大数据集仍走 subprocess | P1 | `>5000` 变异强制走 VEP API | `gpa_vcf_annotator.py` |
+| `RuntimeWarning: coroutine never awaited` | P2 | 移除 `__del__` 中的不安全异步清理 | `gpa_vcf_annotator.py` |
+| SpliceAI source 验证过严 | P1 | 接受 `spliceai`/`spliceai_lookup`/`vep_rest` | `gpa_tier_classifier.py` |
+| `query_spliceai_batch` 未用参数 `session` | P2 | 移除 | `dgra_splice_predictor.py` |
+| `upgrade_conditions` 冗余赋值 ×15 | P2 | 去重 | `gpa_tier_classifier.py` |
+
+**测试状态**：29/29 全绿。
+
+---
+
+## [v0.9.4] - 2026-05-24
+
+### SpliceAI API 404 修复 + L1~L5 测试体系 + 优化
+
+**1. SpliceAI API 迁移**
+- Broad Institute SpliceAI Lookup 端点 URL 变更（404 修复）
+- 适配新响应格式
+- `dgra_splice_predictor.py` 更新查询端点与解析逻辑
+
+**2. L1~L5 分层测试体系**
+- L1（单元）、L2（集成）、L3（功能）、L4（性能）、L5（边界/异常）
+- 新增测试文件：`tests/test_l1_unit.py`、`tests/test_l2_integration.py`、`tests/test_l3_functional.py`、`tests/test_l4_performance.py`、`tests/test_l5_edge_boundary.py`
+
+**3. P0/P1 优化**
+- MAD2L2/OR2B11 假阳性 Tier 1 修复
+- Pairwise 相位分析近距离对修正
+
+---
+
 ## [v0.9.3] - 2026-05-23
 
 ### P0 Hotfix：gnomAD GraphQL Schema 变更 + 外部审查遗留问题
