@@ -322,15 +322,19 @@ class GPAConfig:
         # v0.5 P1-8: Merge special_gene_lists with sync + user extensions
         try:
             from dgra_gene_sync import get_merged_gene_lists_sync
-            merged_lists = get_merged_gene_lists_sync(
-                tissue_profile=self.tissue_profile,
-                offline_mode=self.offline_mode,
-                sync_enabled=self.gene_sync_enabled,
-                ttl_days=self.gene_sync_ttl_days,
-                force_sync=force_sync,
-            )
-            if merged_lists:
-                profile["special_gene_lists"] = merged_lists
+            try:
+                merged_lists = get_merged_gene_lists_sync(
+                    tissue_profile=self.tissue_profile,
+                    offline_mode=self.offline_mode,
+                    sync_enabled=self.gene_sync_enabled,
+                    ttl_days=self.gene_sync_ttl_days,
+                    force_sync=force_sync,
+                )
+                if merged_lists:
+                    profile["special_gene_lists"] = merged_lists
+            except RuntimeError as e:
+                # asyncio.run() fails when already in a running event loop
+                print(f"[GPA] Gene list sync skipped (event loop conflict) - using static lists")
         except Exception as e:
             # Non-blocking: if merge fails, keep static lists
             print(f"[GPA] Gene list sync warning: {e} - using static lists")
