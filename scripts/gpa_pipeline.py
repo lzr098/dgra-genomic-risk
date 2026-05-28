@@ -199,6 +199,26 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         )
         variants.append(v)
 
+    # v0.10.3: Annotation quality gate — detect unannotated raw VCF
+    if variants:
+        total = len(variants)
+        n_no_gene = sum(1 for v in variants if not v.gene or v.gene == _UNKNOWN)
+        n_no_impact = sum(1 for v in variants if v.impact == _UNKNOWN)
+        n_no_consequence = sum(1 for v in variants if v.consequence == _UNKNOWN)
+        # If >80% of variants are missing all three critical annotation fields,
+        # the input is almost certainly an unannotated raw VCF that bypassed
+        # VCFAnnotator. This is a dangerous silent-failure mode: TierClassifier
+        # downgrades everything to Tier 3, producing a false-negative report.
+        if n_no_gene >= total * 0.8 and n_no_impact >= total * 0.8 and n_no_consequence >= total * 0.8:
+            raise ValueError(
+                f"CRITICAL: Input appears to be an unannotated raw VCF. "
+                f"{n_no_gene}/{total} variants missing Gene, "
+                f"{n_no_impact}/{total} missing IMPACT, "
+                f"{n_no_consequence}/{total} missing Consequence. "
+                f"Raw VCF must be annotated via VCFAnnotator before pipeline entry. "
+                f"Use run_gpa_from_file() or dgra_core.py --input for VCF inputs."
+            )
+
     # Collect all unique genes for batch API queries
     unique_genes = list({v.gene for v in variants})
     print(f"[GPA] {len(variants)} variants across {len(unique_genes)} unique genes")
