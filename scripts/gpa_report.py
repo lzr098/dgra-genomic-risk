@@ -719,7 +719,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
             report.append(f"### {mh['gene']} - {mh['variant_count']} variants detected\n")
             report.append(f"- **Warning**: {mh['warning']}\n")
 
-            # v0.4.5: Phase analysis result
+            # v0.10.3: Phase analysis — concise display
             phase = mh.get('phase_result', {})
             if phase:
                 status = phase.get('status', 'unknown')
@@ -730,30 +730,36 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
 
                 # Phase status emoji
                 if status in ('cis', 'cis_both', 'cis_likely'):
-                    status_icon = '🟢'  # 相对安全
+                    status_icon = '🟢'
                 elif status == 'trans':
-                    status_icon = '🔴'  # 高风险
+                    status_icon = '🔴'
                 elif status == 'ambiguous':
-                    status_icon = '🟡'  # 不确定
+                    status_icon = '🟡'
                 elif status == 'unphased':
-                    status_icon = '⚪'  # 无法判断
+                    status_icon = '⚪'
                 else:
                     status_icon = '❓'
 
-                report.append(f"\n**相位分析**: {status_icon} **{status.upper()}** (置信度: {confidence})\n")
-                report.append(f"- **判定方法**: {method}\n")
-                report.append(f"- **间距**: {max_gap}bp\n")
-                report.append(f"- **证据**: {evidence}\n")
+                # v0.10.3: Only show detailed phase analysis when there is a real result.
+                # UNPHASED / infeasible_short_reads means no phasing was possible —
+                # show a one-liner instead of filling the report with boilerplate.
+                _has_real_phase = status not in ('unphased', 'unknown') and 'infeasible' not in method
 
-                # Clinical significance based on phase
-                phase_clinical = mh.get('phase_clinical_significance', '')
-                if phase_clinical:
-                    report.append(f"- **临床意义**: {phase_clinical}\n")
-
-            report.append(f"\n- **Cis hypothesis**: {mh['phases']['cis']}\n")
-            report.append(f"- **Trans hypothesis**: {mh['phases']['trans']}\n")
-            report.append(f"- **Required evidence**: {', '.join(mh['required_evidence'])}\n")
-            report.append(f"- **Action**: {mh['action']}\n\n")
+                if _has_real_phase:
+                    report.append(f"\n**相位分析**: {status_icon} **{status.upper()}** (置信度: {confidence})\n")
+                    report.append(f"- **判定方法**: {method}\n")
+                    report.append(f"- **间距**: {max_gap}bp\n")
+                    report.append(f"- **证据**: {evidence}\n")
+                    phase_clinical = mh.get('phase_clinical_significance', '')
+                    if phase_clinical:
+                        report.append(f"- **临床意义**: {phase_clinical}\n")
+                    report.append(f"\n- **Cis hypothesis**: {mh['phases']['cis']}\n")
+                    report.append(f"- **Trans hypothesis**: {mh['phases']['trans']}\n")
+                    report.append(f"- **Required evidence**: {', '.join(mh['required_evidence'])}\n")
+                    report.append(f"- **Action**: {mh['action']}\n\n")
+                else:
+                    # Concise one-liner for unphased / infeasible
+                    report.append(f"\n**相位分析**: {status_icon} **{status.upper()}** — {evidence}\n\n")
 
     # v0.7 Phase 4: Phenotype association assessment - independent section
     phenotype_assessment = _generate_phenotype_assessment_section(variants)
@@ -767,189 +773,54 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
         report.append(tx_selection)
         report.append("\n")
 
-    # Tier 1
-    if tier1:
-        report.append("---\n\n## 🔴 Tier 1: Action Required\n")
-        report.append(f"*Variants requiring clinical attention for {profile_name} context*\n\n")
+    # v0.10.3: Tier 1 + Tier 2 merged into a gene-centric view
+    tier12 = tier1 + tier2
+    if tier12:
+        report.append("---\n\n## 重要变异分析（Tier 1/2）\n")
+        report.append(f"*基因-重要突变聚合视图 for {profile_name} context*\n\n")
 
-        # v0.5.2: Show gene-level summary first
-        tier1_genes = set(v.gene for v in tier1)
-        report.append(f"**Tier 1 基因总数**: {len(tier1_genes)} 个\n")
-        report.append(f"**Tier 1 突变总数**: {len(tier1)} 个\n\n")
+        tier12_genes = set(v.gene for v in tier12)
+        report.append(f"**涉及基因总数**: {len(tier12_genes)} 个 | **变异总数**: {len(tier12)} 个")
+        if tier1:
+            report.append(f" (Tier 1: {len(tier1)}, Tier 2: {len(tier2)})")
+        else:
+            report.append(f" (全为 Tier 2)")
+        report.append("\n\n")
 
-        # List multi-hit genes among Tier 1
-        multi_hit_tier1_genes = tier1_genes.intersection(set(mh['gene'] for mh in multi_hits))
-        if multi_hit_tier1_genes:
-            report.append(f"**其中 Multi-hit 基因** ({len(multi_hit_tier1_genes)} 个): {', '.join(sorted(multi_hit_tier1_genes))}\n")
+        # List multi-hit genes among Tier 1/2
+        multi_hit_tier12_genes = tier12_genes.intersection(set(mh['gene'] for mh in multi_hits))
+        if multi_hit_tier12_genes:
+            report.append(f"**其中 Multi-hit 基因** ({len(multi_hit_tier12_genes)} 个): {', '.join(sorted(multi_hit_tier12_genes))}\n")
             report.append(f"*注: Multi-hit 基因因检测到多个变异被标记关注,但各变异保持独立分级*\n\n")
 
-        # Group by gene
+        # Group by gene (merge tier1 + tier2 within each gene)
         from collections import OrderedDict
         gene_groups = OrderedDict()
-        for v in tier1:
+        for v in tier12:
             gene_groups.setdefault(v.gene, []).append(v)
 
         for gene, var_list in gene_groups.items():
-            report.append(f"### {gene}")
+            # Count per tier within this gene
+            t1_count = sum(1 for v in var_list if v.tier == 1)
+            t2_count = sum(1 for v in var_list if v.tier == 2)
+            tier_badge = ""
+            if t1_count > 0:
+                tier_badge += f" 🔴T1×{t1_count}"
+            if t2_count > 0:
+                tier_badge += f" 🟡T2×{t2_count}"
 
-            # v0.5.2: Gene-level summary with multi-hit indicator
+            report.append(f"### {gene}{tier_badge}\n")
+
+            # Multi-hit indicator
             is_multi_hit = gene in [mh['gene'] for mh in multi_hits]
             if is_multi_hit:
-                report.append(f" **[Multi-hit 基因]**")
-            report.append(f"\n")
+                report.append(f"**[Multi-hit 基因]** | **变异数**: {len(var_list)}\n\n")
+            else:
+                report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
 
-            report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
-
-            # Variant table
-            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 基因约束 | 置信度 | 说明 |\n")
-            report.append("|---|-----------|--------|---------|--------|--------|---------|----------|--------|------|\n")
-
-            for i, v in enumerate(var_list, 1):
-                # Position
-                pos = f"{v.chrom}:{v.pos}"
-
-                # Transcript
-                tx = v.transcript or "N/A"
-
-                # Variant name
-                var_name = v.hgvsp or v.hgvsc or "N/A"
-
-                # Domain
-                di = v.domain_info
-                if di:
-                    domain = f"{di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')})"
-                else:
-                    domain = "N/A"
-
-                # Zygosity
-                zyg = v.gt or "N/A"
-
-                # ClinVar
-                clin = v.clinvar or "N/A"
-
-                # v0.5 P1-4: Gene constraint
-                gc_info = ""
-                if v.gene_constraint:
-                    pLI = v.gene_constraint.get("pLI")
-                    loeuf = v.gene_constraint.get("loeuf")
-                    parts = []
-                    if pLI is not None:
-                        parts.append(f"pLI={pLI:.2f}")
-                    if loeuf is not None:
-                        parts.append(f"LOEUF={loeuf:.2f}")
-                    if parts:
-                        gc_info = " | ".join(parts)
-
-                # Reason (shortened)
-                reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
-                reason = reason.replace("|", "/")  # avoid markdown table break
-
-                # v0.5 P1-10: Confidence indicator
-                conf = v.tier_confidence or "UNKNOWN"
-                conf_icon = "⚠️" if conf == "LOW" else ""
-
-                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {gc_info} | {conf_icon} {conf} | {reason} |\n")
-
-            report.append(f"\n**详细说明**:\n")
-            for i, v in enumerate(var_list, 1):
-                report.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}):\n")
-                vep_note = _format_vep_reannotation_note(v)
-                if vep_note:
-                    report.append(f"   - **{vep_note}**\n")
-                # v0.5.3: VAF-GT mismatch warning
-                if "VAF_GT_MISMATCH" in v.qc_flags:
-                    report.append(f"   - ⚠️ **VAF 与基因型不一致**(GT={v.gt}, VAF={v.vaf:.2f}),提示可能存在假基因干扰、CNV 或比对错误\n")
-                # v0.5.3: Pseudogene interference warning
-                if v.pseudogene_warning:
-                    try:
-                        pw = json.loads(v.pseudogene_warning)
-                        if pw.get("type") == "PSEUDOGENE_INTERFERENCE":
-                            report.append(f"   - ⚠️ **假基因干扰**: {pw.get('gene')} 观察 VAF={pw.get('observed_vaf', 'N/A')},远低于预期杂合 0.5,疑似 {', '.join(pw.get('pseudogenes', []))} 假基因读取\n")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
-                if v.domain_info:
-                    di = v.domain_info
-                    report.append(f"   - 功能域: {di.get('domain', 'N/A')} {di.get('domain_range', 'N/A')}\n")
-                    rp = di.get('relative_position')
-                    if isinstance(rp, (int, float)):
-                        report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp:.2f})\n")
-                    else:
-                        report.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp})\n")
-                    report.append(f"   - 损伤评估: {di.get('damage_type', 'N/A')}\n")
-                if v.tissue_relevance:
-                    tr = v.tissue_relevance
-                    report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
-                # v0.5 P1-4: Gene constraint
-                if v.gene_constraint:
-                    gc = v.gene_constraint
-                    parts = []
-                    if gc.get("pLI") is not None:
-                        parts.append(f"pLI={gc['pLI']:.2f}")
-                    if gc.get("loeuf") is not None:
-                        parts.append(f"LOEUF={gc['loeuf']:.2f}")
-                    if gc.get("lof_z") is not None:
-                        parts.append(f"lof_z={gc['lof_z']:.2f}")
-                    if gc.get("mis_z") is not None:
-                        parts.append(f"mis_z={gc['mis_z']:.2f}")
-                    if parts:
-                        report.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
-                report.append(f"   - 分级原因: {v.tier_reason}\n")
-                # v0.7: Phenotype association
-                if v.phenotype_match_score is not None:
-                    score = v.phenotype_match_score
-                    conf = v.phenotype_match_confidence
-                    conf_icon = "🟢" if conf == "high" else "🟡" if conf == "medium" else "🔴"
-                    report.append(f"   - **表型关联**: {conf_icon} Score={score:.2f} (置信度: {conf})\n")
-                    if v.phenotype_match_explanation:
-                        report.append(f"     - 解释: {v.phenotype_match_explanation}\n")
-                    if v.phenotype_matched_pairs:
-                        pairs_str = ", ".join([f"'{u}'→'{k}'" for u, k in v.phenotype_matched_pairs[:3]])
-                        report.append(f"     - 匹配对: {pairs_str}{'...' if len(v.phenotype_matched_pairs) > 3 else ''}\n")
-                    if v.phenotype_known_list:
-                        known_str = ", ".join(v.phenotype_known_list[:3])
-                        report.append(f"     - 基因已知表型: {known_str}{'...' if len(v.phenotype_known_list) > 3 else ''}\n")
-                # v0.5 P1-9: Structured evidence chain
-                if v.evidence_chain:
-                    report.append(f"   - **证据链** ({len(v.evidence_chain)} 条):\n")
-                    chain = v.evidence_chain
-                    evidence_detail = getattr(config, 'evidence_detail', 'brief')
-                    if evidence_detail == 'brief' and len(chain) > 3:
-                        chain = chain[:3]
-                        report.append(f"     *(brief mode: 显示前 3 条关键证据)*\n")
-                    for ev in chain:
-                        report.append(f"     - **{ev.source}**: {ev.rule} (权重={ev.weight:.2f}, 置信度={ev.confidence})\n")
-                        if evidence_detail == 'full' and ev.raw_data:
-                            raw_summary = {k: v for k, v in ev.raw_data.items() if k in ('af', 'tpm', 'pLI', 'loeuf', 'status', 'domain')}
-                            if raw_summary:
-                                report.append(f"       原始数据: {raw_summary}\n")
-                if v.tier_actions:
-                    report.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
-                # v0.5 P1-11: Upgrade conditions for forward-looking assessment
-                if v.upgrade_conditions:
-                    report.append(f"   - **升级条件**:\n")
-                    for uc in v.upgrade_conditions:
-                        report.append(f"     → {uc}\n")
-                report.append(f"\n")
-
-    # Tier 2
-    if tier2:
-        report.append("---\n\n## 🟡 Tier 2: Inform & Monitor\n")
-        report.append(f"*Variants of clinical significance for {profile_name} context*\n\n")
-
-        # Group by gene
-        from collections import OrderedDict
-        gene_groups_t2 = OrderedDict()
-        for v in tier2:
-            gene_groups_t2.setdefault(v.gene, []).append(v)
-
-        for gene, var_list in gene_groups_t2.items():
-            report.append(f"### {gene}\n")
-            report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
-
-            # Variant table
-            report.append("| # | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 基因约束 | 置信度 | 说明 |\n")
-            report.append("|---|-----------|--------|---------|--------|--------|---------|----------|--------|------|\n")
+            # Variant table with tier column
+            report.append("| # | Tier | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 基因约束 | 置信度 | 说明 |\n")
+            report.append("|---|------|-----------|--------|---------|--------|--------|---------|----------|--------|------|\n")
 
             for i, v in enumerate(var_list, 1):
                 pos = f"{v.chrom}:{v.pos}"
@@ -965,7 +836,10 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                 reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
                 reason = reason.replace("|", "/")
 
-                # v0.5 P1-4: Gene constraint
+                # Tier badge
+                tier_badge = "🔴" if v.tier == 1 else "🟡" if v.tier == 2 else "⚪"
+
+                # Gene constraint
                 gc_info = ""
                 if v.gene_constraint:
                     pLI = v.gene_constraint.get("pLI")
@@ -978,22 +852,20 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     if parts:
                         gc_info = " | ".join(parts)
 
-                # v0.5 P1-10: Confidence indicator
                 conf = v.tier_confidence or "UNKNOWN"
                 conf_icon = "⚠️" if conf == "LOW" else ""
 
-                report.append(f"| {i} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {gc_info} | {conf_icon} {conf} | {reason} |\n")
+                report.append(f"| {i} | {tier_badge} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {gc_info} | {conf_icon} {conf} | {reason} |\n")
 
             report.append(f"\n**详细说明**:\n")
             for i, v in enumerate(var_list, 1):
-                report.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}):\n")
+                tier_label = "🔴 Tier 1" if v.tier == 1 else "🟡 Tier 2"
+                report.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}) — {tier_label}:\n")
                 vep_note = _format_vep_reannotation_note(v)
                 if vep_note:
                     report.append(f"   - **{vep_note}**\n")
-                # v0.5.3: VAF-GT mismatch warning
                 if "VAF_GT_MISMATCH" in v.qc_flags:
                     report.append(f"   - ⚠️ **VAF 与基因型不一致**(GT={v.gt}, VAF={v.vaf:.2f}),提示可能存在假基因干扰、CNV 或比对错误\n")
-                # v0.5.3: Pseudogene interference warning
                 if v.pseudogene_warning:
                     try:
                         pw = json.loads(v.pseudogene_warning)
@@ -1014,7 +886,6 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                 if v.tissue_relevance:
                     tr = v.tissue_relevance
                     report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
-                # v0.5 P1-4: Gene constraint
                 if v.gene_constraint:
                     gc = v.gene_constraint
                     parts = []
@@ -1029,7 +900,6 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     if parts:
                         report.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
                 report.append(f"   - 分级原因: {v.tier_reason}\n")
-                # v0.7: Phenotype association
                 if v.phenotype_match_score is not None:
                     score = v.phenotype_match_score
                     conf = v.phenotype_match_confidence
@@ -1043,9 +913,21 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     if v.phenotype_known_list:
                         known_str = ", ".join(v.phenotype_known_list[:3])
                         report.append(f"     - 基因已知表型: {known_str}{'...' if len(v.phenotype_known_list) > 3 else ''}\n")
+                if v.evidence_chain:
+                    report.append(f"   - **证据链** ({len(v.evidence_chain)} 条):\n")
+                    chain = v.evidence_chain
+                    evidence_detail = getattr(config, 'evidence_detail', 'brief')
+                    if evidence_detail == 'brief' and len(chain) > 3:
+                        chain = chain[:3]
+                        report.append(f"     *(brief mode: 显示前 3 条关键证据)*\n")
+                    for ev in chain:
+                        report.append(f"     - **{ev.source}**: {ev.rule} (权重={ev.weight:.2f}, 置信度={ev.confidence})\n")
+                        if evidence_detail == 'full' and ev.raw_data:
+                            raw_summary = {k: v for k, v in ev.raw_data.items() if k in ('af', 'tpm', 'pLI', 'loeuf', 'status', 'domain')}
+                            if raw_summary:
+                                report.append(f"       原始数据: {raw_summary}\n")
                 if v.tier_actions:
                     report.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
-                # v0.5 P1-11: Upgrade conditions for forward-looking assessment
                 if v.upgrade_conditions:
                     report.append(f"   - **升级条件**:\n")
                     for uc in v.upgrade_conditions:
