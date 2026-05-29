@@ -116,6 +116,8 @@ def _run_gpa_direct(
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
     force_sync: bool = False,
+    # v0.10.4: Two-phase pipeline support for direct API path
+    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """Run GPA via direct Python API call - 5-10x faster than batch CLI.
 
@@ -145,6 +147,7 @@ def _run_gpa_direct(
         annotator=annotator,
         vep_cache=vep_cache,
         force_sync=force_sync,
+        two_phase=two_phase,
     )
 
     try:
@@ -198,7 +201,8 @@ def _run_gpa_vcf_direct(
     filter_preset: Optional[str] = None,
     auto_batch: bool = True,
     batch_size: int = 500,
-    timeout_per_batch: int = 300,
+    # v0.10.4: Increased default timeout for large VCFs (VEP annotation of 100K variants can take 10-15 min)
+    timeout_per_batch: int = 1800,
     max_batch_retries: int = 0,
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
@@ -391,6 +395,8 @@ def run_gpa_from_file(
         disease_description=disease_description,
         annotator=annotator,
         vep_cache=vep_cache,
+        # v0.10.4: Two-phase pipeline
+        two_phase=two_phase,
     )
 
 
@@ -421,6 +427,8 @@ def run_gpa(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
+    # v0.10.4: Two-phase pipeline for direct API path
+    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
@@ -439,6 +447,7 @@ def run_gpa(
                       与 tissue 互斥。非 None 时覆盖 tissue 参数。
         force_sync: 强制同步 special_gene_lists(绕过缓存 TTL)
         config_path: YAML 配置文件路径 (v0.5 P2-3)
+        two_phase: 启用两阶段 pipeline（大样本推荐）
 
     Returns:
         dict: {"success": True, "results": {...}, "report_md": "..."}
@@ -460,6 +469,7 @@ def run_gpa(
             spliceai_concurrency=spliceai_concurrency,
             multi_organ=multi_organ,
             database_version=database_version,
+            two_phase=two_phase,
         )
 
     # v0.7.1: Auto-batch for medium variant sets
@@ -529,6 +539,7 @@ def run_gpa(
         annotator=annotator,
         vep_cache=vep_cache,
         force_sync=force_sync,
+        two_phase=two_phase,
     )
 
 

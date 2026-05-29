@@ -230,11 +230,15 @@ class VCFAnnotator:
                     }
                     # Extract DP from INFO
                     v["dp"] = self._extract_dp(info)
-                    # Extract GT from FORMAT/SAMPLE if available
+                    # Extract GT, GQ, VAF from FORMAT/SAMPLE if available
                     if len(parts) >= 10:
                         v["gt"] = self._extract_gt(parts[8], parts[9])
+                        v["gq"] = self._extract_gq(parts[8], parts[9])
+                        v["vaf"] = self._extract_vaf(parts[8], parts[9])
                     else:
                         v["gt"] = "./."
+                        v["gq"] = None
+                        v["vaf"] = None
                     variants.append(v)
         return variants
 
@@ -271,6 +275,43 @@ class VCFAnnotator:
         if gt_idx < len(vals):
             return vals[gt_idx]
         return "./."
+
+    @staticmethod
+    def _extract_gq(format_col: str, sample_col: str) -> Optional[int]:
+        """Extract GQ from FORMAT/SAMPLE columns."""
+        fmt = format_col.split(":")
+        if "GQ" not in fmt:
+            return None
+        gq_idx = fmt.index("GQ")
+        vals = sample_col.split(":")
+        if gq_idx < len(vals):
+            try:
+                return int(vals[gq_idx])
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _extract_vaf(format_col: str, sample_col: str) -> Optional[float]:
+        """Extract VAF from FORMAT/SAMPLE columns (AD field)."""
+        fmt = format_col.split(":")
+        if "AD" not in fmt:
+            return None
+        ad_idx = fmt.index("AD")
+        vals = sample_col.split(":")
+        if ad_idx < len(vals):
+            ad_str = vals[ad_idx]
+            try:
+                ad_parts = ad_str.split(",")
+                if len(ad_parts) >= 2:
+                    ref_count = float(ad_parts[0])
+                    alt_count = float(ad_parts[1])
+                    total = ref_count + alt_count
+                    if total > 0:
+                        return round(alt_count / total, 4)
+            except (ValueError, ZeroDivisionError):
+                return None
+        return None
 
     # ------------------------------------------------------------------
     # Pre-filtering
@@ -529,10 +570,12 @@ class VCFAnnotator:
         # VEP returns one entry per input line
         for entry, v in zip(data, batch):
             if not isinstance(entry, dict):
-                results.append({
+                result = dict(v)
+                result.update({
                     "transcript_consequences": [],
                     "vep_summary": {"error": "Invalid VEP response format"},
                 })
+                results.append(result)
                 continue
 
             # Summary info
@@ -566,20 +609,24 @@ class VCFAnnotator:
                 }
                 tx_list.append(tx)
 
-            results.append({
+            result = dict(v)
+            result.update({
                 "transcript_consequences": tx_list,
                 "vep_summary": summary,
             })
+            results.append(result)
 
         # v0.10.0 P2-2: VEP may return fewer results than input batch (filtered rows)
         # Pad remaining slots with error-marked entries so caller gets exactly len(batch) items
         missing = len(batch) - len(results)
         if missing > 0:
-            for _ in range(missing):
-                results.append({
+            for v in batch[len(results):]:
+                result = dict(v)
+                result.update({
                     "transcript_consequences": [],
                     "vep_summary": {"error": "VEP response shorter than input batch"},
                 })
+                results.append(result)
 
         return results
 

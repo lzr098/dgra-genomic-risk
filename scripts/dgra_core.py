@@ -2068,7 +2068,7 @@ def main():
     if getattr(args, 'two_phase', False) or getattr(config, 'two_phase', False):
         print("[GPA] Two-phase pipeline enabled — Phase 1: fast local triage, Phase 2: API enrichment for candidates only")
         from gpa_two_phase import run_two_phase_pipeline
-        results = asyncio.run(run_two_phase_pipeline(variants_data, config=config, user_phenotypes=args.phenotypes))
+        results = asyncio.run(run_two_phase_pipeline(variants_data, config=config, user_phenotypes=args.phenotypes, max_candidates=150))
     else:
         results = asyncio.run(run_dgra_pipeline(variants_data, user_phenotypes=args.phenotypes, config=config))
 

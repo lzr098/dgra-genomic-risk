@@ -820,6 +820,33 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
         return 2, f"Drug metabolism variant may affect pharmacokinetics", actions
 
+    # Priority 2d: Truncating variants with very low/absent population frequency
+    # When all annotation layers (tissue mapping, gene constraint, ClinVar) are
+    # incomplete, the combination of HIGH impact + rare frequency is itself
+    # sufficient biological evidence for Tier 2 (questionable). This is a
+    # catch-all safety net — NOT a gene-specific override.
+    if _impact_high(variant.impact):
+        af_very_rare = gnomad_af is None or (gnomad_af is not None and gnomad_af < 0.001)  # < 0.1%
+        clinvar_not_benign = not _clinvar_benign(variant.clinvar)
+        if af_very_rare and clinvar_not_benign:
+            _add_evidence(
+                "RareTruncating",
+                f"Truncating variant with AF={'None' if gnomad_af is None else f'{gnomad_af:.5f}'} "
+                f"— Tier 2 (questionable) due to biological severity despite limited annotation",
+                weight=0.6,
+                confidence="low",
+                raw_data={"gnomad_af": gnomad_af, "impact": variant.impact, "consequence": variant.consequence},
+            )
+            actions.append(
+                f"Rare truncating variant in {gene} — Tier 2 (questionable); "
+                f"recommend Sanger validation and phenotype correlation"
+            )
+            variant.evidence_chain = evidence_chain
+            upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+            variant.upgrade_conditions = upgrade_conditions
+            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+            return 2, f"Rare truncating variant in {gene} — Tier 2 (questionable)", actions
+
     # Priority 3: Tier 3 - everything else
     reason_parts = []
     if gnomad_info.get("status") == "common_polymorphism":

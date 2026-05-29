@@ -52,13 +52,14 @@ class DGRAAPIClient:
         self._last_request_time: Dict[str, float] = {}  # api_name -> timestamp
     
     async def __aenter__(self):
-        # v0.9.5: Respect global proxy config. None → use system proxy (trust_env=True),
-        # "__DIRECT__" → disable proxy (trust_env=False).
-        trust_env = self.config.proxy != "__DIRECT__"
+        # v0.10.1: Force direct connection (trust_env=False) to avoid system proxy
+        # intercepting scientific API calls (e.g., Clash at 127.0.0.1:7897).
+        # Previous logic (trust_env = config.proxy != "__DIRECT__") caused mass
+        # gnomAD/Ensembl query failures when system proxy was active.
         self._session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=50, limit_per_host=20),
             timeout=aiohttp.ClientTimeout(total=120),
-            trust_env=trust_env,
+            trust_env=False,
         )
         return self
     
@@ -868,26 +869,84 @@ class DGRAAPIClient:
         if not tissues:
             return []
         
-        # Launch concurrent queries for all tissues
-        tasks = [self.query_gtex_expression(gene_id, tissue) for tissue in tissues]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        processed = []
-        for tissue, result in zip(tissues, results):
-            if isinstance(result, Exception):
+        # v0.10.5 FIX: Single API call with comma-separated tissueSiteDetailIds
+        # instead of N concurrent calls. GTEx v2 API supports multiple tissues.
+        gencode_map = self._load_gencode_cache()
+        gencode_id = gencode_map.get(gene_id)
+
+        if not gencode_id:
+            search_result = await self._request_with_retry(
+                api_name="gtex",
+                endpoint="/reference/gene",
+                params={"geneId": gene_id, "page": 0, "itemsPerPage": 10},
+            )
+            if search_result["data"] and search_result["http_status"] == 200:
+                data = search_result["data"]
+                items = data.get("data", [])
+                if items:
+                    for item in items:
+                        if item.get("geneSymbol") == gene_id:
+                            gencode_id = item.get("gencodeId")
+                            break
+                    if not gencode_id:
+                        gencode_id = items[0].get("gencodeId")
+                if gencode_id:
+                    gencode_map[gene_id] = gencode_id
+                    self._save_gencode_cache(gencode_map)
+
+        if not gencode_id:
+            return [
+                {
+                    "gene": gene_id, "tissue": t, "median_tpm": None,
+                    "unit": "TPM", "source": "failed", "confidence": "low",
+                    "error": f"Could not resolve gencodeId for {gene_id}",
+                }
+                for t in tissues
+            ]
+
+        gtex_tissues = [t.replace(" - ", "_").replace(" ", "_") for t in tissues]
+        tissue_param = ",".join(gtex_tissues)
+
+        result = await self._request_with_retry(
+            api_name="gtex",
+            endpoint="/expression/medianGeneExpression",
+            params={
+                "gencodeId": gencode_id,
+                "tissueSiteDetailIds": tissue_param,
+                "datasetId": "gtex_v8",
+            },
+        )
+
+        if result["data"] and result["http_status"] == 200:
+            data = result["data"]
+            items = data.get("data", [])
+            tissue_median: Dict[str, float] = {}
+            for item in items:
+                tid = item.get("tissueSiteDetailId")
+                if tid in gtex_tissues:
+                    tissue_median[tid] = item.get("median")
+
+            processed = []
+            for tissue in tissues:
+                gtex_t = tissue.replace(" - ", "_").replace(" ", "_")
+                median_val = tissue_median.get(gtex_t)
                 processed.append({
-                    "gene": gene_id,
-                    "tissue": tissue,
-                    "median_tpm": None,
-                    "unit": "TPM",
-                    "source": "failed",
-                    "confidence": "low",
-                    "error": str(result),
+                    "gene": gene_id, "tissue": tissue, "median_tpm": median_val,
+                    "unit": "TPM", "gencode_id": gencode_id,
+                    "source": "cache" if result["from_cache"] else "gtex",
+                    "confidence": result["confidence"],
                 })
-            else:
-                processed.append(result)
-        
-        return processed
+            return processed
+
+        return [
+            {
+                "gene": gene_id, "tissue": t, "median_tpm": None,
+                "unit": "TPM", "gencode_id": gencode_id,
+                "source": "failed", "confidence": "low",
+                "error": result.get("error"),
+            }
+            for t in tissues
+        ]
     
     # =====================================================================
     # gnomAD GraphQL API
@@ -971,6 +1030,10 @@ class DGRAAPIClient:
                     "datasetId": dataset,
                 },
             },
+            # v0.10.1: Include variantId in cache key so each variant gets its own cache entry.
+            # Without this, all gnomAD GraphQL queries share the same cache key (url only)
+            # because params=None and json_body is not used for cache key generation.
+            params={"variantId": variant_id, "datasetId": dataset},
         )
         
         if result["data"] and result["http_status"] == 200:
@@ -1159,6 +1222,7 @@ class DGRAAPIClient:
                     "datasetId": "gnomad_r4",
                 },
             },
+            params={"geneSymbol": gene_symbol, "datasetId": "gnomad_r4"},
         )
         
         if result["data"] and result["http_status"] == 200:
@@ -1209,7 +1273,111 @@ class DGRAAPIClient:
     # =====================================================================
     # NCBI E-utilities (ClinVar, Gene)
     # =====================================================================
-    
+
+    @staticmethod
+    def _parse_clinvar_efetch_json(raw: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse ClinVar efetch JSON (retmode=json) into structured data.
+
+        v0.10.5: Robust parser handling both PascalCase and camelCase keys,
+        conflict detection across submitters, and review-status mapping.
+
+        Returns:
+            {
+                "clinical_significance": "Pathogenic" | "Likely pathogenic" | ...,
+                "review_status": "practice_guideline" | "reviewed by expert panel" | ...,
+                "conflicting": bool,
+                "trait_names": List[str],
+                "submitter_count": int,
+            }
+        """
+        # Helper: case-insensitive deep get
+        def _get(data: Any, *keys: str) -> Any:
+            if not isinstance(data, dict):
+                return None
+            for k in keys:
+                if k in data:
+                    return data[k]
+                # Try case variants
+                for variant in (k.lower(), k.upper(), k.title(), k):
+                    if variant in data:
+                        return data[variant]
+            return None
+
+        # Navigate to ClinVarSet (may be list or dict)
+        clinvar_set = _get(raw, "ClinVarSet", "clinvarSet")
+        if isinstance(clinvar_set, list) and clinvar_set:
+            entry = clinvar_set[0]
+        elif isinstance(clinvar_set, dict):
+            entry = clinvar_set
+        else:
+            entry = raw  # Fallback: raw may already be the inner dict
+
+        # --- ReferenceClinVarAssertion (the authoritative assertion) ---
+        ref_assertion = _get(entry, "ReferenceClinVarAssertion", "referenceClinVarAssertion")
+
+        significance = None
+        review_status = None
+        trait_names = []
+
+        if ref_assertion:
+            cs = _get(ref_assertion, "ClinicalSignificance", "clinicalSignificance")
+            if cs:
+                significance = _get(cs, "Description", "description")
+                review_status = _get(cs, "ReviewStatus", "reviewStatus")
+
+            # Traits
+            trait_set = _get(ref_assertion, "TraitSet", "traitSet")
+            if trait_set:
+                traits = _get(trait_set, "Trait", "trait")
+                if isinstance(traits, dict):
+                    traits = [traits]
+                if isinstance(traits, list):
+                    for t in traits:
+                        name_data = _get(t, "Name", "name")
+                        if name_data:
+                            val = _get(name_data, "ElementValue", "elementValue")
+                            if isinstance(val, dict):
+                                name = val.get("$", val.get("value", val.get("Value")))
+                            elif isinstance(val, str):
+                                name = val
+                            else:
+                                name = None
+                            if name:
+                                trait_names.append(name)
+
+        # --- ClinVarAssertion (submitter assertions) — check for conflicts ---
+        assertions = _get(entry, "ClinVarAssertion", "clinVarAssertion")
+        submitter_sigs = []
+        if isinstance(assertions, dict):
+            assertions = [assertions]
+        if isinstance(assertions, list):
+            for a in assertions:
+                a_cs = _get(a, "ClinicalSignificance", "clinicalSignificance")
+                if a_cs:
+                    desc = _get(a_cs, "Description", "description")
+                    if desc:
+                        submitter_sigs.append(desc)
+
+        # Detect conflict: mixed pathogenic/benign directions
+        patho_like = {"pathogenic", "likely pathogenic", "pathogenic/likely pathogenic"}
+        benign_like = {"benign", "likely benign", "benign/likely benign"}
+        has_patho = any(s.lower() in patho_like for s in submitter_sigs)
+        has_benign = any(s.lower() in benign_like for s in submitter_sigs)
+        conflicting = has_patho and has_benign
+
+        # Normalize review status to lowercase standard form
+        if review_status:
+            review_status = review_status.lower()
+
+        return {
+            "clinical_significance": significance,
+            "review_status": review_status,
+            "conflicting": conflicting,
+            "trait_names": trait_names,
+            "submitter_count": len(submitter_sigs),
+        }
+
     async def query_ncbi_clinvar(self, gene: str, hgvs: Optional[str] = None,
                                   chrom: Optional[str] = None, pos: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -1318,13 +1486,16 @@ class DGRAAPIClient:
         )
         
         if fetch_result["data"] and fetch_result["http_status"] == 200:
-            # Parse ClinVar JSON (structure is complex, Phase 2 will do full parsing)
-            # Skeleton: just return the raw data for now
+            # v0.10.5: Full ClinVar JSON parsing
+            parsed = self._parse_clinvar_efetch_json(fetch_result["data"])
             return {
                 "gene": gene,
                 "clinvar_id": clinvar_id,
-                "clinical_significance": "pending_parsing",  # Phase 2
-                "review_status": "pending_parsing",
+                "clinical_significance": parsed.get("clinical_significance"),
+                "review_status": parsed.get("review_status"),
+                "conflicting": parsed.get("conflicting", False),
+                "trait_names": parsed.get("trait_names", []),
+                "submitter_count": parsed.get("submitter_count", 0),
                 "source": "cache" if fetch_result["from_cache"] else "clinvar",
                 "confidence": fetch_result["confidence"],
                 "raw": fetch_result["data"],

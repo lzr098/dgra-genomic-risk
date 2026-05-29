@@ -259,6 +259,36 @@ def _fast_tier_classification(v: Variant) -> Tuple[int, str]:
         return 2, "PRELIMINARY: Candidate variant (Phase 2 enrichment pending)"
 
 
+def _candidate_priority_score(v: Variant) -> tuple:
+    """
+    v0.10.4: Priority score for candidate ranking when max_candidates is enforced.
+    Lower tuple = higher priority. Used to truncate excess candidates.
+    """
+    # 1. Tier priority (1 > 2)
+    tier_score = 0 if getattr(v, 'tier', 2) == 1 else 1
+
+    # 2. Impact priority
+    impact_order = {"HIGH": 0, "MODERATE": 1, "LOW": 2, "MODIFIER": 3}
+    impact_score = impact_order.get(v.impact, 4)
+
+    # 3. ClinVar priority
+    clinvar_lower = (v.clinvar or "").lower()
+    has_pathogenic = any(kw in clinvar_lower for kw in ("pathogenic", "致病", "likely_pathogenic", "可能致病"))
+    clinvar_score = 0 if has_pathogenic else 1
+
+    # 4. Frequency priority: unknown (None) is most interesting
+    if v.gnomad_af is None:
+        af_score = 0
+    elif v.gnomad_af < 0.001:
+        af_score = 1
+    elif v.gnomad_af < 0.01:
+        af_score = 2
+    else:
+        af_score = 3
+
+    return (tier_score, impact_score, clinvar_score, af_score)
+
+
 # ─── Phase 2: Deep Enrichment for Candidates ───────────────────────────────
 
 async def _enrich_candidate_genes(
@@ -376,37 +406,22 @@ async def _enrich_variant_frequencies(
 
     print(f"[GPA Phase 2] gnomAD: querying {len(candidates_no_af)} candidate variants for AF")
 
-    # Try MyVariant.info batch first — query ALL candidates for gnomAD AF,
-    # but only request ClinVar/CADD for variants where functional impact is uncertain
+    # Try MyVariant.info batch first — query ALL candidates for gnomAD AF + ClinVar + CADD.
+    # v0.10.4: All candidate variants get ClinVar/CADD regardless of consequence.
+    # Frameshift/stop_gained may still have ClinVar conflict annotations or
+    # additional phenotypic evidence that affects tier weighting.
     try:
         from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
         mv_sem = asyncio.Semaphore(10)
         timeout_obj = aiohttp.ClientTimeout(total=120)
         mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in candidates_no_af]
-        async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=_trust_env) as mv_session:
+        # v0.10.4: Always fill ClinVar and CADD for all candidates
+        async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as mv_session:
             mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
-        # v0.10.3: per-variant ClinVar/CADD control
-        # Split candidates into those that need ClinVar/CADD vs those that don't
-        clinvar_needed = [v for v in candidates_no_af if _variant_needs_clinvar(v)]
-        clinvar_skipped = [v for v in candidates_no_af if not _variant_needs_clinvar(v)]
-        # Apply with per-variant flags
-        mv_stats = {"gnomad_filled": 0, "clinvar_filled": 0, "cadd_filled": 0, "not_found": 0, "errors": 0, "total_queried": 0}
-        # For variants needing ClinVar: fill all fields
-        if clinvar_needed:
-            s1 = apply_myvariant_results(clinvar_needed, mv_results, fill_clinvar=True, fill_cadd=True)
-            for k in mv_stats:
-                mv_stats[k] += s1.get(k, 0)
-        # For variants NOT needing ClinVar: fill only gnomAD AF
-        if clinvar_skipped:
-            s2 = apply_myvariant_results(clinvar_skipped, mv_results, fill_clinvar=False, fill_cadd=False)
-            mv_stats["gnomad_filled"] += s2.get("gnomad_filled", 0)
-            mv_stats["not_found"] += s2.get("not_found", 0)
-            mv_stats["errors"] += s2.get("errors", 0)
-            mv_stats["total_queried"] += s2.get("total_queried", 0)
+        mv_stats = apply_myvariant_results(candidates_no_af, mv_results, fill_clinvar=True, fill_cadd=True)
         print(f"[GPA Phase 2] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, "
               f"{mv_stats['clinvar_filled']} ClinVar, "
-              f"{mv_stats['cadd_filled']} CADD filled "
-              f"(ClinVar skipped for {len(clinvar_skipped)} variants with certain impact)")
+              f"{mv_stats['cadd_filled']} CADD filled")
     except Exception as e:
         print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
 
@@ -553,6 +568,7 @@ async def run_two_phase_pipeline(
     variants_data: List[Dict],
     config: Optional[GPAConfig] = None,
     user_phenotypes: Optional[str] = None,
+    max_candidates: int = 150,
 ) -> Dict[str, Any]:
     """
     Two-phase GPA pipeline optimized for large VCF datasets.
@@ -567,7 +583,9 @@ async def run_two_phase_pipeline(
 
     t0 = time.time()
     global_config = config.to_global()
-    _trust_env = getattr(global_config, 'proxy', None) != "__DIRECT__"
+    # v0.10.4: Force trust_env=False to prevent system proxy (e.g., Clash)
+    # from intercepting gnomAD/Ensembl API calls.
+    _trust_env = False
     tissue_profile = config.get_tissue_profile()
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 
@@ -598,11 +616,28 @@ async def run_two_phase_pipeline(
     candidate_gene_set = set()
     for i in candidate_indices:
         tier, reason = _fast_tier_classification(variants[i])
+        variants[i].tier = tier
+        variants[i].tier_reason = reason
         if tier == 1:
             candidate_tier1.append(i)
         else:
             candidate_tier2.append(i)
         candidate_gene_set.add(variants[i].gene)
+
+    # v0.10.4: Warn if candidate count exceeds threshold, but do NOT truncate.
+    # User wants to be notified rather than silently dropping variants.
+    all_candidate_indices = list(set(candidate_tier1 + candidate_tier2))
+    if len(all_candidate_indices) > max_candidates:
+        print("=" * 60)
+        print(f"[GPA WARNING] Candidate count ({len(all_candidate_indices)}) exceeds "
+              f"threshold={max_candidates}")
+        print(f"              Tier 1: {len(candidate_tier1)}, Tier 2: {len(candidate_tier2)}")
+        print(f"              All {len(all_candidate_indices)} candidates will proceed to "
+              f"Phase 2 API enrichment (no truncation).")
+        print("              This may take longer due to gnomAD rate limits.")
+        print("=" * 60)
+    else:
+        all_candidate_indices = list(set(all_candidate_indices))
 
     # Non-candidates → Tier 3
     non_candidate_indices = [i for i in range(n_total) if i not in candidate_indices]
@@ -616,7 +651,7 @@ async def run_two_phase_pipeline(
           f"({len(candidate_gene_set)} candidate genes)")
 
     # If no candidates, skip Phase 2
-    if not candidate_indices:
+    if not all_candidate_indices:
         print(f"[GPA Two-Phase] No candidates — skipping Phase 2 enrichment. "
               f"Total: {time.time() - t0:.1f}s")
         return _build_output(
@@ -626,7 +661,6 @@ async def run_two_phase_pipeline(
 
     # ── Phase 2: Deep Enrichment for Candidates ONLY ──
     phase2_start = time.time()
-    all_candidate_indices = list(set(candidate_tier1 + candidate_tier2))
 
     print(f"[GPA Phase 2] Starting enrichment for {len(all_candidate_indices)} candidates "
           f"({len(candidate_gene_set)} genes)...")
@@ -749,8 +783,8 @@ def _build_output(
     qc_summary = _run_qc_checks(variants)
 
     # Mark enrichment status
-    for v in variants:
-        idx = variants.index(v)
+    # v0.10.4: Use enumerate() to avoid O(n²) variants.index(v) lookup
+    for idx, v in enumerate(variants):
         if idx not in enriched_set and v.tier == 3:
             v.tier_reason = f"[PRELIMINARY] {v.tier_reason}"
 

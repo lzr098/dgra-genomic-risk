@@ -106,6 +106,8 @@ def variants_from_vep_annotation(
                 "DP": str(v.get("dp", "")),
                 "QUAL": str(v.get("qual", "")),
                 "GT": v.get("gt", ""),
+                "GQ": str(v.get("gq", "")) if v.get("gq") is not None else "",
+                "VAF": str(v.get("vaf", "")) if v.get("vaf") is not None else "",
             })
             continue
 
@@ -145,6 +147,8 @@ def variants_from_vep_annotation(
                 "DP": str(v.get("dp", "")),
                 "QUAL": str(v.get("qual", "")),
                 "GT": v.get("gt", ""),
+                "GQ": str(v.get("gq", "")) if v.get("gq") is not None else "",
+                "VAF": str(v.get("vaf", "")) if v.get("vaf") is not None else "",
                 # v0.9.0 transcript selection metadata
                 "primary_transcript": primary.get("transcript_id", ""),
                 "primary_hgvsc": primary.get("hgvsc", ""),
