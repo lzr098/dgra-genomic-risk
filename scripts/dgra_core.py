@@ -290,6 +290,11 @@ class GPAConfig:
         gc.common_af_threshold = self.common_af_threshold
         gc.low_af_threshold = self.low_af_threshold
         gc.vaf_deviation_threshold = self.vaf_deviation_threshold
+        # v0.10.3: Allow cache DB override for sandboxed environments
+        import os
+        cache_override = os.environ.get("DGRA_CACHE_DB_PATH")
+        if cache_override:
+            gc.cache_db_path = Path(cache_override)
         return gc
 
     def get_tissue_profile(self, force_sync: bool = False) -> Dict:
@@ -324,15 +329,19 @@ class GPAConfig:
         # v0.5 P1-8: Merge special_gene_lists with sync + user extensions
         try:
             from dgra_gene_sync import get_merged_gene_lists_sync
-            merged_lists = get_merged_gene_lists_sync(
-                tissue_profile=self.tissue_profile,
-                offline_mode=self.offline_mode,
-                sync_enabled=self.gene_sync_enabled,
-                ttl_days=self.gene_sync_ttl_days,
-                force_sync=force_sync,
-            )
-            if merged_lists:
-                profile["special_gene_lists"] = merged_lists
+            try:
+                merged_lists = get_merged_gene_lists_sync(
+                    tissue_profile=self.tissue_profile,
+                    offline_mode=self.offline_mode,
+                    sync_enabled=self.gene_sync_enabled,
+                    ttl_days=self.gene_sync_ttl_days,
+                    force_sync=force_sync,
+                )
+                if merged_lists:
+                    profile["special_gene_lists"] = merged_lists
+            except RuntimeError as e:
+                # asyncio.run() fails when already in a running event loop
+                print(f"[GPA] Gene list sync skipped (event loop conflict) - using static lists")
         except Exception as e:
             # Non-blocking: if merge fails, keep static lists
             print(f"[GPA] Gene list sync warning: {e} - using static lists")

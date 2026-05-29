@@ -359,11 +359,26 @@ def main():
     parser.add_argument("--annotation-format", choices=["auto", "vep", "annovar", "snpeff"], default="auto")
     
     args = parser.parse_args()
-    
-    # Parse input
+
+    # v0.10.3: Guard against raw VCF — dgra_batch_runner only handles pre-annotated data
     sys.path.insert(0, str(SCRIPT_DIR))
+    from gpa_input import detect_input_type, InputType
+    input_type = detect_input_type(args.input_file)
+    if input_type == InputType.RAW_VCF:
+        print(json.dumps({
+            "success": False,
+            "error": (
+                f"Input file '{args.input_file}' is a raw VCF without VEP annotation. "
+                f"dgra_batch_runner only handles pre-annotated variant data. "
+                f"For raw VCF, use dgra_core.py directly: "
+                f"python scripts/dgra_core.py --input {args.input_file} --output report.md"
+            )
+        }, indent=2))
+        sys.exit(1)
+
+    # Parse input
     from dgra_input_parsers import parse_input
-    
+
     try:
         variants = parse_input(args.input_file, fmt=args.format if args.format != "auto" else None,
                                annotation_fmt=args.annotation_format if args.annotation_format != "auto" else None)

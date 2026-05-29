@@ -751,11 +751,20 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     return 2, reason, actions
 
     # Priority 2: Tier 2 checks
-    # 2a. Primary tissue gene, heterozygous, function affected
-    if tissue_assessment.get("relevance") in ["primary", "secondary"] and variant.gt in ["0/1", "0|1"]:
+    # 2a. Primary/secondary tissue gene, heterozygous, function affected
+    # v0.10.3: Include "unknown" relevance for HIGH-impact variants.
+    # When GTEx data is unavailable (offline mode), tissue relevance defaults to
+    # "unknown" rather than "none". HIGH-impact truncating variants should still
+    # be flagged for monitoring (Tier 2) rather than silently relegated to Tier 3.
+    _relevance = tissue_assessment.get("relevance")
+    if _relevance in ["primary", "secondary", "unknown"] and variant.gt in ["0/1", "0|1"]:
         if _impact_high(variant.impact):
-            _add_evidence("TissueRelevance", f"Heterozygous LOF in tissue-relevant {gene} → Tier 2", weight=0.6, confidence=_confidence_from_data(), raw_data={"relevance": tissue_assessment.get("relevance"), "gt": variant.gt, "impact": variant.impact, "domain": domain_info.get("domain") if domain_info else None})
-            reason = f"Heterozygous {variant.consequence} in tissue-relevant gene {gene}"
+            if _relevance == "unknown":
+                _add_evidence("TissueRelevance", f"Heterozygous LOF in {gene} → Tier 2 (tissue relevance unknown, GTEx offline)", weight=0.5, confidence="low", raw_data={"relevance": _relevance, "gt": variant.gt, "impact": variant.impact, "domain": domain_info.get("domain") if domain_info else None})
+                reason = f"Heterozygous {variant.consequence} in {gene} — tissue relevance unknown (GTEx offline), conservative Tier 2"
+            else:
+                _add_evidence("TissueRelevance", f"Heterozygous LOF in tissue-relevant {gene} → Tier 2", weight=0.6, confidence=_confidence_from_data(), raw_data={"relevance": _relevance, "gt": variant.gt, "impact": variant.impact, "domain": domain_info.get("domain") if domain_info else None})
+                reason = f"Heterozygous {variant.consequence} in tissue-relevant gene {gene}"
             if domain_info and domain_info.get("domain_integrity") in ["completely_destroyed", "partially_destroyed"]:
                 reason += f", {domain_info['domain']} domain disrupted"
             actions.append("Inform patient of carrier status")

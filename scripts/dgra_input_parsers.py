@@ -637,7 +637,25 @@ def parse_input(path: Path, fmt: Optional[str] = None, annotation_fmt: Optional[
     if fmt in ("tsv", "csv"):
         return TSVParser(dialect="tab" if fmt == "tsv" else "comma", adapter=adapter).parse(path)
     elif fmt == "vcf":
-        return VCFParser().parse(path)
+        result = VCFParser().parse(path)
+        # v0.10.3: Warn if raw VCF (no CSQ) was parsed — downstream pipeline
+        # will silently downgrade all variants to Tier 3 without annotation.
+        if result and len(result) > 0:
+            n_empty = sum(
+                1 for v in result
+                if not v.get("GENE") and not v.get("IMPACT") and not v.get("Consequence")
+            )
+            if n_empty == len(result):
+                import warnings
+                warnings.warn(
+                    f"VCF '{path}' has no VEP/CSQ annotation. "
+                    f"All {len(result)} variants parsed with empty Gene/IMPACT/Consequence. "
+                    f"Raw VCF must be annotated before pipeline entry. "
+                    f"Use VCFAnnotator, run_gpa_from_file(), or dgra_core.py --input for raw VCFs.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        return result
     elif fmt == "excel":
         return ExcelParser().parse(path)
     elif fmt == "freetext":
