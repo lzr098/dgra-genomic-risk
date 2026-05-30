@@ -122,7 +122,7 @@ def run_batch(
         try:
             with open(json_out, "r", encoding="utf-8") as f:
                 results = json.load(f)
-        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError) as e:
+        except Exception as e:
             return {
                 "success": False,
                 "error": f"Batch {batch_id} JSON parse failed: {e}",
@@ -343,10 +343,7 @@ def run_gpa_batched(
 
 def main():
     import argparse
-    # v0.10.11: Dynamic import to avoid circular dependency with dgra_cli_wrapper
-    import importlib
-    _cli_wrapper = importlib.import_module('dgra_cli_wrapper')
-    run_gpa_from_file = _cli_wrapper.run_gpa_from_file
+    from dgra_cli_wrapper import run_gpa_from_file  # Reuse input parsing
     
     parser = argparse.ArgumentParser(description="GPA Batch Runner v0.7.1")
     parser.add_argument("--input-file", "-i", type=Path, required=True)
@@ -385,7 +382,7 @@ def main():
     try:
         variants = parse_input(args.input_file, fmt=args.format if args.format != "auto" else None,
                                annotation_fmt=args.annotation_format if args.annotation_format != "auto" else None)
-    except (IndexError, ValueError, json.JSONDecodeError) as e:
+    except Exception as e:
         print(json.dumps({"success": False, "error": f"Parse failed: {e}"}, indent=2))
         sys.exit(1)
     

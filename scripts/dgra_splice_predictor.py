@@ -350,7 +350,7 @@ class SpliceAIPredictor:
                     "vep_data": data,
                 },
             )
-        except (IndexError, ValueError) as e:
+        except Exception as e:
             logger.error(f"VEP SpliceAI parse error: {e}, data={data}")
             return SpliceAIResult(source="api_error")
 
@@ -404,7 +404,7 @@ class SpliceAIPredictor:
                 source=source,
                 raw_response=data,
             )
-        except (ConnectionError, TimeoutError) as e:
+        except Exception as e:
             logger.error(f"SpliceAI response parse error: {e}, data={data}")
             return SpliceAIResult(source="api_error")
 
@@ -514,7 +514,7 @@ async def query_spliceai_batch(
                 result = await predictor.query(v.chrom, v.pos, v.ref, v.alt)
                 results[cache_key] = result
                 predictor._cache[cache_key] = result
-            except (RuntimeError, ValueError) as e:
+            except Exception as e:
                 logger.error(f"SpliceAI batch query error for {cache_key}: {e}")
                 err_result = SpliceAIResult(source="api_error")
                 results[cache_key] = err_result

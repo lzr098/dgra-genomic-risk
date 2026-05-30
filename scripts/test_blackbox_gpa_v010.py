@@ -22,12 +22,10 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 
 # v0.10.0: Import dgra_core BEFORE gpa_pipeline to avoid circular import
 # (dgra_core.py line 2132 imports run_dgra_pipeline from gpa_pipeline for backward compat)
+from dgra_core import GPAConfig, Variant
 from gpa_tier_classifier import classify_variant_tier
 from gpa_pipeline import run_dgra_pipeline
 from dgra_cli_wrapper import run_gpa
-from gpa_types import Variant, GPAConfig, _GENE_FAMILY_REDUNDANCY
-from gpa_analysis import _x_linked_female_adjustment
-
 
 
 # =============================================================================
@@ -818,6 +816,7 @@ def test_somatic_tsg_lof_tier1():
 
 def test_x_linked_female_heterozygous_adjustment():
     """TB-XLK-01: X 染色体女性杂合 + haplosufficient → Tier 下调。"""
+    from dgra_core import _x_linked_female_adjustment
     # Tier 1 → Tier 2 for X-linked female heterozygous with haplosufficient gene
     adj_tier, adj_reason = _x_linked_female_adjustment(
         1, "X", "0/1", {"pLI": 0.1, "loeuf": 2.0}
@@ -833,6 +832,7 @@ def test_x_linked_female_heterozygous_adjustment():
 
 def test_gene_family_redundancy_complete_compensation():
     """TB-RED-01: 完全代偿基因家族 → Tier 1 降级为 Tier 2。"""
+    from dgra_core import _GENE_FAMILY_REDUNDANCY
     # HLA-A has complete compensation
     v = _mk_variant_obj(
         gene="HLA-A", impact="HIGH", consequence="stop_gained",
@@ -878,7 +878,7 @@ async def run_async_tests():
         try:
             await t()
             passed += 1
-        except (RuntimeError, ValueError) as e:
+        except Exception as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
     return passed, failed
@@ -926,7 +926,7 @@ def run_sync_tests():
         try:
             t()
             passed += 1
-        except (RuntimeError, ValueError) as e:
+        except Exception as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
     return passed, failed

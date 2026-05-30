@@ -17,7 +17,7 @@ _TISSUE_CONTEXT_PATH = Path(__file__).resolve().parent.parent / "references" / "
 
 
 def load_tissue_context():
-    with open(_TISSUE_CONTEXT_PATH, "r", encoding='utf-8') as f:
+    with open(_TISSUE_CONTEXT_PATH, "r") as f:
         return json.load(f)
 
 
@@ -98,7 +98,7 @@ def main():
         except AssertionError as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
-        except (RuntimeError, ValueError) as e:
+        except Exception as e:
             print(f"[ERROR] {t.__name__}: {e}")
             failed += 1
     

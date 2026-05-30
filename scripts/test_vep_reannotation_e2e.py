@@ -21,12 +21,17 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+from dgra_core import (
+    Variant,
+    GPAConfig,
+    correct_transcript_priority,
+    map_variant_to_domain,
+    assess_tissue_relevance,
+    classify_gnomad_frequency,
+    detect_multi_hit_genes,
+)
 from gpa_report import generate_tier_report, _format_vep_reannotation_note
 from gpa_tier_classifier import classify_variant_tier
-from gpa_types import Variant, GPAConfig
-from gpa_analysis import correct_transcript_priority, map_variant_to_domain, assess_tissue_relevance, classify_gnomad_frequency
-from gpa_multi_hit import detect_multi_hit_genes
-
 
 
 async def test_crip2_vep_reannotation_e2e():
@@ -211,7 +216,7 @@ def main():
     except AssertionError as e:
         print(f"\n[FAIL] Assertion failed: {e}")
         sys.exit(1)
-    except (RuntimeError, ValueError) as e:
+    except Exception as e:
         print(f"\n[FAIL] Unexpected error: {e}")
         import traceback
         traceback.print_exc()

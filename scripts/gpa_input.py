@@ -51,7 +51,7 @@ def detect_input_type(input_path: str) -> InputType:
                     return InputType.ANNOTATED_TABLE
                 else:
                     return InputType.FREE_TEXT
-        except (IndexError, ValueError):
+        except Exception:
             return InputType.UNKNOWN
 
 
@@ -70,7 +70,7 @@ def _has_vcf_annotation(vcf_path: str) -> bool:
                     return True
                 if not line.startswith('#') and f'{VEP_ANNOTATION_FIELD}=' in line:
                     return True
-    except (IndexError, ValueError):
+    except Exception:
         pass
     return False
 
@@ -106,8 +106,6 @@ def variants_from_vep_annotation(
                 "DP": str(v.get("dp", "")),
                 "QUAL": str(v.get("qual", "")),
                 "GT": v.get("gt", ""),
-                "GQ": str(v.get("gq", "")) if v.get("gq") is not None else "",
-                "VAF": str(v.get("vaf", "")) if v.get("vaf") is not None else "",
             })
             continue
 
@@ -142,13 +140,9 @@ def variants_from_vep_annotation(
                 "IMPACT": primary.get("impact", ""),
                 "HGVSc": primary.get("hgvsc", ""),
                 "HGVSp": primary.get("hgvsp", ""),
-                # v0.10.1: Extract ClinVar from VEP annotation (saves MyVariant re-query)
-                "CLIN_SIG": primary.get("clin_sig", ""),
                 "DP": str(v.get("dp", "")),
                 "QUAL": str(v.get("qual", "")),
                 "GT": v.get("gt", ""),
-                "GQ": str(v.get("gq", "")) if v.get("gq") is not None else "",
-                "VAF": str(v.get("vaf", "")) if v.get("vaf") is not None else "",
                 # v0.9.0 transcript selection metadata
                 "primary_transcript": primary.get("transcript_id", ""),
                 "primary_hgvsc": primary.get("hgvsc", ""),

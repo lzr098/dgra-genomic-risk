@@ -20,21 +20,14 @@ import time
 from typing import List, Dict, Optional, Any, Tuple, Set
 
 # Import from core (lazy to avoid circular)
+from dgra_core import (
+    Variant, GPAConfig, _UNKNOWN, classify_gnomad_frequency,
+    normalize_gene_symbols, map_variant_to_domain, assess_tissue_relevance,
+    predict_nmd, correct_transcript_priority, detect_pseudogene_artifact,
+    _save_offline_archive, _load_offline_archive,
+)
 from dgra_cache import DGRACache
 from dgra_api import DGRAAPIClient
-from gpa_types import Variant, GPAConfig, _UNKNOWN
-from gpa_analysis import (
-    classify_gnomad_frequency,
-    normalize_gene_symbols,
-    map_variant_to_domain,
-    assess_tissue_relevance,
-    predict_nmd,
-    correct_transcript_priority,
-    detect_pseudogene_artifact,
-    _save_offline_archive,
-    _load_offline_archive,
-)
-
 
 
 # ─── Phase 1: Fast Local Triage ────────────────────────────────────────────
@@ -59,16 +52,16 @@ _NEUROMUSCULAR_DISEASE_GENES: Set[str] = {
     "PABPN1", "GNE", "MYH2", "MATR3", "VCP", "HNRNPA1",
     "HNRNPA2B1", "SQSTM1", "TIA1",
 
-    # Distal Myopathies (MYH7, TIA1, CRYAB already in Muscular Dystrophies)
-    "DNAJB6",
+    # Distal Myopathies
+    "MYH7", "TIA1", "DNAJB6", "CRYAB",
 
     # Myotonic Disorders
     "CLCN1", "SCN4A", "DMPK", "CNBP",
 
     # Congenital Myopathies
-    "CFL2", "SEPN1",
-    "KLHL40", "KLHL41", "LMOD3",
-    # (ACTA1, NEB, TPM2, TPM3, TNNT1, RYR1, MTM1, DNM2, BIN1, TTN, MYH7 already listed above)
+    "ACTA1", "NEB", "TPM2", "TPM3", "TNNT1", "CFL2",
+    "RYR1", "SEPN1", "MTM1", "DNM2", "BIN1", "TTN",
+    "MYH7", "KLHL40", "KLHL41", "LMOD3",
 
     # Metabolic Myopathies
     "GAA", "AGL", "PYGM", "PFKM", "PGAM2", "LDHA",
@@ -82,9 +75,9 @@ _NEUROMUSCULAR_DISEASE_GENES: Set[str] = {
     "PMP22", "MPZ", "GJB1", "MFN2", "GDAP1", "NEFL",
     "HSPB1", "HSPB8", "LITAF", "EGR2",
 
-    # Mitochondrial (MFN2 also in Charcot-Marie-Tooth)
+    # Mitochondrial
     "POLG", "TK2", "RRM2B", "SUCLA2", "SUCLG1",
-    "OPA1",
+    "OPA1", "MFN2",
 
     # Other Neuromuscular
     "SMN1", "SMN2", "IGHMBP2", "DYNC1H1", "BICD2",
@@ -405,6 +398,7 @@ async def _enrich_gtex(
         "cognitive": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
         "autism": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
         "脑": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "神经": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
         "智力": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
         "自闭症": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
         "认知": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
@@ -519,7 +513,7 @@ async def _enrich_gtex(
                     return gene, {
                         "median_tpm": global_max,  # Use global max as representative
                         "max_tpm": global_max,
-                        "all_tissues": [[t, float(tpm)] for t, tpm in all_expressing],
+                        "all_tissues": [{"tissue": t, "tpm": tpm} for t, tpm in all_expressing],
                         "expressing_tissues": expressing_count,
                         "source": "gtex_multi",
                         "confidence": "medium",
@@ -529,7 +523,7 @@ async def _enrich_gtex(
                         "phenotype_matched_keywords": phenotype_matched_keywords,
                         "global_max_tpm": global_max,
                     }
-                except (ConnectionError, TimeoutError) as e:
+                except Exception as e:
                     print(f"[GPA Phase 2] GTEx warning for {gene}: {type(e).__name__}: {e}")
                     return gene, None
         
@@ -583,7 +577,8 @@ def _variant_needs_spliceai(v: Variant) -> bool:
     # intron_variant within 50bp of splice site is also relevant
     # (we check distance if exon boundary info available in vcf_info)
     if "intron_variant" in cons_terms:
-        intron_dist = getattr(v, 'vcf_info', {}).get('SPLICE_DIST')
+        vcf_info = getattr(v, 'vcf_info', None) or {}
+        intron_dist = vcf_info.get('SPLICE_DIST')
         if intron_dist is not None and abs(int(intron_dist)) <= 50:
             return True
     return False
@@ -626,11 +621,11 @@ async def _enrich_variant_frequencies(
         # v0.10.4: Always fill ClinVar and CADD for all candidates
         async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as mv_session:
             mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
-        mv_stats = apply_myvariant_results(candidates_no_af, mv_results, fill_clinvar=True, fill_cadd=True)
+        mv_stats = apply_myvariant_results(candidates_no_af, mv_results)
         print(f"[GPA Phase 2] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, "
               f"{mv_stats['clinvar_filled']} ClinVar, "
               f"{mv_stats['cadd_filled']} CADD filled")
-    except (RuntimeError, ValueError) as e:
+    except Exception as e:
         print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
 
     # Fallback: gnomAD GraphQL ONLY for candidates still without AF
@@ -646,7 +641,7 @@ async def _enrich_variant_frequencies(
             async with gnomad_sem:
                 try:
                     return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
-                except (ConnectionError, TimeoutError) as e:
+                except Exception as e:
                     return {"status": "API_FAILED", "error": str(e), "source": "failed"}
         results = await asyncio.gather(*[_query_one(v) for v in still_no_af])
         for v, result in zip(still_no_af, results):
@@ -674,7 +669,7 @@ async def _enrich_variant_frequencies(
                             return await client.query_ncbi_clinvar(
                                 gene=v.gene, chrom=v.chrom, pos=v.pos
                             )
-                        except (ConnectionError, TimeoutError) as e:
+                        except Exception as e:
                             return {"clinical_significance": None, "error": str(e), "source": "failed"}
                 cv_results = await asyncio.gather(*[_query_one_clinvar(v) for v in cv_candidates])
                 n_found = 0
@@ -767,7 +762,7 @@ async def _enrich_phenotype(
                 v.phenotype_match_explanation = "No known phenotypes found for this gene in local database."
                 v.phenotype_match_confidence = "low"
             return
-    except (RuntimeError, ValueError) as e:
+    except Exception as e:
         print(f"[GPA Phase 2] Phenotype pre-filter error (proceeding with all): {e}")
         genes_with_data = candidate_genes
         genes_without_data = []
@@ -799,7 +794,7 @@ async def _enrich_phenotype(
             v.phenotype_match_confidence = mr.get("confidence", "")
             v.phenotype_matched_pairs = mr.get("matched_pairs", [])
             v.phenotype_known_list = mr.get("known_phenotypes", [])
-    except (RuntimeError, ValueError) as e:
+    except Exception as e:
         print(f"[GPA Phase 2] Phenotype matching failed (non-critical): {type(e).__name__}: {e}")
 
 
@@ -824,6 +819,21 @@ async def run_two_phase_pipeline(
 
     t0 = time.time()
     global_config = config.to_global()
+
+    # v0.10.1: Preflight health check — verify all dependencies before starting analysis
+    from gpa_preflight import run_preflight_check, suggest_action
+    preflight = await run_preflight_check(global_config)
+    if not preflight.is_ready():
+        action = suggest_action(preflight)
+        if action == "abort":
+            print("[GPA Preflight] 环境检查未通过，中止分析。")
+            print(preflight.to_markdown())
+            return {"error": "Preflight failed", "report": preflight.to_dict()}
+        elif action == "offline":
+            print("[GPA Preflight] 切换到离线模式（跳过所有 API 调用）")
+            config.offline_mode = True
+            global_config.offline_mode = True
+
     # v0.10.4: Force trust_env=False to prevent system proxy (e.g., Clash)
     # from intercepting gnomAD/Ensembl API calls.
     _trust_env = False

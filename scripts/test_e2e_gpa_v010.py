@@ -21,8 +21,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from gpa_pipeline import run_dgra_pipeline
-from gpa_types import GPAConfig
-
+from dgra_core import GPAConfig
 
 
 # =============================================================================
@@ -197,6 +196,7 @@ async def test_circular_import_fix():
 
     # This should not raise ImportError
     from gpa_pipeline import run_dgra_pipeline as rdp
+    from dgra_core import GPAConfig as GC
     assert rdp is not None
     assert GC is not None
 
@@ -227,7 +227,7 @@ async def main():
         try:
             await t()
             passed += 1
-        except (RuntimeError, ValueError) as e:
+        except Exception as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
 

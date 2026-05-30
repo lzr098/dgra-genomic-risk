@@ -11,11 +11,13 @@ from pathlib import Path
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+from dgra_core import (
+    Variant, GPAConfig,
+    _run_qc_checks,
+    detect_pseudogene_artifact,
+    _load_pseudogene_database,
+)
 from gpa_tier_classifier import classify_variant_tier
-from gpa_types import Variant, GPAConfig
-from gpa_analysis import detect_pseudogene_artifact, _load_pseudogene_database
-from gpa_qc import _run_qc_checks
-
 
 
 def test_vaf_gt_mismatch_heterozygous_low():
@@ -169,7 +171,7 @@ def main():
         except AssertionError as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
-        except (RuntimeError, ValueError) as e:
+        except Exception as e:
             print(f"[ERROR] {t.__name__}: {e}")
             failed += 1
     

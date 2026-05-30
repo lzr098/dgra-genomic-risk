@@ -12,9 +12,8 @@ import json
 import re
 from pathlib import Path
 from typing import List, Dict
-from gpa_types import Variant
 
-
+from dgra_core import Variant
 
 
 # =============================================================================
@@ -31,7 +30,7 @@ def _load_repeatmasker():
         return _REPEATMASKER_DATA
     rm_path = Path(__file__).resolve().parent.parent / "references" / "repeatmasker_regions.json"
     if rm_path.exists():
-        with open(rm_path, 'r', encoding='utf-8') as f:
+        with open(rm_path, 'r') as f:
             _REPEATMASKER_DATA = json.load(f)
     else:
         _REPEATMASKER_DATA = []

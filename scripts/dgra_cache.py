@@ -344,12 +344,12 @@ class DGRACache:
         for api_name in apis:
             dump[api_name] = self.get_all_for_api(api_name)
         
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, 'w') as f:
             json.dump(dump, f, indent=2, default=str)
     
     def load_from_json(self, input_path: Path) -> int:
         """Import cache from JSON backup."""
-        with open(input_path, 'r', encoding='utf-8') as f:
+        with open(input_path, 'r') as f:
             dump = json.load(f)
         
         total = 0

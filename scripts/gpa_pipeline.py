@@ -14,319 +14,34 @@ import logging
 import re
 
 import aiohttp  # v0.10.3-fix: required for gnomad query exception handling
+
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
 
-from gpa_tier_classifier import classify_variant_tier, _is_rare_disease_gene
-from gpa_phaser import PhaseResult
-from gpa_multi_hit import detect_multi_hit_genes
-from gpa_qc import _run_qc_checks
-from gpa_report import generate_tier_report, generate_json_report
-from dgra_cache import DGRACache
-from dgra_api import DGRAAPIClient
-from gpa_types import (
-    Variant,
-    GPAConfig,
-    _UNKNOWN,
-    _COMMON_TS_GENES,
-    _KNOWN_AML_DRIVERS,
-    _GENE_FAMILY_REDUNDANCY,
-)
-from gpa_analysis import (
+from dgra_core import (
+    Variant, GPAConfig, _UNKNOWN,
+    _COMMON_TS_GENES, _KNOWN_AML_DRIVERS, _GENE_FAMILY_REDUNDANCY,
     OFFLINE_ARCHIVE_DIR,
-    _save_offline_archive,
-    _load_offline_archive,
+    _save_offline_archive, _load_offline_archive,
     assess_tissue_relevance,
-    classify_gnomad_frequency,
-    normalize_gene_symbols,
-    map_variant_to_domain,
-    evaluate_gene_constraint,
-    predict_nmd,
-    evaluate_missense_tier,
+    classify_gnomad_frequency, normalize_gene_symbols,
+    map_variant_to_domain, evaluate_gene_constraint,
+    predict_nmd, evaluate_missense_tier,
     aggregate_gtex_expression,
     _x_linked_female_adjustment,
     detect_pseudogene_artifact,
     _variant_has_pathogenic_evidence,
     correct_transcript_priority,
 )
-
-
-
-def _select_for_api_enrichment(variants: List[Variant], max_total: int = 150) -> List[Variant]:
-    """
-    v0.10.2: Two-phase pipeline — select Tier 2 all + Tier 3 high-priority for API enrichment.
-    Controls total API calls to ~100-150 variants.
-
-    Selection rules (Tier 3 only):
-      - Unconditional: frameshift, stop_gained, stop_lost, splice_donor, splice_acceptor
-      - Conditional missense: only in known disease genes OR high-constraint genes (pLI>0.9 or LOEUF<0.35)
-      - Conditional splice_region: only if combined with exonic effect (missense/synonymous)
-      - Conditional inframe indel: only in known disease genes
-      - Exclude: synonymous, pure intron, UTR, upstream/downstream, MODIFIER
-      - Quality: GQ >= 20, VAF >= 0.15, must have gene name
-    """
-    selected = [v for v in variants if v.tier == 2]
-    tier3_candidates = []
-
-    for v in variants:
-        if v.tier != 3:
-            continue
-        # Quality filters
-        if v.gq is not None and v.gq < 20:
-            continue
-        if v.vaf is not None and v.vaf < 0.15:
-            continue
-        if not v.gene or v.gene == "UNKNOWN":
-            continue
-
-        cons = v.consequence.lower()
-
-        # Priority A: Unconditional LOF / frameshift / canonical splice
-        if any(term in cons for term in [
-            "frameshift_variant",
-            "stop_gained", "stop_lost", "start_lost",
-            "splice_donor_variant", "splice_acceptor_variant",
-            "splice_donor_5th_base_variant",
-        ]):
-            tier3_candidates.append((v, 10))
-            continue
-
-        # Priority B: Conditional missense — only in disease genes or high constraint
-        if "missense_variant" in cons:
-            is_rare_disease = _is_rare_disease_gene(v.gene)
-            gc = v.gene_constraint or {}
-            is_constrained = (
-                (gc.get("pLI") or 0) > 0.9 or
-                (gc.get("loeuf") or 1) < 0.35
-            )
-            if is_rare_disease or is_constrained:
-                tier3_candidates.append((v, 5))
-            continue
-
-        # Priority C: splice_region — only if combined with exonic effect
-        if "splice_region_variant" in cons:
-            if "missense_variant" in cons or "synonymous_variant" in cons:
-                tier3_candidates.append((v, 3))
-            continue
-
-        # Priority D: inframe indels — only in disease genes
-        if any(term in cons for term in ["inframe_insertion", "inframe_deletion"]):
-            if _is_rare_disease_gene(v.gene):
-                tier3_candidates.append((v, 4))
-            continue
-
-    # Sort by priority desc, then by pLI desc
-    def _sort_key(item):
-        v, priority = item
-        pLI = (v.gene_constraint or {}).get("pLI") or 0
-        return (-priority, -pLI)
-
-    tier3_candidates.sort(key=_sort_key)
-
-    # v0.10.4: Do NOT truncate — add all qualified Tier 3 candidates.
-    # If total exceeds threshold, print a prominent warning instead.
-    selected.extend([v for v, _ in tier3_candidates])
-
-    if len(selected) > max_total:
-        print("=" * 60)
-        print(f"[GPA WARNING] API enrichment candidates ({len(selected)}) exceed "
-              f"threshold={max_total}")
-        print(f"              Tier 2: {sum(1 for v in selected if v.tier == 2)}, "
-              f"Tier 3: {sum(1 for v in selected if v.tier == 3)}")
-        print(f"              All {len(selected)} candidates will proceed to API enrichment "
-              f"(no truncation).")
-        print("              This may take longer due to gnomAD rate limits.")
-        print("=" * 60)
-
-    return selected
-
-
-async def _run_api_enrichment_phase(
-    variants: List[Variant],
-    selected: List[Variant],
-    tissue_assessments: Dict,
-    tissue_profile: Dict,
-    config: GPAConfig,
-    global_config: Any,
-) -> Dict[str, int]:
-    """
-    v0.10.2: Phase 2 — API enrichment for selected Tier 2 + Tier 3 variants.
-    Queries gnomAD + MyVariant.info + SpliceAI, then re-classifies.
-    Returns stats dict.
-    """
-    stats = {
-        "selected": len(selected),
-        "tier2": sum(1 for v in selected if v.tier == 2),
-        "tier3": sum(1 for v in selected if v.tier == 3),
-        "gnomad_success": 0,
-        "gnomad_not_captured": 0,
-        "gnomad_failed": 0,
-        "myvariant_gnomad_filled": 0,
-        "myvariant_clinvar_filled": 0,
-        "myvariant_cadd_filled": 0,
-        "clinvar_direct_found": 0,
-        "clinvar_direct_conflicting": 0,
-        "clinvar_direct_failed": 0,
-        "spliceai_queried": 0,
-        "tier_changed": 0,
-    }
-
-    if not selected:
-        print("[GPA] Phase 2: no variants selected for API enrichment")
-        return stats
-
-    print(f"[GPA] Phase 2: API enrichment for {len(selected)} variants (Tier 2={stats['tier2']}, Tier 3={stats['tier3']})")
-
-    cache = DGRACache(global_config.cache_db_path)
-    async with DGRAAPIClient(global_config, cache) as client:
-        # --- gnomAD GraphQL ---
-        gnomad_sem = asyncio.Semaphore(2)
-        async def _query_one_gnomad(v):
-            async with gnomad_sem:
-                try:
-                    return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
-                except asyncio.TimeoutError as e:
-                    return {"status": "API_FAILED", "error": f"timeout: {e}", "source": "failed"}
-                except aiohttp.ClientError as e:
-                    return {"status": "API_FAILED", "error": f"client_error: {e}", "source": "failed"}
-                except (ConnectionError, TimeoutError, aiohttp.ClientError, asyncio.TimeoutError) as e:
-                    return {"status": "API_FAILED", "error": str(e), "source": "failed"}
-
-        gnomad_results = await asyncio.gather(*[_query_one_gnomad(v) for v in selected])
-        _myvariant_fallback = []
-
-        for v, result in zip(selected, gnomad_results):
-            if result and result.get("source") in ("gnomad", "cache", "failed"):
-                af = result.get("af")
-                gnomad_status = result.get("status", "NOT_CAPTURED")
-                if af is not None:
-                    v.gnomad_af = af
-                    v.gnomad_populations = result.get("af_populations", {})
-                    v.gnomad_status = "SUCCESS"
-                    stats["gnomad_success"] += 1
-                elif gnomad_status == "QUERY_ERROR":
-                    v.gnomad_status = "QUERY_ERROR"
-                    v.gnomad_error_msg = result.get("note", "gnomAD GraphQL query error")
-                    v.gnomad_af_warning = True
-                    _myvariant_fallback.append(v)
-                else:
-                    v.gnomad_status = result.get("status", "NOT_CAPTURED")
-                    v.gnomad_populations = {}
-                    stats["gnomad_not_captured"] += 1
-                    _myvariant_fallback.append(v)
-            elif result and result.get("status") == "API_FAILED":
-                v.gnomad_status = "API_FAILED"
-                v.gnomad_error_msg = result.get("error", "unknown")
-                v.gnomad_af_warning = True
-                v.gnomad_populations = {}
-                stats["gnomad_failed"] += 1
-                _myvariant_fallback.append(v)
-
-        # --- MyVariant.info fallback for gnomAD failures / NOT_CAPTURED ---
-        if _myvariant_fallback:
-            print(f"[GPA] MyVariant.info fallback: querying {_myvariant_fallback} variants")
-            try:
-                from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
-                mv_sem = asyncio.Semaphore(10)
-                mv_timeout = aiohttp.ClientTimeout(total=120)
-                mv_vars = [(v.chrom, v.pos, v.ref, v.alt) for v in _myvariant_fallback]
-                async with aiohttp.ClientSession(timeout=mv_timeout, trust_env=False) as mv_session:
-                    mv_results = await query_myvariant_batch(mv_vars, mv_session, semaphore=mv_sem, batch_size=500)
-                mv_stats = apply_myvariant_results(_myvariant_fallback, mv_results)
-                stats["myvariant_gnomad_filled"] = mv_stats.get("gnomad_filled", 0)
-                stats["myvariant_clinvar_filled"] = mv_stats.get("clinvar_filled", 0)
-                stats["myvariant_cadd_filled"] = mv_stats.get("cadd_filled", 0)
-                for v in _myvariant_fallback:
-                    if v.gnomad_af is not None:
-                        v.gnomad_status = "MYVARIANT_FALLBACK"
-                        v.gnomad_af_warning = False
-                print(f"[GPA] MyVariant.info: {stats['myvariant_gnomad_filled']} gnomAD, {stats['myvariant_clinvar_filled']} ClinVar, {stats['myvariant_cadd_filled']} CADD filled")
-            except (IndexError, ValueError) as e:
-                print(f"[GPA] MyVariant.info fallback failed: {type(e).__name__}: {e}")
-
-        # --- NCBI ClinVar direct query (v0.10.5) ---
-        # Priority: ClinVar direct > MyVariant.info > VCF annotation
-        print(f"[GPA] ClinVar direct: querying {len(selected)} variants via NCBI E-utilities")
-        clinvar_sem = asyncio.Semaphore(2)  # Respect NCBI 3 req/s limit
-
-        async def _query_one_clinvar(v):
-            async with clinvar_sem:
-                try:
-                    return await client.query_ncbi_clinvar(
-                        gene=v.gene,
-                        chrom=v.chrom,
-                        pos=v.pos,
-                    )
-                except (ConnectionError, TimeoutError) as e:
-                    return {"clinical_significance": None, "error": str(e), "source": "failed"}
-
-        clinvar_results = await asyncio.gather(*[_query_one_clinvar(v) for v in selected])
-        for v, cv_result in zip(selected, clinvar_results):
-            sig = cv_result.get("clinical_significance")
-            if sig:
-                # ClinVar direct found data — override MyVariant/VCF
-                v.clinvar = sig
-                v.clinvar_review_status = cv_result.get("review_status")
-                stats["clinvar_direct_found"] += 1
-                if cv_result.get("conflicting"):
-                    stats["clinvar_direct_conflicting"] += 1
-                    # Append conflict note to tier_actions
-                    v.tier_actions.append(
-                        f"ClinVar conflict: {cv_result.get('submitter_count', 0)} submitters disagree — "
-                        f"downgrade confidence"
-                    )
-            elif cv_result.get("source") == "failed":
-                stats["clinvar_direct_failed"] += 1
-        print(f"[GPA] ClinVar direct: {stats['clinvar_direct_found']} found, {stats['clinvar_direct_conflicting']} conflicting, {stats['clinvar_direct_failed']} failed")
-
-        # --- SpliceAI ---
-        if getattr(config, 'spliceai_enabled', False):
-            from dgra_splice_predictor import query_spliceai_batch, should_query_spliceai
-            spliceai_candidates = [v for v in selected if should_query_spliceai(v.consequence)]
-            if spliceai_candidates:
-                stats["spliceai_queried"] = len(spliceai_candidates)
-                spliceai_sem = asyncio.Semaphore(getattr(config, 'spliceai_concurrency', 5))
-                print(f"[GPA] SpliceAI: querying {len(spliceai_candidates)} splice variants")
-                spliceai_results = await query_spliceai_batch(
-                    spliceai_candidates, spliceai_sem
-                )
-                for v in spliceai_candidates:
-                    key = f"{v.chrom.replace('chr', '') if v.chrom.startswith('chr') else v.chrom}:{v.pos}:{v.ref}:{v.alt}"
-                    if key in spliceai_results:
-                        v.spliceai_result = spliceai_results[key]
-                    else:
-                        v.spliceai_result = {"source": "not_in_db", "delta_score": None, "predicted_impact": None}
-                print(f"[GPA] SpliceAI: batch complete")
-
-    # --- Phase 3: Re-classify selected variants with enriched data ---
-    print(f"[GPA] Phase 3: Re-classifying {len(selected)} enriched variants")
-    for v in selected:
-        old_tier = v.tier
-        tissue = tissue_assessments.get(v.gene, {})
-        gnomad_info = classify_gnomad_frequency(
-            v.gnomad_af, v.gene,
-            af_by_population=v.gnomad_populations,
-            target_population=getattr(config, 'target_population', None)
-        )
-        v.gnomad_status = gnomad_info["status"]
-        tw = json.loads(v.transcript_warning) if v.transcript_warning else None
-        pw = json.loads(v.pseudogene_warning) if v.pseudogene_warning else None
-
-        tier, reason, actions = classify_variant_tier(
-            v, v.domain_info, tissue, gnomad_info, tw, pw, tissue_profile, config
-        )
-        v.tier = tier
-        v.tier_reason = reason
-        v.tier_actions = actions
-        if old_tier != tier:
-            stats["tier_changed"] += 1
-            print(f"[GPA] Tier changed: {v.gene} {v.chrom}:{v.pos} {v.hgvsp} {old_tier} -> {tier}")
-
-    print(f"[GPA] Phase 3 complete: {stats['tier_changed']} variants changed tier after enrichment")
-    return stats
-
+from gpa_tier_classifier import classify_variant_tier
+from gpa_phaser import PhaseResult
+from gpa_multi_hit import detect_multi_hit_genes
+from gpa_qc import _run_qc_checks
+from gpa_report import generate_tier_report, generate_json_report
+from dgra_cache import DGRACache
+from dgra_api import DGRAAPIClient
 
 async def run_dgra_pipeline(variants_data: List[Dict],
                       user_phenotypes: Optional[str] = None,
@@ -350,9 +65,24 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     # Convert user config to global config
     global_config = config.to_global()
 
-    # v0.10.1: Force direct connection (trust_env=False) to avoid system proxy
-    # intercepting scientific API calls. Previous logic caused mass query failures.
-    _trust_env = False
+    # v0.10.1: Preflight health check — verify all dependencies before starting analysis
+    from gpa_preflight import run_preflight_check, suggest_action
+    preflight = await run_preflight_check(global_config)
+    if not preflight.is_ready():
+        action = suggest_action(preflight)
+        if action == "abort":
+            print("[GPA Preflight] 环境检查未通过，中止分析。")
+            print(preflight.to_markdown())
+            return {"error": "Preflight failed", "report": preflight.to_dict()}
+        elif action == "offline":
+            print("[GPA Preflight] 切换到离线模式（跳过所有 API 调用）")
+            config.offline_mode = True
+            global_config.offline_mode = True
+
+    # v0.9.5: Respect global proxy config for all standalone aiohttp sessions
+    # (DGRAAPIClient already handles this; these sessions need it too)
+    # None → use system proxy (trust_env=True), "__DIRECT__" → disable proxy (trust_env=False)
+    _trust_env = getattr(global_config, 'proxy', None) != "__DIRECT__"
 
     # Load tissue profile (keeps tier_rules + special_gene_lists)
     tissue_profile = config.get_tissue_profile()
@@ -512,7 +242,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     print(f"[GPA] Tissue profile: {profile_name} | Offline: {config.offline_mode}")
 
     # ------------------------------------------------------------------
-    # Batch API queries (concurrent) - v0.10.2 optimized
+    # Batch API queries (concurrent)
     # ------------------------------------------------------------------
     ensembl_data = {}
     uniprot_data = {}
@@ -520,70 +250,211 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     hgnc_data = {}
     gnomad_constraint_data = {}
 
-    # v0.10.2: Always load offline archive first (even in online mode)
-    # to skip API queries for genes we already have data for.
-    archived_genes = set()
-    for gene in unique_genes:
-        archive = _load_offline_archive(gene)
-        if archive:
-            ensembl_data[gene] = archive.get("ensembl", {})
-            uniprot_data[gene] = archive.get("uniprot", {})
-            gtex_data[gene] = archive.get("gtex", {})
-            gc = archive.get("gnomad_constraint")
-            if gc and gc.get("status") == "CAPTURED":
-                gnomad_constraint_data[gene] = gc
-            archived_genes.add(gene)
-
-    genes_needing_api = [g for g in unique_genes if g not in archived_genes]
-    if archived_genes:
-        print(f"[GPA] Offline archive: loaded data for {len(archived_genes)}/{len(unique_genes)} genes, {len(genes_needing_api)} need API query")
-
-    if not config.offline_mode and genes_needing_api:
+    if not config.offline_mode and unique_genes:
         cache = DGRACache(global_config.cache_db_path)
         async with DGRAAPIClient(global_config, cache) as client:
-            # v0.10.5: Restore GTEx query with optimized single-call-per-gene batch
+            # v0.5 P1-6: Multi-tissue GTEx aggregation
             gtex_tissues = tissue_profile.get("gtex_tissues")
-            if gtex_tissues and genes_needing_api:
-                print(f"[GPA] GTEx batch query: {len(genes_needing_api)} genes × {len(gtex_tissues)} tissues (1 call/gene)")
-                gtex_semaphore = asyncio.Semaphore(5)
+            gtex_single_tissue = tissue_profile.get("gtex_tissue")
 
-                async def _query_gtex_one(gene):
-                    async with gtex_semaphore:
-                        return gene, await client.query_gtex_expression_multi(gene, gtex_tissues)
+            if gtex_tissues and len(gtex_tissues) > 1:
+                # v0.9.4: Skip GTEx when unreachable behind proxy — non-critical for tiering
+                gtex_data = {}
+                print(f"[GPA] GTEx query skipped ({len(gtex_tissues)} tissues) — using offline mode for expression")
+            else:
+                # Single tissue query (backward compatible)
+                gtex_data = {}
 
-                gtex_tasks = [asyncio.create_task(_query_gtex_one(g)) for g in genes_needing_api]
-                for task in asyncio.as_completed(gtex_tasks):
-                    gene, gtex_results = await task
-                    gtex_data[gene] = gtex_results
-                print(f"[GPA] GTEx query complete: {sum(1 for r in gtex_data.values() if r and any(x.get('median_tpm') for x in r))} genes with expression data")
-
-            # Batch query APIs only for genes NOT in archive
+            # Batch query other APIs concurrently with GTEx
             ensembl_raw, uniprot_raw, hgnc_raw, gnomad_constraint_raw = await asyncio.gather(
-                client.batch_query_genes(genes_needing_api, "ensembl"),
-                client.batch_query_genes(genes_needing_api, "uniprot"),
-                client.batch_query_genes(genes_needing_api, "hgnc"),
-                client.batch_query_genes(genes_needing_api, "gnomad_constraint"),
+                client.batch_query_genes(unique_genes, "ensembl"),
+                client.batch_query_genes(unique_genes, "uniprot"),
+                client.batch_query_genes(unique_genes, "hgnc"),
+                client.batch_query_genes(unique_genes, "gnomad_constraint"),
             )
-            for g in genes_needing_api:
-                ensembl_data[g] = ensembl_raw.get(g, {})
-                uniprot_data[g] = uniprot_raw.get(g, {})
-                hgnc_data[g] = hgnc_raw.get(g, {})
-                gnomad_constraint_data[g] = gnomad_constraint_raw.get(g, {})
+            ensembl_data = {g: ensembl_raw.get(g, {}) for g in unique_genes}
+            uniprot_data = {g: uniprot_raw.get(g, {}) for g in unique_genes}
+            hgnc_data = {g: hgnc_raw.get(g, {}) for g in unique_genes}
+            gnomad_constraint_data = {g: gnomad_constraint_raw.get(g, {}) for g in unique_genes}
             
-            # v0.10.2: Variant-level gnomAD/MyVariant.info queries REMOVED from pre-tier phase.
-            # They now run in Phase 2 (post-tier) on a filtered subset of Tier 2 + high-priority Tier 3.
-            # This avoids rate-limiting on thousands of Tier 3 common polymorphisms.
-            print("[GPA] v0.10.2: Variant-level API queries deferred to post-tier Phase 2")
-        print(f"[GPA] API batch query complete: Ensembl={sum(1 for d in ensembl_data.values() if d)}, UniProt={sum(1 for d in uniprot_data.values() if d)}, GTEx={sum(1 for d in gtex_data.values() if d)}, HGNC={sum(1 for d in hgnc_data.values() if d)}, gnomAD_constraint={sum(1 for d in gnomad_constraint_data.values() if d)}")
+            # v0.9.2: MyVariant.info batch query — aggregates gnomAD + CADD in a single call.
+            # v0.10.4: Removed ClinVar from MyVariant.info query — its ClinVar aggregation is
+            # unreliable (returns HTTP 200 but missing clinvar field for known pathogenic variants).
+            # ClinVar is now queried directly via NCBI E-utilities (see below).
+            variants_needing_enrichment = [
+                v for v in variants
+                if v.gnomad_af is None
+                and v.chrom and v.pos and v.ref and v.alt
+            ]
+            if variants_needing_enrichment:
+                print(f"[GPA] MyVariant.info: batch querying {len(variants_needing_enrichment)} variants for gnomAD/CADD")
+                try:
+                    from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
+                    mv_sem = asyncio.Semaphore(10)  # v0.9.4: increased from 5 for large VCFs
+                    timeout_obj = aiohttp.ClientTimeout(total=300)  # v0.9.4: increased from 120 for large batches
+                    mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in variants_needing_enrichment]
+                    async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=_trust_env) as mv_session:
+                        mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
+                    mv_stats = apply_myvariant_results(variants, mv_results)
+                    print(f"[GPA] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, {mv_stats['clinvar_filled']} ClinVar, {mv_stats['cadd_filled']} CADD filled | {mv_stats['not_found']} not_found, {mv_stats['errors']} errors")
+                except Exception as e:
+                    print(f"[GPA] MyVariant.info batch query failed (non-critical, falling back): {type(e).__name__}: {e}")
+                    mv_results = {}
+            
+            # v0.8.0 P6: gnomAD variant frequency batch query for variants missing AF data
+            # This fixes the disconnect where query_gnomad_variant() was implemented
+            # but never called — all frequency-based tiering was effectively disabled.
+            variants_without_af = [v for v in variants if v.gnomad_af is None and v.chrom and v.pos and v.ref and v.alt]
+            if variants_without_af:
+                print(f"[GPA] gnomAD: querying {len(variants_without_af)} variants without AF data")
+                gnomad_sem = asyncio.Semaphore(2)  # v0.9.3: conservative for gnomAD rate limits
+                async def _query_one_gnomad(v):
+                    async with gnomad_sem:
+                        try:
+                            return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
+                        except asyncio.TimeoutError as e:
+                            print(f"[GPA] gnomAD query TIMEOUT for {v.gene} {v.chrom}:{v.pos}: {e}")
+                            return {"status": "API_FAILED", "error": f"timeout: {e}", "source": "failed"}
+                        except aiohttp.ClientError as e:
+                            print(f"[GPA] gnomAD query CLIENT_ERROR for {v.gene} {v.chrom}:{v.pos}: {e}")
+                            return {"status": "API_FAILED", "error": f"client_error: {e}", "source": "failed"}
+                        except Exception as e:
+                            print(f"[GPA] gnomAD query FAILED for {v.gene} {v.chrom}:{v.pos}: {e}")
+                            return {"status": "API_FAILED", "error": str(e), "source": "failed"}
+                gnomad_results = await asyncio.gather(*[_query_one_gnomad(v) for v in variants_without_af])
+                n_success = 0
+                n_failed = 0
+                n_not_captured = 0
+                n_query_error = 0
+                n_myvariant_fallback = 0
+                
+                # v0.9.4 P1: Collect NOT_CAPTURED/QUERY_ERROR variants for MyVariant single-query fallback
+                _myvariant_fallback_variants = []
+                
+                for v, result in zip(variants_without_af, gnomad_results):
+                    # v0.9.1: "failed" source added — API returned but variant not found (not a network error).
+                    # Without this, all "Variant not found" GraphQL responses trigger gnomad_af_warning.
+                    # Also preserves v0.9.1 status-based tracking (SUCCESS/NOT_CAPTURED/API_FAILED).
+                    if result and result.get("source") in ("gnomad", "cache", "failed"):
+                        af = result.get("af")
+                        gnomad_status = result.get("status", "NOT_CAPTURED")
+                        if af is not None:
+                            v.gnomad_af = af
+                            v.gnomad_populations = result.get("af_populations", {})
+                            v.gnomad_status = "SUCCESS"
+                            n_success += 1
+                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
+                        elif gnomad_status == "QUERY_ERROR":
+                            # v0.9.4 P1: GraphQL error — NOT the same as NOT_CAPTURED
+                            v.gnomad_status = "QUERY_ERROR"
+                            v.gnomad_error_msg = result.get("note", "gnomAD GraphQL query error")
+                            v.gnomad_af_warning = True
+                            v.gnomad_populations = result.get("af_populations", {})
+                            n_query_error += 1
+                            _myvariant_fallback_variants.append(v)
+                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} QUERY_ERROR → will try MyVariant fallback")
+                        else:
+                            # API returned but variant not captured in gnomAD dataset
+                            v.gnomad_populations = {}
+                            v.gnomad_status = result.get("status", "NOT_CAPTURED")
+                            n_not_captured += 1
+                            # v0.9.4 P1: Try MyVariant fallback for NOT_CAPTURED too
+                            _myvariant_fallback_variants.append(v)
+                            print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} NOT_CAPTURED → will try MyVariant fallback")
+                    elif result and result.get("status") == "API_FAILED":
+                        v.gnomad_status = "API_FAILED"
+                        v.gnomad_error_msg = result.get("error", "unknown")
+                        v.gnomad_af_warning = True
+                        v.gnomad_populations = {}
+                        n_failed += 1
+                        print(f"[GPA] gnomAD: {v.gene} {v.chrom}:{v.pos} API_FAILED ({v.gnomad_error_msg})")
+                
+                # v0.9.4 P1: MyVariant.info single-variant fallback for NOT_CAPTURED/QUERY_ERROR
+                if _myvariant_fallback_variants:
+                    print(f"[GPA] MyVariant.info fallback: querying {len(_myvariant_fallback_variants)} variants not found in gnomAD GraphQL")
+                    try:
+                        from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
+                        mv_fb_sem = asyncio.Semaphore(10)
+                        mv_fb_timeout = aiohttp.ClientTimeout(total=120)
+                        mv_fb_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in _myvariant_fallback_variants]
+                        # Reset gnomad_af to None so apply_myvariant_results will fill it
+                        for v in _myvariant_fallback_variants:
+                            v.gnomad_af = None
+                        async with aiohttp.ClientSession(timeout=mv_fb_timeout, trust_env=_trust_env) as mv_fb_session:
+                            mv_fb_results = await query_myvariant_batch(mv_fb_variants, mv_fb_session, semaphore=mv_fb_sem, batch_size=1000)
+                        mv_fb_stats = apply_myvariant_results(_myvariant_fallback_variants, mv_fb_results)
+                        n_myvariant_fallback = mv_fb_stats.get("gnomad_filled", 0)
+                        # Restore gnomAD status context on variants that got MyVariant data
+                        for v in _myvariant_fallback_variants:
+                            if v.gnomad_af is not None:
+                                # MyVariant had data — upgrade status
+                                v.gnomad_status = "MYVARIANT_FALLBACK"
+                                v.gnomad_af_warning = False
+                        print(f"[GPA] MyVariant.info fallback: {n_myvariant_fallback} variants filled with gnomAD data")
+                    except Exception as e:
+                        print(f"[GPA] MyVariant.info fallback failed (non-critical): {type(e).__name__}: {e}")
+                
+                print(f"[GPA] gnomAD results: {n_success} success, {n_not_captured} not in dataset, {n_query_error} query errors, {n_failed} API failures | {n_myvariant_fallback} recovered via MyVariant fallback")
+            
+            # v0.10.4: Direct NCBI ClinVar query — replaces MyVariant.info's unreliable ClinVar aggregation.
+            # MyVariant.info ClinVar coverage is incomplete (verified: returns HTTP 200 but missing clinvar field
+            # for known pathogenic variants like BRCA1). We query NCBI E-utilities directly when feasible.
+            # Threshold rule: ≤1000 candidates → direct NCBI (accurate but slow at 1 req/s).
+            # >1000 candidates → fall back to MyVariant.info batch (already queried above; covers variants
+            # missing gnomAD AF, and returns ClinVar data as a side effect — less reliable but fast).
+            # Consequence-aware: only query ClinVar for missense/splice/inframe variants where ClinVar
+            # evidence is most informative. Skip stop_gained/frameshift (PVS1-level, ClinVar optional).
+            variants_needing_clinvar = [
+                v for v in variants
+                if v.clinvar == _UNKNOWN or v.clinvar == "UNKNOWN"
+            ]
+            if variants_needing_clinvar:
+                from dgra_clinvar import variant_needs_clinvar, query_clinvar_batch, apply_clinvar_results
+                clinvar_candidates = [v for v in variants_needing_clinvar if variant_needs_clinvar(v.consequence)]
+                if clinvar_candidates:
+                    n_cv = len(clinvar_candidates)
+                    if n_cv <= 1000:
+                        print(f"[GPA] ClinVar (NCBI): querying {n_cv} variants (1 req/s, consequence-filtered from {len(variants_needing_clinvar)})")
+                        try:
+                            cv_variants = [(v.chrom, v.pos, v.ref, v.alt, v.gene, v.consequence) for v in clinvar_candidates]
+                            cv_sem = asyncio.Semaphore(1)  # NCBI: 1 concurrent request
+                            cv_timeout = aiohttp.ClientTimeout(total=30)
+                            async with aiohttp.ClientSession(timeout=cv_timeout, trust_env=_trust_env) as cv_session:
+                                cv_results = await query_clinvar_batch(cv_variants, cv_session, semaphore=cv_sem, rate_limit_delay=1.0)
+                            cv_stats = apply_clinvar_results(variants, cv_results)
+                            print(f"[GPA] ClinVar (NCBI): {cv_stats['filled']} filled, {cv_stats['not_found']} not_found, {cv_stats['skipped']} skipped, {cv_stats['errors']} errors")
+                        except Exception as e:
+                            print(f"[GPA] ClinVar (NCBI) query failed (non-critical): {type(e).__name__}: {e}")
+                    else:
+                        print(f"[GPA] ClinVar: {n_cv} candidates > 1000 threshold — skipping direct NCBI query. "
+                              f"ClinVar data will come from MyVariant.info batch (if variant also lacks gnomAD AF). "
+                              f"For more accurate ClinVar annotation, re-run with offline_mode=True and provide a pre-annotated VCF.")
+            
+        print(f"[GPA] API batch query complete: Ensembl={len(ensembl_data)}, UniProt={len(uniprot_data)}, GTEx={len(gtex_data)}, HGNC={len(hgnc_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
         # Persist successful API results for future offline use
-        for gene in genes_needing_api:
+        for gene in unique_genes:
             _save_offline_archive(gene, ensembl_data, uniprot_data, gtex_data, config.tissue_profile, gnomad_constraint_data)
-        print(f"[GPA] Offline archive saved for {len(genes_needing_api)} genes to {OFFLINE_ARCHIVE_DIR}")
-    elif config.offline_mode and not archived_genes:
-        print("[GPA] Offline mode: no archive found, using local fallbacks only (conservative)")
+        print(f"[GPA] Offline archive saved for {len(unique_genes)} genes to {OFFLINE_ARCHIVE_DIR}")
+    else:
+        # Offline mode: try to load archived data first, then fall back to local rules
+        loaded = 0
+        for gene in unique_genes:
+            archive = _load_offline_archive(gene)
+            if archive:
+                ensembl_data[gene] = archive.get("ensembl", {})
+                uniprot_data[gene] = archive.get("uniprot", {})
+                gtex_data[gene] = archive.get("gtex", {})
+                # v0.5 P1-4: Load cached gnomAD constraint if available
+                gc = archive.get("gnomad_constraint")
+                if gc and gc.get("status") == "CAPTURED":
+                    gnomad_constraint_data[gene] = gc
+                loaded += 1
+        print(f"[GPA] Offline mode: loaded archived data for {loaded}/{len(unique_genes)} genes from {OFFLINE_ARCHIVE_DIR}")
+        if loaded == 0:
+            print("[GPA] Offline mode: no archive found, using local fallbacks only (conservative)")
         hgnc_data = {}
-    elif not genes_needing_api:
-        print("[GPA] All genes loaded from offline archive, no API queries needed")
+        # gnomad_constraint_data already populated from archive above
+        # No HGNC data in offline mode unless cached
 
     # ------------------------------------------------------------------
     # Step 0.5: HGNC Gene Symbol Normalization (v0.5 P1-2)
@@ -808,12 +679,32 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             v.phenotype_known_list = mr.get("known_phenotypes", [])
 
     # v0.8.0: Step 6.75 - SpliceAI splice-prediction (pre-tier, default OFF)
-    # v0.10.2: DISABLED in pre-tier phase. SpliceAI now runs in Phase 2 (post-tier)
-    # on the filtered subset of Tier 2 + high-priority Tier 3 variants only.
-    # This avoids querying SpliceAI for thousands of Tier 3 intronic/common variants.
-    if False and getattr(config, 'spliceai_enabled', False):
-        # Pre-tier SpliceAI disabled — moved to _run_api_enrichment_phase()
-        pass
+    # Only runs when config.spliceai_enabled == True.
+    # Results stored in variant.spliceai_result for classify_variant_tier to consume.
+    if getattr(config, 'spliceai_enabled', False):
+        from dgra_splice_predictor import (
+            query_spliceai_batch, should_query_spliceai, reset_spliceai_cache
+        )
+        reset_spliceai_cache()
+        spliceai_sem = asyncio.Semaphore(getattr(config, 'spliceai_concurrency', 5))
+        # Build list of variants that need SpliceAI
+        spliceai_candidates = [v for v in variants if should_query_spliceai(v.consequence)]
+        if spliceai_candidates:
+            print(f"[GPA] SpliceAI: querying {len(spliceai_candidates)} splice variants (concurrency={getattr(config, 'spliceai_concurrency', 5)})")
+            timeout_obj = aiohttp.ClientTimeout(total=120)
+            spliceai_results = await query_spliceai_batch(
+                spliceai_candidates, spliceai_sem
+            )
+            # Attach results back to variants
+            for v in variants:
+                from dgra_splice_predictor import _cache_key as _splice_key
+                key = _splice_key(v.chrom, v.pos, v.ref, v.alt)
+                if key in spliceai_results:
+                    v.spliceai_result = spliceai_results[key]
+                elif should_query_spliceai(v.consequence):
+                    # Should have been queried but not in results → mark as not_in_db
+                    v.spliceai_result = {"source": "not_in_db", "delta_score": None, "predicted_impact": None}
+            print(f"[GPA] SpliceAI: batch complete")
 
     # Step 7: Three-tier classification (with tissue context)
     for v in variants:
@@ -877,37 +768,6 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             elif redundancy.get("compensation_level") == "partial":
                 # Keep tier but add annotation
                 v.tier_reason += f" | NOTE: {redundancy['reason']} - partial compensation may mitigate risk"
-
-    # v0.10.2: Phase 2 — API enrichment for Tier 2 + high-priority Tier 3 variants
-    # This replaces the pre-tier mass gnomAD/MyVariant/SpliceAI queries with a
-    # targeted post-tier approach, reducing API calls from ~7628 to ~100-150.
-    if not config.offline_mode:
-        enrichment_candidates = _select_for_api_enrichment(variants, max_total=150)
-        enrichment_stats = await _run_api_enrichment_phase(
-            variants, enrichment_candidates,
-            tissue_assessments, tissue_profile,
-            config, global_config
-        )
-        # Re-run multi-hit and adjustments after tier changes
-        if enrichment_stats.get("tier_changed", 0) > 0:
-            multi_hits = detect_multi_hit_genes(variants, gtex_data)
-            for v in variants:
-                adj_tier, adj_reason = _x_linked_female_adjustment(
-                    v.tier, v.chrom, v.gt, v.gene_constraint
-                )
-                if adj_reason:
-                    v.tier = adj_tier
-                    v.tier_reason += f" | {adj_reason}"
-            for v in variants:
-                if v.gene in _GENE_FAMILY_REDUNDANCY and v.tier == 1:
-                    redundancy = _GENE_FAMILY_REDUNDANCY[v.gene]
-                    if redundancy.get("compensation_level") == "complete":
-                        v.tier = 2
-                        v.tier_reason += f" | REDUCED: {redundancy['reason']} - complete paralog compensation"
-                    elif redundancy.get("compensation_level") == "partial":
-                        v.tier_reason += f" | NOTE: {redundancy['reason']} - partial compensation may mitigate risk"
-    else:
-        print("[GPA] Phase 2: skipped (offline mode)")
 
     # Step 8: Generate report (with tissue context)
     report_md = generate_tier_report(variants, config, tissue_profile, multi_hits)

@@ -116,8 +116,6 @@ def _run_gpa_direct(
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
     force_sync: bool = False,
-    # v0.10.4: Two-phase pipeline support for direct API path
-    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """Run GPA via direct Python API call - 5-10x faster than batch CLI.
 
@@ -147,7 +145,6 @@ def _run_gpa_direct(
         annotator=annotator,
         vep_cache=vep_cache,
         force_sync=force_sync,
-        two_phase=two_phase,
     )
 
     try:
@@ -177,7 +174,7 @@ _Analyzed via direct Python API (bypassed batch CLI for performance)._
             "results": result,
             "report_md": report_md,
         }
-    except (ConnectionError, TimeoutError) as e:
+    except Exception as e:
         import traceback
         return {
             "success": False,
@@ -201,15 +198,13 @@ def _run_gpa_vcf_direct(
     filter_preset: Optional[str] = None,
     auto_batch: bool = True,
     batch_size: int = 500,
-    # v0.10.4: Increased default timeout for large VCFs (VEP annotation of 100K variants can take 10-15 min)
-    timeout_per_batch: int = 1800,
+    timeout_per_batch: int = 300,
     max_batch_retries: int = 0,
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
-    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """Pass raw VCF directly to dgra_core.py which handles VEP annotation."""
     import tempfile, subprocess, json as _json
@@ -256,8 +251,6 @@ def _run_gpa_vcf_direct(
             cmd.extend(["--annotator", annotator])
         if vep_cache:
             cmd.extend(["--vep-cache", vep_cache])
-        if two_phase:
-            cmd.append("--two-phase")
 
         try:
             result = subprocess.run(
@@ -269,7 +262,7 @@ def _run_gpa_vcf_direct(
             )
         except subprocess.TimeoutExpired:
             return {"success": False, "error": f"VCF analysis timed out after {timeout_per_batch}s"}
-        except (IndexError, ValueError) as e:
+        except Exception as e:
             return {"success": False, "error": f"Subprocess failed: {e}"}
 
         if result.returncode != 0:
@@ -283,13 +276,13 @@ def _run_gpa_vcf_direct(
         try:
             with open(json_out, "r", encoding="utf-8") as f:
                 results = _json.load(f)
-        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError) as e:
+        except Exception as e:
             return {"success": False, "error": f"Failed to parse JSON output: {e}"}
 
         try:
             with open(md_out, "r", encoding="utf-8") as f:
                 report_md = f.read()
-        except (FileNotFoundError, IsADirectoryError, PermissionError):
+        except Exception:
             report_md = ""
 
         return {"success": True, "results": results, "report_md": report_md}
@@ -323,8 +316,6 @@ def run_gpa_from_file(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
-    # v0.10.1: Two-phase pipeline
-    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -363,11 +354,11 @@ def run_gpa_from_file(
             disease_description=disease_description,
             annotator=annotator,
             vep_cache=vep_cache,
-            two_phase=two_phase,
         )
+
     try:
         variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
-    except (IndexError, ValueError) as e:
+    except Exception as e:
         return {"success": False, "error": f"Failed to parse {input_path}: {e}"}
     return run_gpa(
         variants=variants,
@@ -395,8 +386,6 @@ def run_gpa_from_file(
         disease_description=disease_description,
         annotator=annotator,
         vep_cache=vep_cache,
-        # v0.10.4: Two-phase pipeline
-        two_phase=two_phase,
     )
 
 
@@ -427,8 +416,6 @@ def run_gpa(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
-    # v0.10.4: Two-phase pipeline for direct API path
-    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
@@ -447,7 +434,6 @@ def run_gpa(
                       与 tissue 互斥。非 None 时覆盖 tissue 参数。
         force_sync: 强制同步 special_gene_lists(绕过缓存 TTL)
         config_path: YAML 配置文件路径 (v0.5 P2-3)
-        two_phase: 启用两阶段 pipeline（大样本推荐）
 
     Returns:
         dict: {"success": True, "results": {...}, "report_md": "..."}
@@ -469,7 +455,6 @@ def run_gpa(
             spliceai_concurrency=spliceai_concurrency,
             multi_organ=multi_organ,
             database_version=database_version,
-            two_phase=two_phase,
         )
 
     # v0.7.1: Auto-batch for medium variant sets
@@ -539,7 +524,6 @@ def run_gpa(
         annotator=annotator,
         vep_cache=vep_cache,
         force_sync=force_sync,
-        two_phase=two_phase,
     )
 
 
@@ -629,9 +613,6 @@ def main():
     parser.add_argument("--vep-cache", default=None,
                         help="Path to local VEP cache directory. Required for --annotator vep_local. (v0.9.0)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
-    parser.add_argument("--two-phase", action="store_true",
-                        help="Enable two-phase pipeline: fast local triage then API enrichment "
-                             "only for Tier 1/2 candidates. 50-200x fewer API calls. (v0.10.1)")
 
     args = parser.parse_args()
 
@@ -691,14 +672,12 @@ def main():
             disease_description=args.disease_description,
             annotator=args.annotator,
             vep_cache=args.vep_cache,
-            # v0.10.1: Two-phase pipeline
-            two_phase=args.two_phase,
         )
     elif args.free_text:
         try:
             ftp = FreeTextParser()
             variants = ftp.parse_text(args.free_text)
-        except (IndexError, ValueError, json.JSONDecodeError) as e:
+        except Exception as e:
             print(json.dumps({"success": False, "error": f"Failed to parse free text: {e}"}, indent=2))
             sys.exit(1)
         result = run_gpa(
