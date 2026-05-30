@@ -1455,19 +1455,84 @@ class DGRAAPIClient:
             "submitter_count": len(submitter_sigs),
         }
 
+    @staticmethod
+    def _parse_clinvar_esummary_json(raw: Dict[str, Any], cv_id: str) -> Dict[str, Any]:
+        """
+        Parse ClinVar esummary JSON (retmode=json) into structured data.
+
+        v0.10.6 FIX: NCBI ClinVar efetch does NOT support retmode=json — it
+        always returns XML. ESummary is the only E-utilities endpoint that
+        returns structured JSON for ClinVar records.
+
+        Returns:
+            {
+                "clinical_significance": "Pathogenic" | "Likely pathogenic" | ...,
+                "review_status": "criteria provided, multiple submitters, no conflicts" | ...,
+                "conflicting": bool,
+                "trait_names": List[str],
+                "submitter_count": int,
+            }
+        """
+        result = raw.get("result", {})
+        doc = result.get(str(cv_id), {})
+
+        if not doc:
+            return {
+                "clinical_significance": None,
+                "review_status": None,
+                "conflicting": False,
+                "trait_names": [],
+                "submitter_count": 0,
+            }
+
+        # Germline classification (the aggregated clinical significance)
+        gc = doc.get("germline_classification", {})
+        significance = gc.get("description") if isinstance(gc, dict) else None
+        review_status = gc.get("review_status") if isinstance(gc, dict) else None
+
+        # Traits
+        trait_names = []
+        trait_set = gc.get("trait_set", []) if isinstance(gc, dict) else []
+        if isinstance(trait_set, list):
+            for t in trait_set:
+                name = t.get("trait_name") if isinstance(t, dict) else None
+                if name:
+                    trait_names.append(name)
+
+        # Submitter count from supporting_submissions
+        submissions = doc.get("supporting_submissions", {})
+        scv_list = submissions.get("scv", []) if isinstance(submissions, dict) else []
+        submitter_count = len(scv_list)
+
+        # Conflict detection: esummary only provides the aggregated classification,
+        # so we cannot detect submitter conflicts from esummary alone.
+        # For conflict detection, full efetch XML parsing would be needed.
+        conflicting = False
+
+        return {
+            "clinical_significance": significance,
+            "review_status": review_status,
+            "conflicting": conflicting,
+            "trait_names": trait_names,
+            "submitter_count": submitter_count,
+        }
+
     async def query_ncbi_clinvar(self, gene: str, hgvs: Optional[str] = None,
                                   chrom: Optional[str] = None, pos: Optional[int] = None) -> Dict[str, Any]:
         """
         Query ClinVar via NCBI E-utilities for clinical significance.
         
-        v0.9.4 P0 FIX 2026-05-24: Added variant-level search via chromosomal position.
+        v0.10.6 FIX: 
+        - ESearch: [pos] → [chrpos] (zero-padded for proxy stability)
+        - EFetch → ESummary (efetch does not support retmode=json for ClinVar)
+        
         Previously gene-level search (`{gene}[Gene] AND ClinVar[Title]`) could only find
         gene records, not specific variant records. Now supports:
-        1. Position-based search: `{chrom}[chr] AND {pos}[pos]` — finds exact variant
-        2. Gene + position: `{gene}[Gene] AND {chrom}[chr] AND {pos}[pos]`
+        1. Position-based search: `{chrom}[chr] AND {pos}[chrpos]` — finds exact variant
+        2. Gene + position: `{gene}[Gene] AND {chrom}[chr] AND {pos}[chrpos]`
         3. Fallback to gene-level: `{gene}[Gene] AND ClinVar[Title]`
         
-        Uses esearch to find ClinVar records, then efetch for details.
+        Uses esearch to find ClinVar records, then esummary for JSON details.
         
         Args:
             gene: Gene symbol
@@ -1492,10 +1557,13 @@ class DGRAAPIClient:
         if chrom and pos:
             # Strip "chr" prefix for NCBI queries
             chrom_std = chrom.replace("chr", "").replace("CHR", "")
-            # Variant-level: position-based search (most specific)
-            search_terms.append(f"{chrom_std}[chr] AND {pos}[pos]")
-            # Gene + position combined
-            search_terms.append(f"{gene}[Gene] AND {chrom_std}[chr] AND {pos}[pos]")
+            # v0.10.6 FIX: [pos] is not a valid ClinVar ESearch field — use [chrpos].
+            # Also add zero-padded variant because raw position may fail in proxy mode.
+            pos_padded = str(pos).zfill(9)
+            search_terms.append(f"{chrom_std}[chr] AND {pos}[chrpos]")
+            search_terms.append(f"{gene}[Gene] AND {chrom_std}[chr] AND {pos}[chrpos]")
+            search_terms.append(f"{chrom_std}[chr] AND {pos_padded}[chrpos]")
+            search_terms.append(f"{gene}[Gene] AND {chrom_std}[chr] AND {pos_padded}[chrpos]")
         
         if hgvs:
             search_terms.append(f"{gene}[Gene] AND {hgvs}")
@@ -1550,11 +1618,13 @@ class DGRAAPIClient:
                 "note": f"No ClinVar records found (searched: {used_search})",
             }
         
-        # Step 2: efetch first record
+        # Step 2: esummary (JSON) — efetch only returns XML for ClinVar
+        # v0.10.6 FIX: NCBI ClinVar efetch does not support retmode=json.
+        # Use esummary.fcgi with retmode=json instead.
         clinvar_id = idlist[0]
-        fetch_result = await self._request_with_retry(
+        summary_result = await self._request_with_retry(
             api_name="clinvar_eutils",
-            endpoint="/efetch.fcgi",
+            endpoint="/esummary.fcgi",
             params={
                 "db": "clinvar",
                 "id": clinvar_id,
@@ -1562,9 +1632,8 @@ class DGRAAPIClient:
             },
         )
         
-        if fetch_result["data"] and fetch_result["http_status"] == 200:
-            # v0.10.5: Full ClinVar JSON parsing
-            parsed = self._parse_clinvar_efetch_json(fetch_result["data"])
+        if summary_result["data"] and summary_result["http_status"] == 200:
+            parsed = self._parse_clinvar_esummary_json(summary_result["data"], clinvar_id)
             return {
                 "gene": gene,
                 "clinvar_id": clinvar_id,
@@ -1573,9 +1642,9 @@ class DGRAAPIClient:
                 "conflicting": parsed.get("conflicting", False),
                 "trait_names": parsed.get("trait_names", []),
                 "submitter_count": parsed.get("submitter_count", 0),
-                "source": "cache" if fetch_result["from_cache"] else "clinvar",
-                "confidence": fetch_result["confidence"],
-                "raw": fetch_result["data"],
+                "source": "cache" if summary_result["from_cache"] else "clinvar",
+                "confidence": summary_result["confidence"],
+                "raw": summary_result["data"],
             }
         
         return {
@@ -1584,7 +1653,7 @@ class DGRAAPIClient:
             "clinical_significance": None,
             "source": "failed",
             "confidence": "low",
-            "error": fetch_result.get("error"),
+            "error": summary_result.get("error"),
         }
     
     # =====================================================================
