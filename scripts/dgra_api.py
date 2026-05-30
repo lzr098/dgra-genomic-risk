@@ -36,30 +36,107 @@ class DGRAAPIError(Exception):
 class DGRAAPIClient:
     """
     Unified async API client for all DGRA external data sources.
-    
+
     Handles:
     - Cache lookup before API call
     - Rate limiting (per-API token bucket)
     - Retry with exponential backoff
     - Response caching on success
     - Offline mode fallback (skip API, return cached or None)
+    - Dynamic proxy auto-detection (v0.10.5)
     """
-    
+
+    # Common proxy endpoints to probe (in priority order)
+    _COMMON_PROXIES: List[str] = [
+        "http://127.0.0.1:7897",
+        "http://127.0.0.1:7890",
+        "http://127.0.0.1:7891",
+        "http://127.0.0.1:1080",
+        "http://127.0.0.1:10808",
+        "http://127.0.0.1:10809",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:3128",
+    ]
+
     def __init__(self, config: DGRAGlobalConfig, cache: DGRACache):
         self.config = config
         self.cache = cache
         self._session: Optional[aiohttp.ClientSession] = None
         self._last_request_time: Dict[str, float] = {}  # api_name -> timestamp
-    
+        self._proxy_url: Optional[str] = None  # detected working proxy or None for direct
+
+    @staticmethod
+    async def _probe_endpoint(proxy: Optional[str], timeout: float = 3.0) -> bool:
+        """Quickly probe NCBI esearch to test if a route works."""
+        test_url = (
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+            "?db=clinvar&term=BRCA1%5BGene%5D&retmode=json&retmax=1"
+        )
+        try:
+            session = aiohttp.ClientSession(
+                trust_env=False,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            )
+            try:
+                async with session.get(test_url, proxy=proxy) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        count = data.get("esearchresult", {}).get("count")
+                        return bool(count and int(count) > 0)
+            finally:
+                await session.close()
+        except Exception:
+            return False
+        return False
+
+    async def _detect_proxy(self) -> Optional[str]:
+        """
+        Auto-detect the best network route for scientific APIs.
+
+        Returns:
+            Proxy URL (e.g. "http://127.0.0.1:7897") if a proxy works,
+            None if direct connection works best.
+        """
+        # 1. Try direct connection first (fastest if it works)
+        print("[ProxyProbe] Testing direct connection to NCBI...")
+        if await self._probe_endpoint(proxy=None, timeout=3.0):
+            print("[ProxyProbe] Direct connection OK — no proxy needed")
+            return None
+        print("[ProxyProbe] Direct connection FAILED")
+
+        # 2. Try each common proxy in parallel (limited concurrency)
+        semaphore = asyncio.Semaphore(3)
+        results: Dict[str, bool] = {}
+
+        async def _test_one(proxy: str) -> None:
+            async with semaphore:
+                ok = await self._probe_endpoint(proxy=proxy, timeout=5.0)
+                results[proxy] = ok
+                if ok:
+                    print(f"[ProxyProbe] Proxy {proxy} OK")
+                else:
+                    print(f"[ProxyProbe] Proxy {proxy} FAILED")
+
+        tasks = [asyncio.create_task(_test_one(p)) for p in self._COMMON_PROXIES]
+        await asyncio.gather(*tasks)
+
+        # Return first working proxy
+        for proxy in self._COMMON_PROXIES:
+            if results.get(proxy):
+                return proxy
+
+        print("[ProxyProbe] No working proxy found — will use direct (expect failures)")
+        return None
+
     async def __aenter__(self):
-        # v0.10.1: Force direct connection (trust_env=False) to avoid system proxy
-        # intercepting scientific API calls (e.g., Clash at 127.0.0.1:7897).
-        # Previous logic (trust_env = config.proxy != "__DIRECT__") caused mass
-        # gnomAD/Ensembl query failures when system proxy was active.
+        # v0.10.5: Dynamic proxy auto-detection
+        # Probe once at session start, then reuse the route for all APIs.
+        self._proxy_url = await self._detect_proxy()
         self._session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(limit=50, limit_per_host=20),
             timeout=aiohttp.ClientTimeout(total=120),
-            trust_env=False,
+            trust_env=False,  # Never trust env; use our detected proxy explicitly
         )
         return self
     
@@ -134,7 +211,7 @@ class DGRAAPIClient:
                     params=params,
                     json=json_body,
                     headers=headers,
-                    proxy=None if cfg.proxy == "__DIRECT__" else cfg.proxy,  # __DIRECT__ = bypass env proxy
+                    proxy=self._proxy_url,  # v0.10.5: auto-detected proxy (None = direct)
                     timeout=aiohttp.ClientTimeout(total=cfg.timeout),
                 ) as response:
                     http_status = response.status
@@ -1777,7 +1854,7 @@ class DGRAAPIClient:
                     url=url,
                     params=probe.get("params"),
                     json=probe.get("json_body"),
-                    proxy=None if cfg.proxy == "__DIRECT__" else cfg.proxy,
+                    proxy=self._proxy_url,  # v0.10.5: auto-detected proxy
                     timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     elapsed_ms = (time.time() - start) * 1000
