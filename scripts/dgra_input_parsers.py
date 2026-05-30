@@ -150,15 +150,15 @@ class TSVParser(InputParser):
 
 
 # =============================================================================
-# VCF Parser (cyvcf2)
+# VCF Parser (vcfpy)
 # =============================================================================
 
 class VCFParser(InputParser):
     """
-    Parse VCF using cyvcf2.
+    Parse VCF using vcfpy (pure-Python, no htslib dependency).
 
     Supports:
-      - Plain VCF, bgzipped VCF, BCF
+      - Plain VCF, bgzipped VCF
       - VEP-annotated VCF (INFO/CSQ)
       - Multi-allelic sites split into separate records
       - GT, DP, GQ, VAF extracted from FORMAT
@@ -169,19 +169,16 @@ class VCFParser(InputParser):
         self.prefer_canonical = prefer_canonical
         self.keep_all_transcripts = keep_all_transcripts
 
-    def _parse_csq_header(self, vcf) -> Dict[str, int]:
+    def _parse_csq_header(self, reader) -> Dict[str, int]:
         """Extract CSQ field order from VCF header."""
         csq_fmt = None
-        for h in vcf.header_iter():
-            try:
-                val = str(h)
-                if 'ID=CSQ' in val and 'Description=' in val:
-                    m = re.search(r'Format:\s*([^"]+)"', val)
-                    if m:
-                        csq_fmt = m.group(1).strip().split("|")
-                        break
-            except Exception:
-                continue
+        for line in reader.header.lines:
+            raw = str(line)
+            if 'ID=CSQ' in raw and 'Description=' in raw:
+                m = re.search(r'Format:\s*([^"]+)"', raw)
+                if m:
+                    csq_fmt = m.group(1).strip().split("|")
+                    break
         if csq_fmt:
             return {name: idx for idx, name in enumerate(csq_fmt)}
         return VEP_CSQ_MAP  # fallback to canonical
@@ -191,7 +188,6 @@ class VCFParser(InputParser):
         if not csq_entries:
             return []
         if self.keep_all_transcripts:
-            # Return first for now; caller could expand
             return csq_entries[0]
         # Prefer CANONICAL=YES
         for entry in csq_entries:
@@ -206,24 +202,54 @@ class VCFParser(InputParser):
         # Fallback: first entry
         return csq_entries[0]
 
+    def _extract_gt(self, call) -> str:
+        """Extract genotype string from vcfpy Call object."""
+        gt_val = call.data.get("GT")
+        if gt_val is None:
+            return ""
+        # vcfpy GT can be a tuple like (0, 1) or a string "0/1"
+        if isinstance(gt_val, (list, tuple)):
+            return "/".join(str(v) for v in gt_val if v is not None)
+        return str(gt_val)
+
+    def _extract_format(self, record, sample_name: str, key: str):
+        """Safely extract a FORMAT field value for a sample."""
+        call = record.call_for_sample.get(sample_name)
+        if call is None:
+            return None
+        val = call.data.get(key)
+        if val is None:
+            return None
+        # vcfpy returns scalar or list; normalize to scalar
+        if isinstance(val, (list, tuple)) and len(val) > 0:
+            return val[0]
+        return val
+
     def parse(self, path: Path) -> List[Dict[str, Any]]:
         try:
-            import cyvcf2
+            import vcfpy
         except ImportError as e:
-            raise ImportError("cyvcf2 is required for VCF parsing. Install: pip install cyvcf2") from e
+            raise ImportError(
+                "vcfpy is required for VCF parsing. Install: pip install vcfpy"
+            ) from e
 
-        vcf = cyvcf2.VCF(str(path))
-        csq_map = self._parse_csq_header(vcf)
+        reader = vcfpy.Reader.from_path(str(path))
+        csq_map = self._parse_csq_header(reader)
         variants: List[Dict[str, Any]] = []
 
-        samples = vcf.samples
-        sample_name = samples[self.sample_idx] if samples else None
+        sample_names = list(reader.header.samples.names)
+        sample_name = sample_names[self.sample_idx] if sample_names else None
 
-        for record in vcf:
-            chrom = record.CHROM.replace("chr", "")
+        for record in reader:
+            chrom = str(record.CHROM).replace("chr", "")
             pos = record.POS
-            ref = record.REF
-            alts = record.ALT or []
+            ref = str(record.REF)
+            # vcfpy ALT can be Substitution, SymbolicAllele, or BreakEnd; all have .value
+            alts = []
+            if record.ALT:
+                for a in record.ALT:
+                    val = getattr(a, "value", str(a))
+                    alts.append(val)
 
             # FORMAT fields
             gt_raw = ""
@@ -231,39 +257,28 @@ class VCFParser(InputParser):
             gq = ""
             vaf = ""
             if sample_name:
-                # GT
-                try:
-                    gt_arr = record.genotypes[self.sample_idx]
-                    if gt_arr and len(gt_arr) >= 2:
-                        gt_raw = "/".join(str(a) for a in gt_arr[:2])
-                except Exception:
-                    pass
-                # DP
-                try:
-                    dp = str(record.format("DP")[self.sample_idx][0])
-                except Exception:
-                    pass
-                # GQ
-                try:
-                    gq = str(record.format("GQ")[self.sample_idx][0])
-                except Exception:
-                    pass
-                # VAF (AD ratio or AF)
-                try:
-                    ad = record.format("AD")
-                    if ad is not None:
-                        ref_ad = ad[self.sample_idx][0]
-                        alt_ad = sum(ad[self.sample_idx][1:])
+                call = record.call_for_sample.get(sample_name)
+                if call:
+                    gt_raw = self._extract_gt(call)
+                    dp_val = self._extract_format(record, sample_name, "DP")
+                    if dp_val is not None:
+                        dp = str(dp_val)
+                    gq_val = self._extract_format(record, sample_name, "GQ")
+                    if gq_val is not None:
+                        gq = str(gq_val)
+                    # VAF from AD ratio
+                    ad_val = call.data.get("AD")
+                    if ad_val is not None and isinstance(ad_val, (list, tuple)) and len(ad_val) >= 2:
+                        ref_ad = ad_val[0]
+                        alt_ad = sum(ad_val[1:])
                         total = ref_ad + alt_ad
                         if total > 0:
                             vaf = f"{alt_ad / total:.4f}"
-                except Exception:
-                    try:
-                        af = record.format("AF")
-                        if af is not None:
-                            vaf = str(af[self.sample_idx][0])
-                    except Exception:
-                        pass
+                    else:
+                        # Fallback: AF field
+                        af_val = self._extract_format(record, sample_name, "AF")
+                        if af_val is not None:
+                            vaf = str(af_val)
 
             # INFO/CSQ parsing
             csq_raw = None
@@ -273,13 +288,20 @@ class VCFParser(InputParser):
                 pass
 
             if csq_raw:
-                # cyvcf2 returns CSQ as comma-separated string for multiple alleles
-                csq_strings = str(csq_raw).split(",") if isinstance(csq_raw, str) else [str(csq_raw)]
-                for alt_idx, alt in enumerate(alts):
+                # vcfpy returns CSQ as a list when multiple entries present
+                if isinstance(csq_raw, list):
+                    csq_strings = [str(v) for v in csq_raw]
+                else:
+                    csq_strings = [str(csq_raw)]
+                # Each CSQ entry may contain comma-separated alleles
+                all_csq_parts = []
+                for csq_str in csq_strings:
+                    all_csq_parts.extend(csq_str.split(","))
+                for alt in alts:
                     # Filter CSQ entries matching this allele
                     allele_csq = []
-                    for csq_str in csq_strings:
-                        parts = csq_str.split("|")
+                    for csq_part in all_csq_parts:
+                        parts = csq_part.split("|")
                         if len(parts) > 0 and parts[0] == alt:
                             allele_csq.append(parts)
                     chosen = self._pick_csq(allele_csq, csq_map)
@@ -310,7 +332,6 @@ class VCFParser(InputParser):
                         "VAF": vaf,
                         "gnomAD_AF": "",
                     })
-        vcf.close()
         return variants
 
     def _csq_to_variant(self, chrom: str, pos: int, ref: str, alt: str,

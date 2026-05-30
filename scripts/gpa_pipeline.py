@@ -67,7 +67,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
 
     # v0.10.1: Preflight health check — verify all dependencies before starting analysis
     from gpa_preflight import run_preflight_check, suggest_action
-    preflight = await run_preflight_check(global_config)
+    preflight, _route_map = await run_preflight_check(global_config)
     if not preflight.is_ready():
         action = suggest_action(preflight)
         if action == "abort":

@@ -16,7 +16,7 @@
 | 分类 | 检查项 | 必须/可选 | 说明 |
 |------|--------|-----------|------|
 | **python_deps** | aiohttp | 必须 | 所有 API 调用的基础 |
-| | cyvcf2 | 必须 | VCF/BCF 解析 |
+| | vcfpy | 必须 | VCF/BCF 解析 |
 | | yaml (PyYAML) | 必须 | 配置解析 |
 | **local_tools** | vep | 可选 | 仅 `--annotator vep_local` 时需要 |
 | | git | 可选 | 仅版本信息收集 |
