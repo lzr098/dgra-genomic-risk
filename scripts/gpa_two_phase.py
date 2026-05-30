@@ -513,7 +513,7 @@ async def _enrich_gtex(
                     return gene, {
                         "median_tpm": global_max,  # Use global max as representative
                         "max_tpm": global_max,
-                        "all_tissues": [{"tissue": t, "tpm": tpm} for t, tpm in all_expressing],
+                        "all_tissues": [[t, float(tpm)] for t, tpm in all_expressing],
                         "expressing_tissues": expressing_count,
                         "source": "gtex_multi",
                         "confidence": "medium",

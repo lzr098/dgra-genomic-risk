@@ -25,8 +25,6 @@ import argparse
 
 from version import __version__
 
-import aiohttp
-
 # v0.8.0: SpliceAI requires aiohttp for async HTTP queries
 try:
     import aiohttp
@@ -1460,7 +1458,7 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
     # For relevance assessment, prefer phenotype-matched tissues
     # If phenotype tissues are not in GTEx (e.g. retina not in GTEx v8),
     # phenotype_max_tpm will be 0 even if the gene is tissue-specific
-    assess_tpm = phenotype_max_tpm if phenotype_max_tpm is not None else tpm
+    assess_tpm = float(phenotype_max_tpm if phenotype_max_tpm is not None else tpm)
     
     # v0.10.8: GTEx fast-track REMOVED. Expression data is now used only for
     # phenotype-tissue association, not as a hard tier gate.
@@ -1529,7 +1527,8 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
         # Primary or secondary: standard pipeline
         # v0.5 P1-6: Enhanced clinical note for multi-tissue
         if is_multi_tissue and all_tissues:
-            tissue_detail = "; ".join([f"{t}:{v:.1f}" for t, v in all_tissues])
+            # v0.10.9: all_tissues is List[List[str, float]] from gpa_two_phase
+            tissue_detail = "; ".join([f"{t}:{float(v):.1f}" for t, v in all_tissues])
             clinical_note = f"{gene} is {relevance}-relevant to phenotype-matched tissues (max TPM={assess_tpm:.1f} across {len(all_tissues)} tissues: {tissue_detail})."
         else:
             clinical_note = f"{gene} is {relevance}-relevant to {profile_name} (GTEx TPM={assess_tpm:.1f})."
