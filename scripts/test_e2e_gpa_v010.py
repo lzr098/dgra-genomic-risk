@@ -198,7 +198,6 @@ async def test_circular_import_fix():
     # This should not raise ImportError
     from gpa_pipeline import run_dgra_pipeline as rdp
     assert rdp is not None
-    assert GC is not None
 
     print("[PASS] test_circular_import_fix")
 

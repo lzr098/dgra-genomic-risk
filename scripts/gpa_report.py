@@ -24,6 +24,7 @@ except ImportError:
 
 from version import __version__
 from gpa_types import Variant, GPAConfig, _UNKNOWN
+from gpa_analysis import _load_pseudogene_lookup
 
 
 # Offline archive path (shared with dgra_core)

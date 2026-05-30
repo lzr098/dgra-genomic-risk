@@ -51,7 +51,7 @@ class GPAReviewGate:
         self.builtins = self._get_builtins()
 
     def _get_builtins(self) -> set:
-        return {"True", "False", "None", "len", "str", "int", "float", "list", "dict",
+        return {"True", "False", "None", "bool", "len", "str", "int", "float", "list", "dict",
                 "set", "tuple", "range", "enumerate", "zip", "map", "filter", "sum",
                 "min", "max", "abs", "round", "sorted", "isinstance", "hasattr",
                 "getattr", "setattr", "dir", "vars", "locals", "globals", "print",
@@ -61,6 +61,18 @@ class GPAReviewGate:
                 "ValueError", "TypeError", "KeyError", "IndexError", "AttributeError",
                 "RuntimeError", "NotImplementedError", "FileNotFoundError", "ImportError",
                 "ModuleNotFoundError", "AssertionError", "ZeroDivisionError", "OSError",
+                "PermissionError", "ProcessLookupError", "TimeoutError", "IsADirectoryError",
+                "ConnectionError", "ConnectionAbortedError", "ConnectionRefusedError", "ConnectionResetError",
+                "BrokenPipeError", "ChildProcessError", "BlockingIOError", "InterruptedError",
+                "FileExistsError", "NotADirectoryError", "ReferenceError", "SyntaxError",
+                "IndentationError", "TabError", "SystemError", "UnicodeError", "UnicodeDecodeError",
+                "UnicodeEncodeError", "UnicodeTranslateError", "Warning", "UserWarning",
+                "DeprecationWarning", "PendingDeprecationWarning", "RuntimeWarning", "FutureWarning",
+                "ImportWarning", "UnicodeWarning", "BytesWarning", "ResourceWarning",
+                "NameError", "UnboundLocalError", "ArithmeticError", "LookupError", "BufferError",
+                "EOFError", "NotImplemented", "Ellipsis", "__debug__", "staticmethod", "classmethod",
+                "property", "any", "all", "callable", "delattr", "eval", "exec", "compile",
+                "help", "input", "issubclass", "__import__",
                 "json", "sys", "csv", "re", "os", "asyncio", "datetime", "pathlib",
                 "typing", "argparse", "math", "time", "collections", "itertools",
                 "functools", "copy", "hashlib", "base64", "urllib", "socket",
@@ -102,6 +114,7 @@ class GPAReviewGate:
         self._check_is_literals(filename, tree)
         self._check_duplicate_set_items(filename, tree, source)
         self._check_duplicate_dict_keys(filename, tree, source)
+        self._check_undefined_names(filename, tree, source)
 
         # 3. Critical checks
         self._check_logging_fstring(filename, tree, source)
@@ -187,6 +200,129 @@ class GPAReviewGate:
                             self.issues.append(Issue(filename, k.lineno, Severity.BLOCKER,
                                 "DUPLICATE_DICT_KEY", f"Duplicate key {k.value!r} in dict literal."))
                         seen[key] = k.lineno
+
+    def _check_undefined_names(self, filename: str, tree: ast.AST, source: str):
+        """Check for names used but not defined or imported (refactor safety)."""
+        # Collect module-level imports
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if any(n.name == "*" for n in node.names):
+                    continue  # Skip star imports
+                for alias in node.names:
+                    imported.add(alias.asname or alias.name)
+
+        # Collect module-level definitions
+        defined = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defined.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    for name in self._get_assignment_names(target):
+                        defined.add(name)
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name):
+                    defined.add(node.target.id)
+            elif isinstance(node, ast.NamedExpr):
+                if isinstance(node.target, ast.Name):
+                    defined.add(node.target.id)
+            elif isinstance(node, ast.For):
+                for name in self._get_assignment_names(node.target):
+                    defined.add(name)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars:
+                        for name in self._get_assignment_names(item.optional_vars):
+                            defined.add(name)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                defined.add(node.name)
+            elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+                for gen in node.generators:
+                    for name in self._get_assignment_names(gen.target):
+                        defined.add(name)
+            elif isinstance(node, ast.DictComp):
+                for gen in node.generators:
+                    for name in self._get_assignment_names(gen.target):
+                        defined.add(name)
+
+        # Collect function argument names and local assignments
+        func_args = set()
+        local_defined = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
+                    func_args.add(arg.arg)
+                if node.args.vararg:
+                    func_args.add(node.args.vararg.arg)
+                if node.args.kwarg:
+                    func_args.add(node.args.kwarg.arg)
+                # Collect local assignments in this function
+                for child in ast.walk(node):
+                    if child is node:
+                        continue
+                    if isinstance(child, ast.Assign):
+                        for target in child.targets:
+                            for name in self._get_assignment_names(target):
+                                local_defined.add(name)
+                    elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                        local_defined.add(child.target.id)
+                    elif isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+                        local_defined.add(child.target.id)
+                    elif isinstance(child, ast.For):
+                        for name in self._get_assignment_names(child.target):
+                            local_defined.add(name)
+                    elif isinstance(child, (ast.With, ast.AsyncWith)):
+                        for item in child.items:
+                            if item.optional_vars:
+                                for name in self._get_assignment_names(item.optional_vars):
+                                    local_defined.add(name)
+                    elif isinstance(child, ast.ExceptHandler) and child.name:
+                        local_defined.add(child.name)
+                    elif isinstance(child, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+                        for gen in child.generators:
+                            for name in self._get_assignment_names(gen.target):
+                                local_defined.add(name)
+                    elif isinstance(child, ast.DictComp):
+                        for gen in child.generators:
+                            for name in self._get_assignment_names(gen.target):
+                                local_defined.add(name)
+                    elif isinstance(child, ast.Lambda):
+                        for arg in child.args.args + child.args.posonlyargs + child.args.kwonlyargs:
+                            func_args.add(arg.arg)
+                        if child.args.vararg:
+                            func_args.add(child.args.vararg.arg)
+                        if child.args.kwarg:
+                            func_args.add(child.args.kwarg.arg)
+
+        available = imported | defined | func_args | local_defined | self.builtins
+        # Add module attributes that are implicitly available
+        available |= {"__name__", "__file__", "__doc__", "__package__", "__spec__",
+                      "__annotations__", "__builtins__", "__cached__", "__loader__"}
+
+        # Check all Name usages
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if node.id not in available:
+                    self.issues.append(Issue(filename, node.lineno, Severity.BLOCKER,
+                        "UNDEFINED_NAME", f"'{node.id}' used but not defined or imported. Possible refactor omission."))
+
+    def _get_assignment_names(self, target) -> list:
+        """Extract names from an assignment target (handles tuples)."""
+        names = []
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                names.extend(self._get_assignment_names(elt))
+        elif isinstance(target, ast.Subscript):
+            pass  # x[0] = 1 doesn't define x
+        elif isinstance(target, ast.Attribute):
+            pass  # obj.attr = 1 doesn't define obj
+        return names
 
     def _check_logging_fstring(self, filename: str, tree: ast.AST, source: str):
         lines = source.split("\n")
