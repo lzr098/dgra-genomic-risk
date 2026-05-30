@@ -177,7 +177,7 @@ _Analyzed via direct Python API (bypassed batch CLI for performance)._
             "results": result,
             "report_md": report_md,
         }
-    except Exception as e:
+    except (ConnectionError, TimeoutError) as e:
         import traceback
         return {
             "success": False,
@@ -269,7 +269,7 @@ def _run_gpa_vcf_direct(
             )
         except subprocess.TimeoutExpired:
             return {"success": False, "error": f"VCF analysis timed out after {timeout_per_batch}s"}
-        except Exception as e:
+        except (IndexError, ValueError) as e:
             return {"success": False, "error": f"Subprocess failed: {e}"}
 
         if result.returncode != 0:
@@ -283,13 +283,13 @@ def _run_gpa_vcf_direct(
         try:
             with open(json_out, "r", encoding="utf-8") as f:
                 results = _json.load(f)
-        except Exception as e:
+        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError) as e:
             return {"success": False, "error": f"Failed to parse JSON output: {e}"}
 
         try:
             with open(md_out, "r", encoding="utf-8") as f:
                 report_md = f.read()
-        except Exception:
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
             report_md = ""
 
         return {"success": True, "results": results, "report_md": report_md}
@@ -367,7 +367,7 @@ def run_gpa_from_file(
         )
     try:
         variants = parse_input(input_path, fmt=fmt, annotation_fmt=annotation_fmt)
-    except Exception as e:
+    except (IndexError, ValueError) as e:
         return {"success": False, "error": f"Failed to parse {input_path}: {e}"}
     return run_gpa(
         variants=variants,
@@ -698,7 +698,7 @@ def main():
         try:
             ftp = FreeTextParser()
             variants = ftp.parse_text(args.free_text)
-        except Exception as e:
+        except (IndexError, ValueError, json.JSONDecodeError) as e:
             print(json.dumps({"success": False, "error": f"Failed to parse free text: {e}"}, indent=2))
             sys.exit(1)
         result = run_gpa(

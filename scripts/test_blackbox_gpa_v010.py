@@ -878,7 +878,7 @@ async def run_async_tests():
         try:
             await t()
             passed += 1
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
     return passed, failed
@@ -926,7 +926,7 @@ def run_sync_tests():
         try:
             t()
             passed += 1
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
     return passed, failed

@@ -33,7 +33,7 @@ def _load_tissue_context() -> Dict[str, Any]:
     try:
         with open(_TISSUE_CONTEXT_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
         return {}
 
 
@@ -410,7 +410,7 @@ class TranscriptSelector:
                             return candidates[idx]
                     # Default to first candidate
                     return candidates[0]
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             logger.warning(f"LLM transcript selection failed: {e}")
             return None
 

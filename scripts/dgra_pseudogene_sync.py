@@ -54,7 +54,7 @@ def _download_gtf_streaming(url: str, output_path: Path, chunk_size: int = 8192)
             raise RuntimeError(f"HTTP {response.status}: download failed")
 
         total_size = int(response.headers.get("Content-Length", 0)) + existing_size
-        with open(output_path, mode) as f:
+        with open(output_path, mode, encoding='utf-8') as f:
             while True:
                 chunk = response.read(chunk_size)
                 if not chunk:
@@ -175,7 +175,7 @@ async def sync_gencode_pseudogenes(
         try:
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{ts}] [{event_type}] {msg}\n")
-        except Exception:
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
             pass
 
     # v0.6 A-layer: check build state for resume
@@ -184,7 +184,7 @@ async def sync_gencode_pseudogenes(
         if is_step_complete("pseudogene_sync") and output_path.exists():
             _log("STATE_RESUME", "pseudogene_sync already complete, skipping")
             return output_path
-    except Exception:
+    except (RuntimeError, ValueError):
         pass  # Best-effort, don't fail on state read errors
 
     # Check TTL
@@ -205,7 +205,7 @@ async def sync_gencode_pseudogenes(
     try:
         _download_gtf_streaming(GENCODE_GTF_URL, gtf_gz_path)
         _log("DOWNLOAD_OK", f"path={gtf_gz_path}, size={gtf_gz_path.stat().st_size}")
-    except Exception as e:
+    except (ConnectionError, TimeoutError) as e:
         _log("DOWNLOAD_FAILED", str(e))
         # Fallback to existing JSON
         if output_path.exists():
@@ -265,7 +265,7 @@ async def sync_gencode_pseudogenes(
                         parent_map[parent_gene].append(gene_name)
 
         _log("PARSE_OK", f"lines={line_count}, pseudogenes={len(pseudogenes)}, parent_pairs={len(parent_map)}")
-    except Exception as e:
+    except (IndexError, ValueError) as e:
         _log("PARSE_FAILED", str(e))
         # Fallback to existing JSON
         if output_path.exists():
@@ -304,7 +304,7 @@ async def sync_gencode_pseudogenes(
             "file": str(output_path),
             "release": GENCODE_RELEASE,
         })
-    except Exception:
+    except (RuntimeError, ValueError):
         pass  # Build state is best-effort
 
     return output_path
@@ -395,7 +395,7 @@ if __name__ == "__main__":
     print(f"Output: {path}")
 
     import json
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         data = json.load(f)
     print(f"Total pseudogenes: {data['total_pseudogenes']}")
     print(f"Parent pairs: {len(data['parent_pseudogene_pairs'])}")

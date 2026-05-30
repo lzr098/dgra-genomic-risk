@@ -360,10 +360,10 @@ def _get_version_info(config: GPAConfig) -> Dict:
     cache_path = getattr(config, 'cache_db_path', None)
     if cache_path and Path(cache_path).exists():
         try:
-            with open(cache_path, 'rb') as f:
+            with open(cache_path, 'rb', encoding='utf-8') as f:
                 cache_hash = hashlib.sha256(f.read()).hexdigest()[:16]
             version_info["cache_version"] = cache_hash
-        except Exception:
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
             version_info["cache_version"] = "unknown"
     else:
         version_info["cache_version"] = "no_cache"
@@ -377,7 +377,7 @@ def _get_version_info(config: GPAConfig) -> Dict:
                 version_info["offline_archive_date"] = datetime.fromtimestamp(latest_mtime).isoformat()
             else:
                 version_info["offline_archive_date"] = "empty"
-        except Exception:
+        except (RuntimeError, ValueError):
             version_info["offline_archive_date"] = "unknown"
     else:
         version_info["offline_archive_date"] = "no_archive"
@@ -393,7 +393,7 @@ def _get_version_info(config: GPAConfig) -> Dict:
             version_info["dgra_core_commit"] = result.stdout.strip()[:12]
         else:
             version_info["dgra_core_commit"] = "unknown"
-    except Exception:
+    except (RuntimeError, ValueError):
         version_info["dgra_core_commit"] = "unknown"
 
     # Database version override (CLI --database-version)

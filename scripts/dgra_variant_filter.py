@@ -208,7 +208,7 @@ def get_tissue_relevant_genes(tissue_profile: str, tissue_context_path: Optional
         import json
         with open(tissue_context_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except Exception:
+    except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
         return set()
 
     profile = data.get("profiles", {}).get(tissue_profile)

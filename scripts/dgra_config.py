@@ -175,7 +175,7 @@ class DGRAGlobalConfig:
         """Load a local override JSON file if it exists."""
         path = self.override_files.get(name)
         if path and path.exists():
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         return None
 

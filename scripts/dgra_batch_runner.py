@@ -122,7 +122,7 @@ def run_batch(
         try:
             with open(json_out, "r", encoding="utf-8") as f:
                 results = json.load(f)
-        except Exception as e:
+        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError) as e:
             return {
                 "success": False,
                 "error": f"Batch {batch_id} JSON parse failed: {e}",
@@ -382,7 +382,7 @@ def main():
     try:
         variants = parse_input(args.input_file, fmt=args.format if args.format != "auto" else None,
                                annotation_fmt=args.annotation_format if args.annotation_format != "auto" else None)
-    except Exception as e:
+    except (IndexError, ValueError, json.JSONDecodeError) as e:
         print(json.dumps({"success": False, "error": f"Parse failed: {e}"}, indent=2))
         sys.exit(1)
     

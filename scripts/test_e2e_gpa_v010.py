@@ -227,7 +227,7 @@ async def main():
         try:
             await t()
             passed += 1
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             print(f"[FAIL] {t.__name__}: {e}")
             failed += 1
 

@@ -165,7 +165,7 @@ class VCFAnnotator:
                     else:
                         # Only scan first 50 non-header lines
                         break
-        except Exception as e:
+        except (IndexError, ValueError) as e:
             logger.warning(f"[VCFAnnotator] Cannot check annotation status: {e}")
         return False
 
@@ -191,11 +191,11 @@ class VCFAnnotator:
     def _vcf_opener(self, vcf_path: Path):
         """Return appropriate file opener based on actual file content, not just extension."""
         try:
-            with open(vcf_path, "rb") as fh:
+            with open(vcf_path, "rb", encoding='utf-8') as fh:
                 magic = fh.read(2)
                 if magic == b'\x1f\x8b':
                     return gzip.open
-        except Exception:
+        except (FileNotFoundError, IndexError, IsADirectoryError, PermissionError, ValueError):
             pass
         return open
 
@@ -392,12 +392,12 @@ class VCFAnnotator:
         if not index_path.exists():
             return set()
         try:
-            with open(index_path, "r") as f:
+            with open(index_path, "r", encoding='utf-8') as f:
                 missing = json.load(f)
             total_shards = missing.get("total_shards", 0)
             done = missing.get("completed_shards", [])
             return set(done)
-        except Exception:
+        except (ValueError, json.JSONDecodeError):
             return set()
 
     def _save_shard_atomic(self, shard_idx: int, data: list) -> None:
@@ -405,7 +405,7 @@ class VCFAnnotator:
         import os as _os
         shard_path = self._shard_path(shard_idx)
         tmp_path = Path(str(shard_path) + ".tmp")
-        with open(tmp_path, "w") as f:
+        with open(tmp_path, "w", encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False)
         _os.replace(str(tmp_path), str(shard_path))
 
@@ -415,7 +415,7 @@ class VCFAnnotator:
         tmp_path = Path(str(index_path) + ".tmp")
         try:
             if index_path.exists():
-                with open(index_path, "r") as f:
+                with open(index_path, "r", encoding='utf-8') as f:
                     index = json.load(f)
             else:
                 index = {}
@@ -423,11 +423,11 @@ class VCFAnnotator:
             completed.add(shard_idx)
             index["completed_shards"] = sorted(completed)
             index["updated_at"] = datetime.now().isoformat()
-            with open(tmp_path, "w") as f:
+            with open(tmp_path, "w", encoding='utf-8') as f:
                 json.dump(index, f, ensure_ascii=False)
             import os as _os
             _os.replace(str(tmp_path), str(index_path))
-        except Exception:
+        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
             pass
 
     def _init_shard_dir(self, total_variants: int) -> None:
@@ -444,7 +444,7 @@ class VCFAnnotator:
                 "completed_shards": [],
                 "created_at": datetime.now().isoformat(),
             }
-            with open(index_path, "w") as f:
+            with open(index_path, "w", encoding='utf-8') as f:
                 json.dump(index, f, ensure_ascii=False)
 
     # ------------------------------------------------------------------
@@ -694,7 +694,7 @@ class VCFAnnotator:
                         "vep_summary": {"error": f"Local VEP exit {proc.returncode}"},
                     }
                 ] * len(variants)
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             logger.error(f"Local VEP execution error: {e}")
             return [
                 {

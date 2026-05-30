@@ -72,7 +72,7 @@ def _load_offline_archive(gene: str) -> Optional[Dict]:
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except Exception:
+    except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
         return None
 
 # =============================================================================
@@ -102,7 +102,7 @@ _COMMON_TS_GENES = {
     "ATM", "CHEK2", "MLH1", "MSH2", "MSH6", "PMS2", "VHL", "WT1", "TSC1", "TSC2",
     "PHF6", "BCOR", "BCORL1", "ASXL1", "RUNX1", "CEBPA", "GATA2", "ETV6", "DDX41",
     "SAMD9", "SAMD9L", "TP53BP1", "BRCC3", "RAD51", "RAD51C", "RAD51D", "PALB2",
-    "BARD1", "NBN", "ATM", "CHEK2",
+    "BARD1", "NBN",
 }
 
 _KNOWN_AML_DRIVERS = {
@@ -289,7 +289,6 @@ class GPAConfig:
         gc.low_af_threshold = self.low_af_threshold
         gc.vaf_deviation_threshold = self.vaf_deviation_threshold
         # v0.10.3: Allow cache DB override for sandboxed environments
-        import os
         cache_override = os.environ.get("DGRA_CACHE_DB_PATH")
         if cache_override:
             gc.cache_db_path = Path(cache_override)
@@ -315,7 +314,7 @@ class GPAConfig:
                 "hepatic, renal, neurological. Specify via --tissue or config.tissue_profile."
             )
         ref_path = Path(__file__).parent.parent / "references" / "tissue_context.json"
-        with open(ref_path, 'r') as f:
+        with open(ref_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         profiles = data.get("profiles", {})
         if self.tissue_profile not in profiles:
@@ -340,7 +339,7 @@ class GPAConfig:
             except RuntimeError as e:
                 # asyncio.run() fails when already in a running event loop
                 print(f"[GPA] Gene list sync skipped (event loop conflict) - using static lists")
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             # Non-blocking: if merge fails, keep static lists
             print(f"[GPA] Gene list sync warning: {e} - using static lists")
 
@@ -406,7 +405,7 @@ def _load_pseudogene_database():
     if _PSEUDOGENE_CONFIG:
         return _PSEUDOGENE_CONFIG
     try:
-        with open(_PSEUDOGENE_DB_PATH, "r") as f:
+        with open(_PSEUDOGENE_DB_PATH, "r", encoding='utf-8') as f:
             db = json.load(f)
         _PSEUDOGENE_CONFIG = db.get("genes", {})
         print(f"[GPA] Loaded pseudogene database: {len(_PSEUDOGENE_CONFIG)} genes")
@@ -1720,7 +1719,6 @@ def _is_minimal_c_terminal_truncation(hgvsp: Optional[str]) -> bool:
     if not hgvsp:
         return False
     hgvsp_str = str(hgvsp)
-    import re
     # Match nonsense: p.Glu293Ter
     ter_match = re.search(r'p\.[A-Za-z]+(\d+)Ter', hgvsp_str)
     if ter_match:
@@ -1929,7 +1927,7 @@ def main():
             print(f"[GPA] Loaded configuration from {config_path}")
         except FileNotFoundError:
             print(f"[GPA] Config file not found: {config_path}, using built-in defaults")
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             print(f"[GPA] Warning: Failed to load config {config_path}: {e}")
 
     # v0.5 P1-7: Validate --multi-organ vs --tissue mutual exclusion
@@ -1996,7 +1994,7 @@ def main():
 
     else:
         # Default: CSV/TSV (existing behavior)
-        with open(args.input, 'r') as f:
+        with open(args.input, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f, delimiter='\t' if args.input.endswith('.tsv') else ',')
             for row in reader:
                 variants_data.append(dict(row))
@@ -2050,7 +2048,7 @@ def main():
         results = asyncio.run(run_multi_organ_assessment(variants_data, user_phenotypes=args.phenotypes, config=config))
 
         # Write joint report
-        with open(args.output, 'w') as f:
+        with open(args.output, 'w', encoding='utf-8') as f:
             f.write(results["joint_report_markdown"])
 
         print(f"GPA Multi-Organ Report Generated: {args.output}")
@@ -2065,13 +2063,13 @@ def main():
 
         # Write JSON if requested (backward compatible)
         if args.json:
-            with open(args.json, 'w') as f:
+            with open(args.json, 'w', encoding='utf-8') as f:
                 json.dump(results, f, indent=2, default=str)
             print(f"Structured output written to: {args.json}")
 
         # v0.5 P1-12: Write P1-12 structured JSON report if requested
         if args.output_json:
-            with open(args.output_json, 'w') as f:
+            with open(args.output_json, 'w', encoding='utf-8') as f:
                 json.dump(results.get("json_report", {}), f, indent=2, default=str, ensure_ascii=False)
             print(f"P1-12 JSON report written to: {args.output_json}")
 
@@ -2087,7 +2085,7 @@ def main():
         results = asyncio.run(run_dgra_pipeline(variants_data, user_phenotypes=args.phenotypes, config=config))
 
     # Write report
-    with open(args.output, 'w') as f:
+    with open(args.output, 'w', encoding='utf-8') as f:
         f.write(results["report_markdown"])
 
     profile_name = results["meta"]["profile_display_name"]
@@ -2102,13 +2100,13 @@ def main():
 
     # Write JSON if requested (backward compatible)
     if args.json:
-        with open(args.json, 'w') as f:
+        with open(args.json, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, default=str)
         print(f"Structured output written to: {args.json}")
 
     # v0.5 P1-12: Write P1-12 structured JSON report if requested
     if args.output_json:
-        with open(args.output_json, 'w') as f:
+        with open(args.output_json, 'w', encoding='utf-8') as f:
             json.dump(results.get("json_report", {}), f, indent=2, default=str, ensure_ascii=False)
         print(f"P1-12 JSON report written to: {args.output_json}")
 

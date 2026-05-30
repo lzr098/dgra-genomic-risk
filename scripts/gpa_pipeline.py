@@ -180,7 +180,7 @@ async def _run_api_enrichment_phase(
                     return {"status": "API_FAILED", "error": f"timeout: {e}", "source": "failed"}
                 except aiohttp.ClientError as e:
                     return {"status": "API_FAILED", "error": f"client_error: {e}", "source": "failed"}
-                except Exception as e:
+                except (ConnectionError, TimeoutError, aiohttp.ClientError, asyncio.TimeoutError) as e:
                     return {"status": "API_FAILED", "error": str(e), "source": "failed"}
 
         gnomad_results = await asyncio.gather(*[_query_one_gnomad(v) for v in selected])
@@ -232,7 +232,7 @@ async def _run_api_enrichment_phase(
                         v.gnomad_status = "MYVARIANT_FALLBACK"
                         v.gnomad_af_warning = False
                 print(f"[GPA] MyVariant.info: {stats['myvariant_gnomad_filled']} gnomAD, {stats['myvariant_clinvar_filled']} ClinVar, {stats['myvariant_cadd_filled']} CADD filled")
-            except Exception as e:
+            except (IndexError, ValueError) as e:
                 print(f"[GPA] MyVariant.info fallback failed: {type(e).__name__}: {e}")
 
         # --- NCBI ClinVar direct query (v0.10.5) ---
@@ -248,7 +248,7 @@ async def _run_api_enrichment_phase(
                         chrom=v.chrom,
                         pos=v.pos,
                     )
-                except Exception as e:
+                except (ConnectionError, TimeoutError) as e:
                     return {"clinical_significance": None, "error": str(e), "source": "failed"}
 
         clinvar_results = await asyncio.gather(*[_query_one_clinvar(v) for v in selected])

@@ -41,11 +41,11 @@ def _load_rare_disease_genes() -> set:
 
     map_path = Path(__file__).parent.parent / "references" / "gene_phenotype_map.json"
     try:
-        with open(map_path, 'r') as f:
+        with open(map_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         _RARE_DISEASE_GENES = set(data.keys())
         return _RARE_DISEASE_GENES
-    except Exception:
+    except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
         _RARE_DISEASE_GENES = set()
         return _RARE_DISEASE_GENES
 

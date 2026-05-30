@@ -216,7 +216,7 @@ def main():
     except AssertionError as e:
         print(f"\n[FAIL] Assertion failed: {e}")
         sys.exit(1)
-    except Exception as e:
+    except (RuntimeError, ValueError) as e:
         print(f"\n[FAIL] Unexpected error: {e}")
         import traceback
         traceback.print_exc()

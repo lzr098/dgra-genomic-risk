@@ -51,7 +51,7 @@ def detect_input_type(input_path: str) -> InputType:
                     return InputType.ANNOTATED_TABLE
                 else:
                     return InputType.FREE_TEXT
-        except Exception:
+        except (IndexError, ValueError):
             return InputType.UNKNOWN
 
 
@@ -70,7 +70,7 @@ def _has_vcf_annotation(vcf_path: str) -> bool:
                     return True
                 if not line.startswith('#') and f'{VEP_ANNOTATION_FIELD}=' in line:
                     return True
-    except Exception:
+    except (IndexError, ValueError):
         pass
     return False
 

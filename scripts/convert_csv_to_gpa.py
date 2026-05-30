@@ -9,7 +9,7 @@ import sys
 def detect_encoding(filepath):
     """Try multiple encodings to find the correct one."""
     # Read raw bytes to detect
-    with open(filepath, 'rb') as f:
+    with open(filepath, 'rb', encoding='utf-8') as f:
         raw = f.read(50000)
     
     # Try encodings in order of likelihood for Chinese bioinformatics files
@@ -32,7 +32,7 @@ def detect_encoding(filepath):
                             if gt_val in ('0/1', '1/1', './.', '0/0', '0|1', '1|1'):
                                 print(f"[ENCODING] Detected {enc} (GT field valid: {gt_val})")
                                 return enc
-        except Exception:
+        except (RuntimeError, ValueError):
             pass
     
     # Fallback: try each encoding on the full file
@@ -47,7 +47,7 @@ def detect_encoding(filepath):
                     if gt_val in ('0/1', '1/1', './.', '0/0', '0|1', '1|1'):
                         print(f"[ENCODING] Detected {enc} (GT field valid: {gt_val})")
                         return enc
-        except Exception:
+        except (RuntimeError, ValueError):
             pass
     
     print("[ENCODING] WARNING: Could not detect encoding, falling back to gb18030")

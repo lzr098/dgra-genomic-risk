@@ -255,7 +255,7 @@ async def query_myvariant_single(
             status="error",
             error=f"Client error: {e}",
         )
-    except Exception as e:
+    except (RuntimeError, ValueError) as e:
         return MyVariantResult(
             variant_id=variant_id,
             queried=True,
@@ -390,7 +390,7 @@ async def query_myvariant_batch(
                         status="error",
                         error=f"Batch client error: {e}",
                     )
-            except Exception as e:
+            except (RuntimeError, ValueError) as e:
                 for vid in batch_ids:
                     results[vid] = MyVariantResult(
                         variant_id=vid,
@@ -463,7 +463,7 @@ def apply_myvariant_results(
                 result_by_key[key] = result
                 # Also store without chr prefix
                 result_by_key[chrom_pos_ref + ">" + alt] = result
-        except Exception:
+        except (RuntimeError, ValueError):
             pass
     
     for v in variants:

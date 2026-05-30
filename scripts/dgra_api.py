@@ -86,7 +86,7 @@ class DGRAAPIClient:
                         return bool(count and int(count) > 0)
             finally:
                 await session.close()
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError):
             return False
         return False
 
@@ -219,12 +219,12 @@ class DGRAAPIClient:
                     if http_status == 200:
                         try:
                             data = await response.json()
-                        except Exception:
+                        except (ValueError, json.JSONDecodeError):
                             # Try to parse text as JSON fallback
                             text = await response.text()
                             try:
                                 data = json.loads(text)
-                            except Exception:
+                            except (ValueError, json.JSONDecodeError):
                                 # Not valid JSON — don't cache, return as error
                                 return {
                                     "data": None,
@@ -915,9 +915,9 @@ class DGRAAPIClient:
         cache_path = _script_dir / ".." / "references" / "offline_data" / "gtex_gencode_map.json"
         if cache_path.exists():
             try:
-                with open(cache_path, "r") as f:
+                with open(cache_path, "r", encoding='utf-8') as f:
                     return json.load(f)
-            except Exception:
+            except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
                 pass
         return {}
     
@@ -926,7 +926,7 @@ class DGRAAPIClient:
         _script_dir = Path(__file__).resolve().parent
         cache_path = _script_dir / ".." / "references" / "offline_data" / "gtex_gencode_map.json"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_path, "w") as f:
+        with open(cache_path, "w", encoding='utf-8') as f:
             json.dump(cache, f, indent=2, sort_keys=True)
     
     async def query_gtex_expression_multi(self, gene_id: str, tissues: List[str]) -> List[Dict[str, Any]]:
@@ -1970,7 +1970,7 @@ class DGRAAPIClient:
                     "error_msg": f"Connection error: {str(e)[:100]}",
                     "details": "Network or DNS issue — check connectivity and proxy settings",
                 }
-            except Exception as e:
+            except (RuntimeError, ValueError) as e:
                 health[api_name] = {
                     "status": "ERROR",
                     "latency_ms": 0,
@@ -2024,8 +2024,6 @@ def run_async(coro):
 
 async def demo():
     """Demo: query a few genes across multiple APIs."""
-    from dgra_config import DGRAGlobalConfig
-    
     config = DGRAGlobalConfig.from_env()
     cache = DGRACache(config.cache_db_path, default_ttl_days=config.cache_ttl_days)
     

@@ -81,7 +81,7 @@ def auto_detect(path: Path) -> str:
         return "freetext"
 
     # Fallback: read first 2KB and look for VCF header
-    with open(path, "rb") as f:
+    with open(path, "rb", encoding='utf-8') as f:
         head = f.read(2048)
     if b"##fileformat=VCF" in head:
         return "vcf"
@@ -249,7 +249,7 @@ class VCFParser(InputParser):
                     if total > 0:
                         alt_depth = sum(parts[1:])
                         vaf = f"{alt_depth / total:.4f}"
-            except Exception:
+            except (RuntimeError, ValueError):
                 pass
         if not vaf:
             af_str = fmt_dict.get("AF", "")
