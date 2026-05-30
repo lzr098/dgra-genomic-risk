@@ -1452,62 +1452,77 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
     primary_tissues = gtex.get("primary_tissues", [])
     expressing_tissues = gtex.get("expressing_tissues", 0)
 
+    # v0.10.8: Use phenotype-aware TPM when available (Phase 2 full GTEx query)
+    phenotype_max_tpm = gtex.get("phenotype_max_tpm")
+    global_max_tpm = gtex.get("global_max_tpm")
+    phenotype_tissues = gtex.get("phenotype_tissues", [])
+    
+    # For relevance assessment, prefer phenotype-matched tissues
+    # If phenotype tissues are not in GTEx (e.g. retina not in GTEx v8),
+    # phenotype_max_tpm will be 0 even if the gene is tissue-specific
+    assess_tpm = phenotype_max_tpm if phenotype_max_tpm is not None else tpm
+    
+    # v0.10.8: GTEx fast-track REMOVED. Expression data is now used only for
+    # phenotype-tissue association, not as a hard tier gate.
+    # The fast_track field is kept for backward compatibility but ignored
+    # by the tier classifier (see gpa_tier_classifier.py v0.10.8).
+    
     # v0.5 P0-6: General profile - skip GTEx tissue-specific fast-track.
     # When gtex_tissue is null, expression-based fast-track is disabled;
     # assessment relies on special gene lists and ClinVar/gnomAD instead.
-    if tpm is not None and tissue_profile.get("gtex_tissue") is not None:
+    if assess_tpm is not None and tissue_profile.get("gtex_tissue") is not None:
         # v0.5 P1-6: Multi-tissue rationale
         if is_multi_tissue and all_tissues:
             tissue_count = len(all_tissues)
-            if tpm >= 10.0:
+            if assess_tpm >= 10.0:
                 relevance = "primary"
-                rationale = f"High {profile_name} expression (max TPM={max_tpm:.1f} across {tissue_count} tissues) per GTEx."
-            elif tpm >= 1.0:
+                rationale = f"High phenotype-relevant expression (max TPM={assess_tpm:.1f} across matched tissues) per GTEx."
+            elif assess_tpm >= 1.0:
                 relevance = "secondary"
-                rationale = f"Moderate {profile_name} expression (max TPM={max_tpm:.1f} across {tissue_count} tissues) per GTEx."
-            elif tpm > 0:
+                rationale = f"Moderate phenotype-relevant expression (max TPM={assess_tpm:.1f} across matched tissues) per GTEx."
+            elif assess_tpm > 0:
                 relevance = "none"
-                rationale = f"Low {profile_name} expression (max TPM={max_tpm:.2f} across {tissue_count} tissues) per GTEx."
+                rationale = f"Low phenotype-relevant expression (max TPM={assess_tpm:.2f} across matched tissues) per GTEx."
             else:
                 relevance = "none"
-                rationale = f"No detectable {profile_name} expression across {tissue_count} tissues per GTEx."
+                # v0.10.8: Note when GTEx lacks the phenotype-relevant tissue
+                if phenotype_tissues and not any("retina" in t.lower() for t in phenotype_tissues):
+                    missing = ", ".join(phenotype_tissues[:3])
+                    rationale = f"No detectable expression in GTEx-matched tissues ({missing}). Note: GTEx v8 lacks many specialized tissues (e.g. retina)."
+                else:
+                    rationale = f"No detectable {profile_name} expression across {tissue_count} tissues per GTEx."
         else:
             # Single tissue (backward compatible)
-            if tpm >= 10.0:
+            if assess_tpm >= 10.0:
                 relevance = "primary"
-                rationale = f"High {profile_name} expression (TPM={tpm:.1f}) per GTEx."
-            elif tpm >= 1.0:
+                rationale = f"High {profile_name} expression (TPM={assess_tpm:.1f}) per GTEx."
+            elif assess_tpm >= 1.0:
                 relevance = "secondary"
-                rationale = f"Moderate {profile_name} expression (TPM={tpm:.1f}) per GTEx."
-            elif tpm > 0:
+                rationale = f"Moderate {profile_name} expression (TPM={assess_tpm:.1f}) per GTEx."
+            elif assess_tpm > 0:
                 relevance = "none"
-                rationale = f"Low {profile_name} expression (TPM={tpm:.2f}) per GTEx."
+                rationale = f"Low {profile_name} expression (TPM={assess_tpm:.2f}) per GTEx."
             else:
                 relevance = "none"
                 rationale = f"No detectable {profile_name} expression per GTEx."
 
-        # Fast track for none + benign
+        # v0.10.8: Fast track REMOVED. Always return standard pipeline suggestion.
         if relevance == "none":
-            if variant.clinvar and "Pathogenic" in variant.clinvar:
-                return {
-                    "tier_suggestion": 2,
-                    "relevance": relevance,
-                    "reason": f"{gene} is not {profile_name}-relevant (GTEx TPM={tpm:.2f}) but ClinVar pathogenic.",
-                    "clinical_note": "Inform patient, record in medical history.",
-                    "fast_track": False,
-                    "rationale": rationale,
-                    "gtex_tpm": tpm,
-                    "source": gtex.get("source", "gtex"),
-                }
-
+            clinical_note = f"{gene} has low/no GTEx expression in phenotype-matched tissues."
+            if global_max_tpm and global_max_tpm > assess_tpm:
+                clinical_note += f" However, global max TPM={global_max_tpm:.1f} in other tissues suggests tissue-specific expression."
+            if phenotype_tissues and not any("retina" in t.lower() for t in phenotype_tissues):
+                clinical_note += " Note: GTEx v8 lacks retinal/eye tissues; tissue-specific genes may be underrepresented."
+            
             return {
-                "tier_suggestion": 3,
+                "tier_suggestion": "assess_via_standard_pipeline",
                 "relevance": relevance,
-                "reason": f"{gene} has no {profile_name} relevance (GTEx TPM={tpm:.2f}).",
-                "clinical_note": f"No impact on {profile_name} function or safety.",
-                "fast_track": True,
+                "reason": f"{gene} GTEx expression low in matched tissues (TPM={assess_tpm:.2f}).",
+                "clinical_note": clinical_note,
+                "fast_track": False,  # v0.10.8: disabled
                 "rationale": rationale,
-                "gtex_tpm": tpm,
+                "gtex_tpm": assess_tpm,
+                "global_max_tpm": global_max_tpm,
                 "source": gtex.get("source", "gtex"),
             }
 
@@ -1515,14 +1530,15 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
         # v0.5 P1-6: Enhanced clinical note for multi-tissue
         if is_multi_tissue and all_tissues:
             tissue_detail = "; ".join([f"{t}:{v:.1f}" for t, v in all_tissues])
-            clinical_note = f"{gene} is {relevance}-relevant to {profile_name} (max TPM={max_tpm:.1f} across {len(all_tissues)} tissues: {tissue_detail})."
+            clinical_note = f"{gene} is {relevance}-relevant to phenotype-matched tissues (max TPM={assess_tpm:.1f} across {len(all_tissues)} tissues: {tissue_detail})."
         else:
-            clinical_note = f"{gene} is {relevance}-relevant to {profile_name} (GTEx TPM={tpm:.1f})."
+            clinical_note = f"{gene} is {relevance}-relevant to {profile_name} (GTEx TPM={assess_tpm:.1f})."
 
         return {
             "tier_suggestion": "assess_via_standard_pipeline",
             "relevance": relevance,
-            "gtex_tpm": tpm,
+            "gtex_tpm": assess_tpm,
+            "global_max_tpm": global_max_tpm,
             "rationale": rationale,
             "fast_track": False,
             "clinical_note": clinical_note,
@@ -1537,19 +1553,20 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
         if tpm >= 10.0:
             relevance = "primary"
             rationale = f"High expression (TPM={tpm:.1f}) in at least one tissue. Relevant to general health."
-        elif tpm >= 1.0:
+        elif assess_tpm >= 1.0:
             relevance = "secondary"
-            rationale = f"Moderate expression (TPM={tpm:.1f}) in at least one tissue."
+            rationale = f"Moderate expression (TPM={assess_tpm:.1f}) in at least one tissue."
         else:
             relevance = "none"
-            rationale = f"Low expression (TPM={tpm:.2f}) - not prominently expressed."
+            rationale = f"Low expression (TPM={assess_tpm:.2f}) - not prominently expressed."
         return {
             "tier_suggestion": "assess_via_standard_pipeline",
             "relevance": relevance,
-            "gtex_tpm": tpm,
+            "gtex_tpm": assess_tpm,
+            "global_max_tpm": global_max_tpm,
             "rationale": rationale,
             "fast_track": False,
-            "clinical_note": f"{gene} general relevance: {relevance} (TPM={tpm:.1f}). No tissue-specific fast-track.",
+            "clinical_note": f"{gene} general relevance: {relevance} (TPM={assess_tpm:.1f}). No tissue-specific fast-track.",
             "source": gtex.get("source", "gtex"),
         }
 
@@ -1563,24 +1580,13 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
         rationale = relevance_info.get("rationale", "")
 
         if relevance == "none":
-            if variant.clinvar and "Pathogenic" in variant.clinvar:
-                return {
-                    "tier_suggestion": 2,
-                    "relevance": relevance,
-                    "reason": f"{gene} is not {profile_name}-relevant but ClinVar pathogenic.",
-                    "clinical_note": "Inform patient, record in medical history.",
-                    "fast_track": False,
-                    "rationale": rationale,
-                    "gtex_rpkm": gtex_rpkm_local,
-                    "source": "local_fallback",
-                }
-
+            # v0.10.8: Fast track REMOVED even for local fallback
             return {
-                "tier_suggestion": 3,
+                "tier_suggestion": "assess_via_standard_pipeline",
                 "relevance": relevance,
-                "reason": f"{gene} has no {profile_name} relevance.",
-                "clinical_note": f"No impact on {profile_name} function or safety.",
-                "fast_track": True,
+                "reason": f"{gene} has no {profile_name} relevance per local database.",
+                "clinical_note": f"No impact on {profile_name} function or safety per local database.",
+                "fast_track": False,
                 "rationale": rationale,
                 "gtex_rpkm": gtex_rpkm_local,
                 "source": "local_fallback",

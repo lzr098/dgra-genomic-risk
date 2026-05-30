@@ -1088,7 +1088,27 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     report.append(f"   - 损伤评估: {di.get('damage_type', 'N/A')}\n")
                 if v.tissue_relevance:
                     tr = v.tissue_relevance
-                    report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
+                    gtex_tpm = tr.get('gtex_tpm', 'N/A')
+                    global_max = tr.get('global_max_tpm')
+                    relevance = tr.get('relevance', 'N/A')
+                    # v0.10.8: Detect tissue-specific genes with low proxy-tissue expression
+                    tissue_note = ""
+                    if global_max and isinstance(gtex_tpm, (int, float)) and global_max > gtex_tpm * 10:
+                        tissue_note = f" [全局最高 TPM={global_max:.1f}，提示组织特异性表达]"
+                    # Check if phenotype tissues are missing key tissues (e.g. retina not in GTEx)
+                    phenotype_tissues = tr.get('phenotype_tissues', [])
+                    if phenotype_tissues and relevance == "none" and isinstance(gtex_tpm, (int, float)) and gtex_tpm < 1.0:
+                        missing_special = []
+                        for special in ["retina", "eye", "cornea", "RPE", "optic"]:
+                            if any(special in t.lower() for t in phenotype_tissues):
+                                continue
+                            # If user phenotype mentions eye but GTEx has no eye tissues
+                        # Simple heuristic: if user mentioned eye/retina and TPM is very low
+                        if tr.get('clinical_note') and 'GTEx v8 lacks' in tr.get('clinical_note', ''):
+                            tissue_note += " ⚠️ GTEx 无对应组织数据"
+                    report.append(f"   - 组织相关性: {relevance} | GTEx TPM: {gtex_tpm}{tissue_note}\n")
+                    if tr.get('clinical_note'):
+                        report.append(f"     - 临床注释: {tr['clinical_note']}\n")
                 if v.gene_constraint:
                     gc = v.gene_constraint
                     parts = []

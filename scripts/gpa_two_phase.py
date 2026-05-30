@@ -333,6 +333,208 @@ async def _enrich_candidate_genes(
     return ensembl_data, uniprot_data, gnomad_constraint_data
 
 
+async def _enrich_gtex(
+    variants: List[Variant],
+    candidate_indices: List[int],
+    config: GPAConfig,
+    tissue_profile: Dict,
+    user_phenotypes: Optional[str] = None,
+) -> Dict[str, Dict]:
+    """
+    Phase 2: GTEx expression data for candidate genes (v0.10.8).
+    
+    v0.10.8 ARCHITECTURE CHANGE:
+    - Queries ALL 54 GTEx tissues (not limited to profile tissues)
+    - Performs phenotype-tissue association analysis
+    - GTEx data is used for phenotype-relevance scoring, NOT as a hard tier gate
+    
+    Returns {gene: {
+        "median_tpm": float, "max_tpm": float, "all_tissues": [...],
+        "source": "gtex_multi", "expressing_tissues": int,
+        "phenotype_max_tpm": float, "phenotype_tissues": [...],
+        "global_max_tpm": float,
+    }}
+    """
+    if not candidate_indices:
+        return {}
+    
+    # v0.10.8: Query ALL GTEx tissues, not just profile-specific ones
+    ALL_GTEX_TISSUES = [
+        "Adipose - Subcutaneous", "Adipose - Visceral (Omentum)", "Adrenal Gland",
+        "Artery - Aorta", "Artery - Coronary", "Artery - Tibial", "Bladder",
+        "Brain - Amygdala", "Brain - Anterior cingulate cortex (BA24)", "Brain - Caudate (basal ganglia)",
+        "Brain - Cerebellar Hemisphere", "Brain - Cerebellum", "Brain - Cortex",
+        "Brain - Frontal Cortex (BA9)", "Brain - Hippocampus", "Brain - Hypothalamus",
+        "Brain - Nucleus accumbens (basal ganglia)", "Brain - Putamen (basal ganglia)",
+        "Brain - Spinal cord (cervical c-1)", "Brain - Substantia nigra",
+        "Breast - Mammary Tissue", "Cells - EBV-transformed lymphocytes",
+        "Cells - Cultured fibroblasts", "Cervix - Ectocervix", "Cervix - Endocervix",
+        "Colon - Sigmoid", "Colon - Transverse", "Esophagus - Gastroesophageal Junction",
+        "Esophagus - Mucosa", "Esophagus - Muscularis", "Fallopian Tube",
+        "Heart - Atrial Appendage", "Heart - Left Ventricle", "Kidney - Cortex",
+        "Kidney - Medulla", "Liver", "Lung", "Minor Salivary Gland",
+        "Muscle - Skeletal", "Nerve - Tibial", "Ovary", "Pancreas", "Pituitary",
+        "Prostate", "Skin - Not Sun Exposed (Suprapubic)", "Skin - Sun Exposed (Lower leg)",
+        "Small Intestine - Terminal Ileum", "Spleen", "Stomach", "Testis",
+        "Thyroid", "Uterus", "Vagina", "Whole Blood",
+    ]
+    
+    # Phenotype-to-tissue keyword mapping (Chinese + English)
+    PHENOTYPE_TISSUE_MAP = {
+        # Eye / Vision (GTEx has no retina; use brain as proxy for vision-related genes)
+        "retina": ["Brain - Cortex", "Brain - Cerebellum", "Brain - Hippocampus"],
+        "eye": ["Brain - Cortex", "Brain - Cerebellum", "Brain - Hippocampus"],
+        "vision": ["Brain - Cortex", "Brain - Cerebellum"],
+        "optic": ["Brain - Cortex", "Brain - Cerebellum"],
+        " ophthalm": ["Brain - Cortex", "Brain - Cerebellum"],
+        "视网膜": ["Brain - Cortex", "Brain - Cerebellum", "Brain - Hippocampus"],
+        "眼": ["Brain - Cortex", "Brain - Cerebellum"],
+        "视觉": ["Brain - Cortex", "Brain - Cerebellum"],
+        "牵牛花": ["Brain - Cortex", "Brain - Cerebellum"],
+        # Brain / Neurological
+        "brain": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "neuro": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "neural": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "cognitive": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "autism": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "脑": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "神经": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "智力": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "自闭症": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        "认知": [t for t in ALL_GTEX_TISSUES if t.startswith("Brain -")],
+        # Heart
+        "heart": ["Heart - Atrial Appendage", "Heart - Left Ventricle", "Artery - Aorta", "Artery - Coronary"],
+        "cardiac": ["Heart - Atrial Appendage", "Heart - Left Ventricle", "Artery - Aorta", "Artery - Coronary"],
+        "cardio": ["Heart - Atrial Appendage", "Heart - Left Ventricle", "Artery - Aorta", "Artery - Coronary"],
+        "心": ["Heart - Atrial Appendage", "Heart - Left Ventricle"],
+        # Muscle
+        "muscle": ["Muscle - Skeletal", "Heart - Left Ventricle"],
+        "myopathy": ["Muscle - Skeletal", "Heart - Left Ventricle"],
+        "肌肉": ["Muscle - Skeletal"],
+        # Kidney
+        "kidney": ["Kidney - Cortex", "Kidney - Medulla"],
+        "renal": ["Kidney - Cortex", "Kidney - Medulla"],
+        "肾": ["Kidney - Cortex", "Kidney - Medulla"],
+        # Liver
+        "liver": ["Liver"],
+        "hepatic": ["Liver"],
+        "肝": ["Liver"],
+        # Lung
+        "lung": ["Lung"],
+        "pulmonary": ["Lung"],
+        "肺": ["Lung"],
+        # Blood
+        "blood": ["Whole Blood", "Cells - EBV-transformed lymphocytes"],
+        "hemato": ["Whole Blood", "Cells - EBV-transformed lymphocytes", "Spleen"],
+        "leukemia": ["Whole Blood", "Cells - EBV-transformed lymphocytes", "Spleen"],
+        "血液": ["Whole Blood", "Cells - EBV-transformed lymphocytes"],
+        # Skin
+        "skin": ["Skin - Not Sun Exposed (Suprapubic)", "Skin - Sun Exposed (Lower leg)"],
+        "皮": ["Skin - Not Sun Exposed (Suprapubic)", "Skin - Sun Exposed (Lower leg)"],
+        # Adrenal
+        "adrenal": ["Adrenal Gland"],
+        "肾上腺": ["Adrenal Gland"],
+        # Thyroid
+        "thyroid": ["Thyroid"],
+        "甲状腺": ["Thyroid"],
+        # Nerve
+        "nerve": ["Nerve - Tibial", "Brain - Spinal cord (cervical c-1)"],
+        "神经": ["Nerve - Tibial", "Brain - Spinal cord (cervical c-1)"],
+    }
+    
+    # Determine phenotype-relevant tissues from user input
+    phenotype_tissues: set = set()
+    phenotype_matched_keywords: list = []
+    if user_phenotypes:
+        pheno_lower = user_phenotypes.lower()
+        for keyword, tissues in PHENOTYPE_TISSUE_MAP.items():
+            if keyword.lower() in pheno_lower:
+                phenotype_tissues.update(tissues)
+                phenotype_matched_keywords.append(keyword)
+    
+    # Fallback: if no phenotype match, use profile tissues
+    if not phenotype_tissues:
+        profile_tissues = tissue_profile.get("gtex_tissues", [])
+        if not profile_tissues:
+            single = tissue_profile.get("gtex_tissue")
+            if single:
+                profile_tissues = [single]
+        phenotype_tissues.update(profile_tissues)
+    
+    phenotype_tissues = sorted(phenotype_tissues)
+    if phenotype_matched_keywords:
+        print(f"[GPA Phase 2] GTEx phenotype-tissue: matched keywords={phenotype_matched_keywords}")
+        print(f"[GPA Phase 2] GTEx phenotype-relevant tissues: {len(phenotype_tissues)} tissues")
+    
+    candidate_genes = sorted({variants[i].gene for i in candidate_indices})
+    global_config = config.to_global()
+    
+    cache = DGRACache(global_config.cache_db_path)
+    gtex_data: Dict[str, Dict] = {}
+    
+    async with DGRAAPIClient(global_config, cache) as client:
+        # Semaphore to be polite to GTEx API
+        gtex_sem = asyncio.Semaphore(5)
+        
+        async def _query_one_gene(gene: str) -> Tuple[str, Optional[Dict]]:
+            async with gtex_sem:
+                try:
+                    # v0.10.8: Query ALL tissues in a single batch call
+                    results = await client.query_gtex_expression_multi(gene, ALL_GTEX_TISSUES)
+                    if not results:
+                        return gene, None
+                    
+                    # Build tissue→TPM map
+                    tissue_tpm = {}
+                    for r in results:
+                        t = r.get("tissue")
+                        tpm = r.get("median_tpm")
+                        if t is not None and tpm is not None:
+                            tissue_tpm[t] = tpm
+                    
+                    if not tissue_tpm:
+                        return gene, None
+                    
+                    # Global max across all tissues
+                    global_max = max(tissue_tpm.values())
+                    
+                    # Phenotype-relevant max
+                    phenotype_values = [tissue_tpm.get(t) for t in phenotype_tissues if t in tissue_tpm]
+                    phenotype_max = max(phenotype_values) if phenotype_values else 0.0
+                    
+                    # All tissues with TPM > 0, sorted by TPM desc
+                    all_expressing = sorted(
+                        [(t, tpm) for t, tpm in tissue_tpm.items() if tpm > 0],
+                        key=lambda x: x[1], reverse=True
+                    )
+                    
+                    expressing_count = len(all_expressing)
+                    
+                    return gene, {
+                        "median_tpm": global_max,  # Use global max as representative
+                        "max_tpm": global_max,
+                        "all_tissues": [{"tissue": t, "tpm": tpm} for t, tpm in all_expressing],
+                        "expressing_tissues": expressing_count,
+                        "source": "gtex_multi",
+                        "confidence": "medium",
+                        # v0.10.8: Phenotype-relevance data
+                        "phenotype_max_tpm": phenotype_max,
+                        "phenotype_tissues": phenotype_tissues,
+                        "phenotype_matched_keywords": phenotype_matched_keywords,
+                        "global_max_tpm": global_max,
+                    }
+                except Exception as e:
+                    print(f"[GPA Phase 2] GTEx warning for {gene}: {type(e).__name__}: {e}")
+                    return gene, None
+        
+        gtex_results = await asyncio.gather(*[_query_one_gene(g) for g in candidate_genes])
+        for gene, data in gtex_results:
+            if data:
+                gtex_data[gene] = data
+    
+    return gtex_data
+
+
 # ─── v0.10.3: Consequence-aware API enrichment rules ───────────────────────
 
 # ClinVar only needed for variants where functional impact is uncertain
@@ -449,15 +651,48 @@ async def _enrich_variant_frequencies(
                     v.gnomad_populations = result.get("af_populations", {})
                     v.gnomad_status = "SUCCESS"
 
+        # v0.10.6 FIX: NCBI ClinVar direct query for variants still UNKNOWN after MyVariant.info.
+        # MyVariant.info ClinVar coverage is incomplete; NCBI ESummary provides accurate data.
+        clinvar_unknown = [variants[i] for i in candidate_indices
+                          if variants[i].clinvar in (_UNKNOWN, "UNKNOWN", "")]
+        if clinvar_unknown:
+            # Consequence-aware filtering: skip intron/UTR where ClinVar is rarely informative
+            cv_candidates = [v for v in clinvar_unknown if _variant_needs_clinvar(v)]
+            if cv_candidates:
+                n_cv = len(cv_candidates)
+                print(f"[GPA Phase 2] ClinVar (NCBI): querying {n_cv} variants (1 req/s)")
+                cv_sem = asyncio.Semaphore(1)  # NCBI: 1 req/s
+                async def _query_one_clinvar(v):
+                    async with cv_sem:
+                        try:
+                            return await client.query_ncbi_clinvar(
+                                gene=v.gene, chrom=v.chrom, pos=v.pos
+                            )
+                        except Exception as e:
+                            return {"clinical_significance": None, "error": str(e), "source": "failed"}
+                cv_results = await asyncio.gather(*[_query_one_clinvar(v) for v in cv_candidates])
+                n_found = 0
+                for v, cv_result in zip(cv_candidates, cv_results):
+                    sig = cv_result.get("clinical_significance")
+                    if sig:
+                        v.clinvar = sig
+                        v.clinvar_review_status = cv_result.get("review_status")
+                        n_found += 1
+                print(f"[GPA Phase 2] ClinVar (NCBI): {n_found}/{n_cv} filled")
+
 
 async def _enrich_spliceai(
     variants: List[Variant],
     candidate_indices: List[int],
     config: GPAConfig,
 ) -> None:
-    """Phase 2: SpliceAI ONLY for candidate splice variants."""
-    if not getattr(config, 'spliceai_enabled', False):
-        return
+    """Phase 2: SpliceAI for candidate splice variants — AUTO-ENABLED in v0.10.7.
+    
+    v0.10.7 CHANGE: Removed manual spliceai_enabled gate. SpliceAI is now
+    automatically queried for any candidate variant with splice-relevant
+    consequences. This ensures HIGH-impact splice variants (e.g. SAG c.72_75+15del)
+    are always assessed without requiring user to pass --spliceai.
+    """
     if not candidate_indices:
         return
 
@@ -672,6 +907,13 @@ async def run_two_phase_pipeline(
     print(f"[GPA Phase 2] Gene APIs: Ensembl={len(ensembl_data)}, "
           f"UniProt={len(uniprot_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
 
+    # Phase 2.1b: GTEx expression for candidate genes (v0.10.8)
+    # v0.10.8: Queries ALL GTEx tissues + phenotype-tissue association
+    gtex_data = await _enrich_gtex(
+        variants, all_candidate_indices, config, tissue_profile, user_phenotypes
+    )
+    print(f"[GPA Phase 2] GTEx: expression data for {len(gtex_data)} candidate genes")
+
     # Phase 2.2: gnomAD frequency enrichment
     await _enrich_variant_frequencies(variants, all_candidate_indices, config, _trust_env)
 
@@ -717,11 +959,11 @@ async def run_two_phase_pipeline(
     for i in all_candidate_indices:
         variants[i].domain_info = map_variant_to_domain(variants[i], uniprot_data)
 
-    # Tissue relevance
+    # Tissue relevance (v0.10.7: GTEx data now available from Phase 2.1b)
     tissue_assessments = {}
     for i in all_candidate_indices:
         v = variants[i]
-        tissue = assess_tissue_relevance(v, tissue_profile, {})  # GTEx data not needed for Phase 2
+        tissue = assess_tissue_relevance(v, tissue_profile, gtex_data)
         tissue_assessments[v.gene] = tissue
         v.tissue_relevance = tissue
 

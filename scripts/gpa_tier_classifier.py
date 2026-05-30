@@ -339,15 +339,22 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     if variant.missing_fields:
         actions.append(f"Missing fields: {', '.join(variant.missing_fields)} - conservative assessment applied")
 
-    # Priority 0: Fast track for non-relevant tissue genes
-    if tissue_assessment.get("fast_track") and tissue_assessment.get("tier_suggestion") == 3:
-        if not _clinvar_pathogenic(variant.clinvar):
-            _add_evidence("TissueContext", f"FastTrack: GTEx≈0 + non-pathogenic → Tier 3 for {profile_name}", weight=0.3, confidence=_confidence_from_data(), raw_data={"relevance": tissue_assessment.get("relevance"), "gtex_tpm": tissue_assessment.get("gtex_tpm")})
-            variant.evidence_chain = evidence_chain
-            upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
-            variant.upgrade_conditions = upgrade_conditions
-            variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-            return 3, tissue_assessment["reason"], actions
+    # v0.10.8: GTEx fast-track REMOVED from Phase 1 tier classification.
+    # Previously, low GTEx TPM in the target profile could force Tier 3,
+    # causing false negatives for tissue-specific genes (e.g. SAG in retina,
+    # FOXE3 in eye) because GTEx v8 does not include eye tissues.
+    # 
+    # GTEx expression data is now used ONLY in Phase 2 for phenotype-tissue
+    # association analysis, not as a hard tier gate.
+    #
+    # If tissue_assessment indicates low expression, we add it as soft
+    # evidence but do NOT downgrade the tier here.
+    if tissue_assessment.get("gtex_tpm") is not None and tissue_assessment.get("relevance") == "none":
+        _add_evidence("TissueContext",
+            f"Low GTEx expression in {profile_name} profile (TPM={tissue_assessment.get('gtex_tpm', 0):.2f}); "
+            f"phenotype-tissue association assessed in Phase 2",
+            weight=0.15, confidence="low",
+            raw_data={"relevance": tissue_assessment.get("relevance"), "gtex_tpm": tissue_assessment.get("gtex_tpm")})
 
     # v0.4.5: Somatic mode overrides for tumor driver analysis
     # In somatic mode, tier classification prioritizes driver mutation evidence
