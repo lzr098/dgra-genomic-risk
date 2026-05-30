@@ -47,6 +47,15 @@ VEP_DEFAULT_PARAMS = {
 }
 
 
+class VEPBatchFailureError(Exception):
+    """Raised when one or more VEP batches fail and user chooses to abort."""
+
+    def __init__(self, failed_batches: List[Dict[str, Any]], message: str = ""):
+        self.failed_batches = failed_batches
+        self.message = message or f"{len(failed_batches)} VEP batch(es) failed"
+        super().__init__(self.message)
+
+
 class VCFAnnotator:
     """Annotate raw VCF files using VEP API or local VEP."""
 
@@ -64,6 +73,7 @@ class VCFAnnotator:
         shard_dir: Optional[str] = None,
         resume: bool = False,
         checkpoint_path: Optional[str] = None,
+        interactive: bool = True,
     ):
         """
         Args:
@@ -83,6 +93,9 @@ class VCFAnnotator:
             checkpoint_path: path to JSON checkpoint file. If exists and non-empty,
                 annotate() loads from it instead of calling VEP. After successful
                 annotation, results are saved to this path for resume on restart.
+            interactive: when True and VEP batches fail, pause and prompt user
+                for action (retry / skip / abort). When False, failed batches are
+                silently marked with error dicts (legacy behavior).
         """
         self.annotator = annotator
         self.genome = genome
@@ -96,6 +109,7 @@ class VCFAnnotator:
         self.shard_dir = shard_dir
         self.resume = resume
         self.checkpoint_path = checkpoint_path
+        self.interactive = interactive
         self._session: Optional[aiohttp.ClientSession] = None
 
     # ------------------------------------------------------------------
@@ -472,7 +486,11 @@ class VCFAnnotator:
         genome: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> List[Dict[str, Any]]:
-        """Annotate via Ensembl VEP REST API with controlled concurrency."""
+        """Annotate via Ensembl VEP REST API with controlled concurrency.
+
+        v0.10.14: If batches fail after all retries and interactive=True,
+        pause and prompt user for action (retry / skip / abort).
+        """
         # v0.10.12: per-API proxy routing
         vep_proxy: Optional[str] = None
         if self.proxy_route_map is not None:
@@ -495,11 +513,11 @@ class VCFAnnotator:
         semaphore = asyncio.Semaphore(self.max_concurrency)
         total = len(variants)
         annotated: List[Dict[str, Any]] = [None] * total
-        errors: List[str] = []
+        failed_batches: List[Dict[str, Any]] = []
 
-        async def _query_batch(start_idx: int, batch: List[Dict[str, Any]]) -> None:
+        async def _query_batch(start_idx: int, batch: List[Dict[str, Any]]) -> bool:
+            """Query one batch. Returns True on success, False on failure."""
             async with semaphore:
-                # Build VEP region strings wrapped in {"variants": [...]} per VEP REST API spec
                 body = {
                     "variants": [
                         f"{v['chrom']} {v['pos']} . {v['ref']} {v['alt']} . . ."
@@ -507,13 +525,12 @@ class VCFAnnotator:
                     ]
                 }
                 params = dict(VEP_DEFAULT_PARAMS)
-                # Merge user-specified VEP params (user overrides defaults)
                 params.update(self.vep_params)
                 if genome == "GRCh37":
                     params["refseq"] = "1"
 
-                # Exponential backoff
                 backoff = [1, 2, 4]
+                last_error = ""
                 for attempt, delay in enumerate(backoff + [None]):
                     try:
                         async with self._session.post(
@@ -530,7 +547,7 @@ class VCFAnnotator:
                                     range(start_idx, start_idx + len(batch)), results
                                 ):
                                     annotated[i] = r
-                                return
+                                return True
                             elif resp.status == 429:
                                 retry_after = int(resp.headers.get("Retry-After", delay or 2))
                                 logger.warning(
@@ -539,6 +556,7 @@ class VCFAnnotator:
                                 if delay is not None:
                                     await asyncio.sleep(retry_after)
                                     continue
+                                last_error = f"HTTP 429 (rate limited)"
                             else:
                                 logger.warning(
                                     f"VEP API HTTP {resp.status}, attempt {attempt + 1}"
@@ -546,34 +564,39 @@ class VCFAnnotator:
                                 if delay is not None:
                                     await asyncio.sleep(delay)
                                     continue
+                                last_error = f"HTTP {resp.status}"
                     except asyncio.TimeoutError:
                         logger.warning(f"VEP API timeout, attempt {attempt + 1}")
                         if delay is not None:
                             await asyncio.sleep(delay)
                             continue
+                        last_error = "TimeoutError"
                     except aiohttp.ClientError as e:
                         logger.warning(f"VEP API client error: {e}, attempt {attempt + 1}")
                         if delay is not None:
                             await asyncio.sleep(delay)
                             continue
+                        last_error = f"ClientError: {e}"
                     except OSError as e:
                         logger.warning(f"VEP API network error: {e}, attempt {attempt + 1}")
                         if delay is not None:
                             await asyncio.sleep(delay)
                             continue
-                    except Exception as e:  # noqa: BROAD_EXCEPT — last-resort guard for unanticipated API failures
+                        last_error = f"OSError: {e}"
+                    except Exception as e:  # noqa: BROAD_EXCEPT
                         logger.error(f"VEP API unexpected error: {type(e).__name__}: {e}, attempt {attempt + 1}")
                         if delay is not None:
                             await asyncio.sleep(delay)
                             continue
+                        last_error = f"{type(e).__name__}: {e}"
 
-                # All retries failed
-                for i in range(start_idx, start_idx + len(batch)):
-                    annotated[i] = {
-                        "transcript_consequences": [],
-                        "vep_summary": {"error": "VEP API failed after all retries"},
-                    }
-                errors.append(f"Batch {start_idx}-{start_idx + len(batch)} failed")
+                # All retries failed — record for later handling
+                failed_batches.append({
+                    "start_idx": start_idx,
+                    "batch": batch,
+                    "error": last_error or "VEP API failed after all retries",
+                })
+                return False
 
         # Launch all batches
         tasks = []
@@ -590,10 +613,157 @@ class VCFAnnotator:
             if progress_callback:
                 progress_callback(min(completed, total), total)
 
-        if errors:
-            logger.error(f"[VCFAnnotator] {len(errors)} batches failed: {errors[:3]}")
+        # v0.10.14: Handle failed batches interactively
+        if failed_batches:
+            annotated = await self._handle_failed_batches(
+                annotated, failed_batches, variants, genome, semaphore, vep_proxy,
+            )
 
         return annotated
+
+    async def _handle_failed_batches(
+        self,
+        annotated: List[Dict[str, Any]],
+        failed_batches: List[Dict[str, Any]],
+        variants: List[Dict[str, Any]],
+        genome: str,
+        semaphore: asyncio.Semaphore,
+        vep_proxy: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """Pause and handle failed VEP batches. May retry, skip, or abort."""
+        n_failed = len(failed_batches)
+        n_variants = sum(len(b["batch"]) for b in failed_batches)
+
+        # Build failure report
+        print("\n" + "=" * 70)
+        print("[VCFAnnotator] ⚠️  VEP BATCH FAILURE REPORT")
+        print("=" * 70)
+        print(f"Failed batches: {n_failed}  |  Affected variants: {n_variants}")
+        print("-" * 70)
+        for fb in failed_batches:
+            start = fb["start_idx"]
+            batch = fb["batch"]
+            error = fb["error"]
+            positions = [f"{v['chrom']}:{v['pos']}" for v in batch[:3]]
+            ellipsis = " ..." if len(batch) > 3 else ""
+            print(f"  Batch {start:>6}-{start + len(batch):<6}  {error:<30}  variants: {', '.join(positions)}{ellipsis}")
+        print("-" * 70)
+
+        if self.interactive:
+            print("\nOptions:")
+            print("  [R]etry  — re-submit failed batches (may resolve transient errors)")
+            print("  [S]kip   — mark failed variants with error annotations and continue")
+            print("  [A]bort  — stop the analysis and raise VEPBatchFailureError")
+            print("-" * 70)
+
+            # Read user input (run in thread to avoid blocking event loop)
+            def _read_choice() -> str:
+                while True:
+                    choice = input("Your choice [R/s/a]: ").strip().lower()
+                    if choice in ("", "r", "s", "a"):
+                        return choice if choice else "r"
+                    print("Invalid choice. Please enter R, s, or a.")
+
+            choice = await asyncio.to_thread(_read_choice)
+        else:
+            choice = "s"  # Non-interactive: default to skip
+            print(f"[VCFAnnotator] interactive=False — auto-skipping {n_failed} failed batches")
+
+        if choice == "r":
+            # Retry failed batches
+            print(f"[VCFAnnotator] Retrying {n_failed} failed batches...")
+            retry_failed: List[Dict[str, Any]] = []
+            for fb in failed_batches:
+                success = await self._query_single_batch(
+                    fb["start_idx"], fb["batch"], genome, semaphore, vep_proxy, annotated
+                )
+                if not success:
+                    retry_failed.append(fb)
+
+            if retry_failed:
+                print(f"[VCFAnnotator] ⚠️  {len(retry_failed)} batches still failed after retry.")
+                # Second chance: prompt again or auto-skip
+                if self.interactive:
+                    def _read_second_choice() -> str:
+                        while True:
+                            c = input("Some batches still failed. [S]kip remaining / [A]bort: ").strip().lower()
+                            if c in ("", "s", "a"):
+                                return c if c else "s"
+                    second_choice = await asyncio.to_thread(_read_second_choice)
+                else:
+                    second_choice = "s"
+
+                if second_choice == "a":
+                    raise VEPBatchFailureError(retry_failed, "Batches failed after retry")
+                # Skip remaining
+                for fb in retry_failed:
+                    for i in range(fb["start_idx"], fb["start_idx"] + len(fb["batch"])):
+                        annotated[i] = {
+                            "transcript_consequences": [],
+                            "vep_summary": {"error": f"VEP API failed: {fb['error']}"},
+                        }
+            else:
+                print("[VCFAnnotator] All failed batches succeeded on retry.")
+
+        elif choice == "a":
+            raise VEPBatchFailureError(failed_batches)
+
+        else:  # skip
+            for fb in failed_batches:
+                for i in range(fb["start_idx"], fb["start_idx"] + len(fb["batch"])):
+                    annotated[i] = {
+                        "transcript_consequences": [],
+                        "vep_summary": {"error": f"VEP API failed: {fb['error']}"},
+                    }
+            print(f"[VCFAnnotator] Skipped {n_failed} failed batches, marked {n_variants} variants with error annotations.")
+
+        print("=" * 70 + "\n")
+        return annotated
+
+    async def _query_single_batch(
+        self,
+        start_idx: int,
+        batch: List[Dict[str, Any]],
+        genome: str,
+        semaphore: asyncio.Semaphore,
+        vep_proxy: Optional[str],
+        annotated: List[Dict[str, Any]],
+    ) -> bool:
+        """Query a single batch (used for retry). Returns True on success."""
+        async with semaphore:
+            body = {
+                "variants": [
+                    f"{v['chrom']} {v['pos']} . {v['ref']} {v['alt']} . . ."
+                    for v in batch
+                ]
+            }
+            params = dict(VEP_DEFAULT_PARAMS)
+            params.update(self.vep_params)
+            if genome == "GRCh37":
+                params["refseq"] = "1"
+
+            try:
+                async with self._session.post(
+                    VEP_API_URL,
+                    params=params,
+                    json=body,
+                    headers={"Content-Type": "application/json"},
+                    proxy=vep_proxy,
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        results = self._parse_vep_response(data, batch)
+                        for i, r in zip(
+                            range(start_idx, start_idx + len(batch)), results
+                        ):
+                            annotated[i] = r
+                        return True
+                    else:
+                        logger.warning(f"VEP retry batch {start_idx}: HTTP {resp.status}")
+                        return False
+            except Exception as e:
+                logger.warning(f"VEP retry batch {start_idx}: {type(e).__name__}: {e}")
+                return False
 
     @staticmethod
     def _parse_vep_response(

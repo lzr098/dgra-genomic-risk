@@ -446,7 +446,188 @@ def _generate_transcript_selection_section(variants: List[Variant]) -> Optional[
     return "".join(lines)
 
 
+# =============================================================================
+# Tier 1/2 Mandatory Transcript Validation (v0.10.14)
+# =============================================================================
 
+def _generate_tier12_transcript_validation_section(variants: List[Variant]) -> Optional[str]:
+    """
+    v0.10.14: Mandatory transcript validation for ALL Tier 1/2 variants.
+
+    Compares the selected (primary) transcript against canonical and MANE Select
+    transcripts. Flags discrepancies with warnings. Includes isoform count,
+    canonical HGVS, protein domain impact, tissue expression, and literature
+    concordance assessment.
+
+    This section ALWAYS appears for Tier 1/2 variants regardless of whether
+    transcript_ambiguity_flag is set.
+    """
+    tier12 = [v for v in variants if v.tier in (1, 2)]
+    if not tier12:
+        return None
+
+    lines = []
+    lines.append("## 🧬 转录本验证 (Tier 1/2 强制)\n")
+    lines.append(f"*对全部 **{len(tier12)}** 个 Tier 1/2 变异进行转录本校正验证*\n\n")
+
+    # Summary table
+    lines.append("### 验证汇总表\n\n")
+    lines.append("| 基因 | 位点 | 选中转录本 | 选择方法 | Canonical | MANE Select | Isoform数 | 验证状态 |\n")
+    lines.append("|------|------|-----------|----------|-----------|-------------|-----------|----------|\n")
+
+    discrepancy_count = 0
+    for v in tier12:
+        # Find canonical and MANE Select from alternative_transcripts
+        canonical_tx: Optional[str] = None
+        mane_tx: Optional[str] = None
+        isoform_count = len(v.alternative_transcripts)
+
+        for tx in v.alternative_transcripts:
+            if tx.get("canonical"):
+                canonical_tx = tx.get("transcript_id", "")
+            if tx.get("mane_select"):
+                mane_tx = tx.get("transcript_id", "")
+
+        selected_tx = v.primary_transcript or v.transcript or "N/A"
+
+        # Determine validation status
+        is_canonical = (selected_tx == canonical_tx) if canonical_tx else False
+        is_mane = (selected_tx == mane_tx) if mane_tx else False
+
+        if is_canonical or is_mane:
+            status = "一致"
+            status_icon = "✅"
+        else:
+            status = "差异"
+            status_icon = "⚠️"
+            discrepancy_count += 1
+
+        tx_type = v.transcript_selection_method or "canonical"
+
+        lines.append(
+            f"| {v.gene} | {v.chrom}:{v.pos} | {selected_tx} | {tx_type} | "
+            f"{canonical_tx or 'N/A'} | {mane_tx or 'N/A'} | {isoform_count} | "
+            f"{status_icon} {status} |\n"
+        )
+
+    lines.append("\n")
+
+    if discrepancy_count > 0:
+        lines.append(
+            f"> ⚠️ **警告**: {discrepancy_count}/{len(tier12)} 个 Tier 1/2 变异的选中转录本 "
+            f"与 Canonical/MANE Select 不一致，详见下方逐变异分析。\n\n"
+        )
+
+    # Detailed per-variant validation
+    lines.append("### 逐变异详细验证\n\n")
+    for i, v in enumerate(tier12, 1):
+        pos = f"{v.chrom}:{v.pos}"
+        selected_tx = v.primary_transcript or v.transcript or "N/A"
+
+        # Re-find canonical/MANE for this variant
+        canonical_tx = None
+        mane_tx = None
+        canonical_hgvsc = ""
+        canonical_hgvsp = ""
+        canonical_domains = []
+        selected_domains = []
+
+        for tx in v.alternative_transcripts:
+            tx_id = tx.get("transcript_id", "")
+            if tx.get("canonical"):
+                canonical_tx = tx_id
+                canonical_hgvsc = tx.get("hgvsc", "")
+                canonical_hgvsp = tx.get("hgvsp", "")
+                canonical_domains = tx.get("protein_domains", [])
+            if tx.get("mane_select"):
+                mane_tx = tx_id
+            if tx_id == selected_tx:
+                selected_domains = tx.get("protein_domains", [])
+
+        is_canonical = (selected_tx == canonical_tx) if canonical_tx else False
+        is_mane = (selected_tx == mane_tx) if mane_tx else False
+
+        if is_canonical or is_mane:
+            lines.append(f"**{i}. {v.gene} ({pos})** ✅ 转录本选择验证通过\n\n")
+        else:
+            lines.append(f"**{i}. {v.gene} ({pos})** ⚠️ **转录本选择存在差异**\n\n")
+
+        lines.append(f"- **选中转录本**: `{selected_tx}` (方法: {v.transcript_selection_method or 'canonical'})\n")
+        lines.append(f"- **Canonical 转录本**: `{canonical_tx or 'N/A'}`\n")
+        lines.append(f"- **MANE Select 转录本**: `{mane_tx or 'N/A'}`\n")
+        lines.append(f"- **Isoform 总数**: {len(v.alternative_transcripts)}\n")
+
+        # HGVS comparison
+        if canonical_hgvsc or canonical_hgvsp:
+            lines.append(f"- **Canonical HGVS**: c.{canonical_hgvsc or 'N/A'} | p.{canonical_hgvsp or 'N/A'}\n")
+        if v.primary_hgvsc or v.primary_hgvsp:
+            lines.append(f"- **选中转录本 HGVS**: c.{v.primary_hgvsc or 'N/A'} | p.{v.primary_hgvsp or 'N/A'}\n")
+
+        # Protein domain impact
+        if selected_domains or canonical_domains:
+            lines.append(f"- **蛋白功能域影响**:\n")
+            if selected_domains:
+                lines.append(f"  - 选中转录本: {', '.join(str(d) for d in selected_domains[:5])}{'...' if len(selected_domains) > 5 else ''}\n")
+            if canonical_domains and canonical_domains != selected_domains:
+                lines.append(f"  - Canonical 转录本: {', '.join(str(d) for d in canonical_domains[:5])}{'...' if len(canonical_domains) > 5 else ''}\n")
+        else:
+            lines.append(f"- **蛋白功能域影响**: 无明确功能域注释\n")
+
+        # Tissue expression (from tissue_relevance)
+        if v.tissue_relevance:
+            tr = v.tissue_relevance
+            tpm = tr.get("gtex_tpm")
+            relevance = tr.get("relevance", "N/A")
+            if tpm is not None:
+                lines.append(f"- **组织表达**: {relevance} (GTEx TPM={tpm:.2f})\n")
+            else:
+                lines.append(f"- **组织表达**: {relevance} (GTEx 数据不可用)\n")
+        else:
+            lines.append(f"- **组织表达**: 未评估\n")
+
+        # Discrepancy warning details
+        if not is_canonical and canonical_tx:
+            lines.append(
+                f"- ⚠️ **差异说明**: 选中转录本 `{selected_tx}` 与 Canonical 转录本 "
+                f"`{canonical_tx}` 不同。若 Canonical 转录本后果更轻（如同义/内含子），"
+                f"当前 Tier 分级可能需下调。\n"
+            )
+        elif not is_mane and mane_tx and is_canonical:
+            lines.append(
+                f"- ℹ️ **说明**: 选中转录本为 Canonical 但非 MANE Select。"
+                f"MANE Select `{mane_tx}` 是临床首选参考转录本，建议复核。\n"
+            )
+
+        # Transcript selection log
+        if v.transcript_selection_log:
+            lines.append(f"- **选择日志**: {v.transcript_selection_log}\n")
+
+        # Literature concordance
+        clinvar_lit = ""
+        if v.clinvar and v.clinvar not in ("UNKNOWN", ""):
+            clinvar_lit = f"ClinVar: {v.clinvar}"
+        if clinvar_lit:
+            lines.append(f"- **文献/数据库一致性**: {clinvar_lit}\n")
+        else:
+            lines.append(f"- **文献/数据库一致性**: 无明确文献记录\n")
+
+        lines.append(f"- **当前分级**: Tier {v.tier} | 置信度: {v.tier_confidence or 'N/A'}\n")
+        lines.append("\n")
+
+    # Overall recommendation
+    if discrepancy_count > 0:
+        lines.append("### ⚠️ 转录本差异处理建议\n\n")
+        lines.append(
+            f"检测到 **{discrepancy_count}** 个 Tier 1/2 变异的选中转录本与 Canonical/MANE Select 不一致。\n\n"
+        )
+        lines.append("建议采取以下措施:\n")
+        lines.append("1. **人工复核**: 确认选中转录本是否为患者组织中最主要的表达 isoform\n")
+        lines.append("2. **功能验证**: 若 Canonical 转录本后果更轻，考虑使用 Canonical 后果重新分级\n")
+        lines.append("3. **文献检索**: 查询该基因疾病相关文献，确认致病变异通常发生在哪个转录本上\n")
+        lines.append("4. **RNA-seq 验证**: 若条件允许，通过 RNA-seq 确认患者组织中实际表达的主要 isoform\n")
+        lines.append("\n")
+
+    return "".join(lines)
 
 
 # =============================================================================
@@ -767,10 +948,16 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
         report.append(phenotype_assessment)
         report.append("\n")
 
-    # v0.9.0: Transcript selection assessment - independent section
+    # v0.9.0: Transcript selection assessment - independent section (ambiguous cases)
     tx_selection = _generate_transcript_selection_section(variants)
     if tx_selection:
         report.append(tx_selection)
+        report.append("\n")
+
+    # v0.10.14: Mandatory transcript validation for ALL Tier 1/2 variants
+    tx_validation = _generate_tier12_transcript_validation_section(variants)
+    if tx_validation:
+        report.append(tx_validation)
         report.append("\n")
 
     # v0.10.3: Tier 1 + Tier 2 merged into a gene-centric view
