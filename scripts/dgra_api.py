@@ -59,9 +59,13 @@ class DGRAAPIClient:
         "http://127.0.0.1:3128",
     ]
 
-    def __init__(self, config: DGRAGlobalConfig, cache: DGRACache):
+    def __init__(self, config: DGRAGlobalConfig, cache: DGRACache, proxy_route_map: Optional[Any] = None):
         self.config = config
         self.cache = cache
+        self._proxy_route_map = proxy_route_map
+        # v0.10.12: fallback to config-attached route map (set by gpa_two_phase pipeline)
+        if self._proxy_route_map is None and hasattr(config, '_proxy_route_map'):
+            self._proxy_route_map = config._proxy_route_map
         self._session: Optional[aiohttp.ClientSession] = None
         self._last_request_time: Dict[str, float] = {}  # api_name -> timestamp
         self._proxy_url: Optional[str] = None  # detected working proxy or None for direct
@@ -204,14 +208,19 @@ class DGRAAPIClient:
         for attempt in range(cfg.max_retries):
             try:
                 await self._rate_limit(api_name)
-                
+
+                # v0.10.12: per-API proxy routing
+                proxy = self._proxy_url
+                if self._proxy_route_map is not None:
+                    proxy = self._proxy_route_map.get_proxy(api_name)
+
                 async with self._session.request(
                     method=method,
                     url=url,
                     params=params,
                     json=json_body,
                     headers=headers,
-                    proxy=self._proxy_url,  # v0.10.5: auto-detected proxy (None = direct)
+                    proxy=proxy,
                     timeout=aiohttp.ClientTimeout(total=cfg.timeout),
                 ) as response:
                     http_status = response.status

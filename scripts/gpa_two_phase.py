@@ -855,9 +855,12 @@ async def _run_two_phase_pipeline_impl(
     t0 = time.time()
     global_config = config.to_global()
 
-    # v0.10.1: Preflight health check — verify all dependencies before starting analysis
+    # v0.10.12: Preflight health check + per-API proxy route discovery
     from gpa_preflight import run_preflight_check, suggest_action
-    preflight = await run_preflight_check(global_config)
+    preflight, route_map = await run_preflight_check(global_config)
+    print(route_map.to_markdown())
+    # Attach route map to global_config so DGRAAPIClient instances can pick it up
+    global_config._proxy_route_map = route_map
     if not preflight.is_ready():
         action = suggest_action(preflight)
         if action == "abort":
@@ -869,9 +872,6 @@ async def _run_two_phase_pipeline_impl(
             config.offline_mode = True
             global_config.offline_mode = True
 
-    # v0.10.4: Force trust_env=False to prevent system proxy (e.g., Clash)
-    # from intercepting gnomAD/Ensembl API calls.
-    _trust_env = False
     tissue_profile = config.get_tissue_profile()
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 

@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from gpa_proxy_routes import ProxyRouteMap, build_route_map
+
 # =============================================================================
 # 0. 对现有模块的弱依赖（导入失败时不崩溃，降级为 None）
 # =============================================================================
@@ -831,7 +833,7 @@ async def run_preflight_check(
     config: Optional[Any] = None,
     check_categories: Optional[List[str]] = None,
     skip_api_if_offline: bool = True,
-) -> PreflightReport:
+) -> Tuple[PreflightReport, ProxyRouteMap]:
     """执行完整的前置可用性检查。
 
     Args:
@@ -840,12 +842,14 @@ async def run_preflight_check(
         skip_api_if_offline: 如果 config.offline_mode=True，跳过 API 检查。
 
     Returns:
-        PreflightReport 对象，包含所有检查结果和总体状态。
+        (PreflightReport, ProxyRouteMap) 元组。
+        ProxyRouteMap 包含每个 API 的最佳代理路由（即使 API 检查被跳过也会返回空表）。
     """
     if check_categories is None:
         check_categories = CHECK_CATEGORIES[:]
 
     report = PreflightReport()
+    route_map = ProxyRouteMap()
 
     # 1. Python 依赖
     if "python_deps" in check_categories:
@@ -867,7 +871,7 @@ async def run_preflight_check(
     if "network_env" in check_categories:
         report.items.extend(await check_network_proxy())
 
-    # 6. API 连通性
+    # 6. API 连通性 + 代理路由表构建
     if "api_connectivity" in check_categories:
         is_offline = False
         if config is not None and hasattr(config, "offline_mode"):
@@ -883,9 +887,36 @@ async def run_preflight_check(
                 )
             )
         else:
-            report.items.extend(await check_api_connectivity(config))
+            # v0.10.12: 使用 per-API 多代理探测，生成代理路由表
+            print("[Preflight] 正在探测每个 API 的最佳代理路由...")
+            route_map = await build_route_map(_API_CHECKS)
+            # 将路由探测结果转换为 CheckItem 并入报告
+            for name, route in route_map.routes.items():
+                proxy_str = route.best_proxy or "直连"
+                if route.status == "PASS":
+                    report.items.append(
+                        CheckItem(
+                            name=name,
+                            category="api_connectivity",
+                            required=True,
+                            status="PASS",
+                            message=f"通过 {proxy_str} 连通 ({route.latency_ms} ms)",
+                            latency_ms=route.latency_ms,
+                        )
+                    )
+                else:
+                    report.items.append(
+                        CheckItem(
+                            name=name,
+                            category="api_connectivity",
+                            required=True,
+                            status="FAIL",
+                            message="所有代理路由均失败",
+                            suggestion="检查网络连接或代理配置",
+                        )
+                    )
 
-    return report
+    return report, route_map
 
 
 # =============================================================================

@@ -58,6 +58,7 @@ class VCFAnnotator:
         timeout: int = 30,
         vep_cache: Optional[str] = None,
         proxy: Optional[str] = None,
+        proxy_route_map: Optional[Any] = None,
         vep_params: Optional[Dict[str, str]] = None,
         shard_dir: Optional[str] = None,
         resume: bool = False,
@@ -71,6 +72,7 @@ class VCFAnnotator:
             timeout: request timeout in seconds
             vep_cache: path to local VEP cache (for vep_local)
             proxy: None = use system proxy, "__DIRECT__" = disable proxy
+            proxy_route_map: gpa_proxy_routes.ProxyRouteMap — per-API proxy routing
             vep_params: extra VEP API parameters merged with defaults,
                 e.g. {"check_existing": "1", "SIFT": "1", "PolyPhen": "1", "CADD": "1"}
             shard_dir: directory for shard-based incremental annotation storage.
@@ -84,6 +86,7 @@ class VCFAnnotator:
         self.timeout = timeout
         self.vep_cache = vep_cache
         self.proxy = proxy
+        self.proxy_route_map = proxy_route_map
         self.vep_params = vep_params or {}
         self.shard_dir = shard_dir
         self.resume = resume
@@ -431,10 +434,21 @@ class VCFAnnotator:
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> List[Dict[str, Any]]:
         """Annotate via Ensembl VEP REST API with controlled concurrency."""
+        # v0.10.12: per-API proxy routing
+        vep_proxy: Optional[str] = None
+        if self.proxy_route_map is not None:
+            vep_proxy = self.proxy_route_map.get_proxy("ensembl")
+            if vep_proxy:
+                logger.info(f"[VCFAnnotator] VEP API using proxy: {vep_proxy}")
+            else:
+                logger.info("[VCFAnnotator] VEP API using direct connection")
+        elif self.proxy and self.proxy != "__DIRECT__":
+            vep_proxy = self.proxy
+
         if not self._session:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             connector = aiohttp.TCPConnector(force_close=True)
-            trust_env = self.proxy != "__DIRECT__"
+            trust_env = self.proxy != "__DIRECT__" and self.proxy_route_map is None
             self._session = aiohttp.ClientSession(
                 connector=connector, timeout=timeout, trust_env=trust_env
             )
@@ -468,6 +482,7 @@ class VCFAnnotator:
                             params=params,
                             json=body,
                             headers={"Content-Type": "application/json"},
+                            proxy=vep_proxy,
                         ) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
