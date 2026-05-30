@@ -17,6 +17,7 @@ import asyncio
 import gzip
 import json
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -62,6 +63,7 @@ class VCFAnnotator:
         vep_params: Optional[Dict[str, str]] = None,
         shard_dir: Optional[str] = None,
         resume: bool = False,
+        checkpoint_path: Optional[str] = None,
     ):
         """
         Args:
@@ -78,6 +80,9 @@ class VCFAnnotator:
             shard_dir: directory for shard-based incremental annotation storage.
                 When set, VEP results are saved per-shard (1k variants each).
             resume: when True and shard_dir is set, skip already-annotated shards.
+            checkpoint_path: path to JSON checkpoint file. If exists and non-empty,
+                annotate() loads from it instead of calling VEP. After successful
+                annotation, results are saved to this path for resume on restart.
         """
         self.annotator = annotator
         self.genome = genome
@@ -90,6 +95,7 @@ class VCFAnnotator:
         self.vep_params = vep_params or {}
         self.shard_dir = shard_dir
         self.resume = resume
+        self.checkpoint_path = checkpoint_path
         self._session: Optional[aiohttp.ClientSession] = None
 
     # ------------------------------------------------------------------
@@ -103,19 +109,52 @@ class VCFAnnotator:
     ) -> List[Dict[str, Any]]:
         """
         Main entry: detect input type, pre-filter, annotate, return enriched variants.
+        If checkpoint_path is set and the file exists, loads from checkpoint instead
+        of calling VEP. After successful annotation, saves results to checkpoint.
 
         Returns:
             List of variant dicts, each containing:
                 chrom, pos, ref, alt, qual, filter, dp, gt,
                 and transcript_consequences (list of all transcript annotations).
         """
+        # v0.10.13: Checkpoint resume — skip VEP if checkpoint exists
+        if self.checkpoint_path and os.path.exists(self.checkpoint_path):
+            size = os.path.getsize(self.checkpoint_path)
+            if size > 100:
+                try:
+                    with open(self.checkpoint_path, 'r', encoding='utf-8') as f:
+                        annotated = json.load(f)
+                    logger.info(
+                        f"[VCFAnnotator] Checkpoint loaded: {len(annotated)} variants "
+                        f"from {self.checkpoint_path}"
+                    )
+                    return annotated
+                except Exception as e:  # noqa: BROAD_EXCEPT — checkpoint corruption is non-fatal, re-run VEP
+                    logger.warning(
+                        f"[VCFAnnotator] Checkpoint corrupt ({e}), re-running VEP..."
+                    )
+
         try:
-            return await self._annotate_internal(vcf_path, progress_callback)
+            annotated = await self._annotate_internal(vcf_path, progress_callback)
         except Exception as e:  # noqa: BROAD_EXCEPT — process-level guard: ensures session cleanup on any failure
             logger.error(f"[VCFAnnotator] Annotation failed: {type(e).__name__}: {e}")
             raise
         finally:
             await self.close()
+
+        # Save checkpoint on success
+        if self.checkpoint_path and annotated:
+            try:
+                with open(self.checkpoint_path, 'w', encoding='utf-8') as f:
+                    json.dump(annotated, f, ensure_ascii=False, indent=1)
+                logger.info(
+                    f"[VCFAnnotator] Checkpoint saved: {len(annotated)} variants "
+                    f"to {self.checkpoint_path}"
+                )
+            except Exception as e:  # noqa: BROAD_EXCEPT — checkpoint save failure is non-fatal
+                logger.warning(f"[VCFAnnotator] Failed to save checkpoint: {e}")
+
+        return annotated
 
     async def _annotate_internal(
         self,

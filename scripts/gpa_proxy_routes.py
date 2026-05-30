@@ -85,16 +85,37 @@ class ProxyRouteMap:
 # 候选代理列表（按优先级排序）
 # =============================================================================
 
-CANDIDATE_PROXIES: List[Optional[str]] = [
-    None,  # 直连优先
-    "http://127.0.0.1:7897",
-    "http://127.0.0.1:7890",
-    "http://127.0.0.1:7891",
-    "http://127.0.0.1:1080",
-    "http://127.0.0.1:10808",
-    "http://127.0.0.1:10809",
-    "http://127.0.0.1:52402",  # sandbox proxy
-]
+# =============================================================================
+# 候选代理列表（按优先级排序）
+# =============================================================================
+
+def _build_candidate_proxies() -> List[Optional[str]]:
+    """Build proxy candidate list including system env proxies."""
+    candidates: List[Optional[str]] = [None]  # direct first
+    # Add common local proxy ports
+    candidates.extend([
+        "http://127.0.0.1:7897",
+        "http://127.0.0.1:7890",
+        "http://127.0.0.1:7891",
+        "http://127.0.0.1:1080",
+        "http://127.0.0.1:10808",
+        "http://127.0.0.1:10809",
+        "http://127.0.0.1:52402",  # sandbox proxy
+    ])
+    # v0.10.12-fix: Also probe system env proxies (HTTP_PROXY, HTTPS_PROXY)
+    # because curl defaults to them, making "direct" tests actually proxied.
+    env_proxies = []
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        val = os.environ.get(key)
+        if val and val not in env_proxies:
+            env_proxies.append(val)
+    for ep in env_proxies:
+        if ep not in candidates:
+            candidates.append(ep)
+    return candidates
+
+
+CANDIDATE_PROXIES: List[Optional[str]] = _build_candidate_proxies()
 
 
 # =============================================================================
