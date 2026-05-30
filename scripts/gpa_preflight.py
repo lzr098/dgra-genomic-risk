@@ -7,7 +7,7 @@ GPA Preflight Health Check — v0.10.1
 磁盘空间不足。
 
 检查范围（六大类）：
-  1. Python 依赖包    — aiohttp, cyvcf2, yaml
+  1. Python 依赖包    — aiohttp, vcfpy, yaml
   2. 本地命令行工具   — vep (可选), git (可选)
   3. 在线 API 连通性   — Ensembl, UniProt, GTEx, gnomAD, NCBI, HGNC,
                          MyVariant.info, SpliceAI (可选)
@@ -205,7 +205,7 @@ def check_python_deps() -> List[CheckItem]:
     """检查所有必需的 Python 第三方包。"""
     return [
         _check_python_package("aiohttp"),
-        _check_python_package("cyvcf2"),
+        _check_python_package("vcfpy"),
         _check_python_package("yaml", "yaml"),  # PyYAML
     ]
 
@@ -968,23 +968,21 @@ def suggest_action(report: PreflightReport) -> str:
     """根据报告自动建议最佳动作（无用户交互时由调用方使用）。
 
     Returns:
-        "continue" | "offline" | "abort"
+        "continue" | "abort"
     """
+    CRITICAL_APIS = {"ensembl"}  # VEP annotation is essential; gnomAD has MyVariant.info fallback
     blockers = report.blockers()
     # 如果无 blocker，只有 warnings → 建议继续
     if not blockers:
         return "continue"
-    # 如果 blocker 全是 api_connectivity → 建议离线模式
-    if all(i.category == "api_connectivity" for i in blockers):
-        return "offline"
-    # 如果 blocker 包含 python_deps 或 local_files → 必须中止
-    if any(i.category in ("python_deps", "local_files") for i in blockers):
+    # 如果 blocker 包含关键 API → 必须中止（离线模式会导致大量变异无法评估）
+    if any(i.name in CRITICAL_APIS for i in blockers):
         return "abort"
-    # 磁盘空间不足 → 中止
-    if any(i.category == "disk_space" for i in blockers):
+    # 如果 blocker 包含 python_deps / local_files / disk_space → 必须中止
+    if any(i.category in ("python_deps", "local_files", "disk_space") for i in blockers):
         return "abort"
-    # 默认：离线模式
-    return "offline"
+    # 剩下的 blocker 都是非关键 API 连通性失败 → 继续（功能降级但不阻断核心分析）
+    return "continue"
 
 
 # =============================================================================

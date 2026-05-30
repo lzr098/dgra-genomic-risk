@@ -588,7 +588,6 @@ async def _enrich_variant_frequencies(
     variants: List[Variant],
     candidate_indices: List[int],
     config: GPAConfig,
-    _trust_env: bool,
 ) -> None:
     """
     Phase 2: gnomAD frequency lookup ONLY for candidate variants.
@@ -868,7 +867,11 @@ async def _run_two_phase_pipeline_impl(
             print(preflight.to_markdown())
             return {"error": "Preflight failed", "report": preflight.to_dict()}
         elif action == "offline":
-            print("[GPA Preflight] 切换到离线模式（跳过所有 API 调用）")
+            print("=" * 60)
+            print("[GPA Preflight] ⚠️  WARNING: 切换到离线模式（跳过所有 API 调用）")
+            print("[GPA Preflight] 离线模式下 VEP 注释不可用，大量变异将无法 tier 分级。")
+            print("[GPA Preflight] 39,000+ 变异可能仅有极少数能被评估。")
+            print("=" * 60)
             config.offline_mode = True
             global_config.offline_mode = True
 
@@ -966,7 +969,7 @@ async def _run_two_phase_pipeline_impl(
     print(f"[GPA Phase 2] GTEx: expression data for {len(gtex_data)} candidate genes")
 
     # Phase 2.2: gnomAD frequency enrichment
-    await _enrich_variant_frequencies(variants, all_candidate_indices, config, _trust_env)
+    await _enrich_variant_frequencies(variants, all_candidate_indices, config)
 
     # Phase 2.3: SpliceAI (if enabled)
     await _enrich_spliceai(variants, all_candidate_indices, config)

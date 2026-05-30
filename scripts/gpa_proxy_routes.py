@@ -194,7 +194,7 @@ async def probe_api_routes(
     tasks = [_probe_single(url, proxy, timeout, validator) for proxy in proxies]
     results = await asyncio.gather(*tasks)
 
-    # 选择最佳路由（延迟最低的 PASS）
+    # 选择最佳路由（延迟最低的 PASS；若无 PASS，则选延迟最低的 WARN）
     passed = [r for r in results if r["status"] == "PASS"]
     if passed:
         best = min(passed, key=lambda r: r["latency_ms"])
@@ -203,6 +203,19 @@ async def probe_api_routes(
             best_proxy=best["proxy"],
             latency_ms=best["latency_ms"],
             status="PASS",
+            all_results=list(results),
+        )
+
+    # v0.10.12-fix: WARN means network reachable (e.g., HTTP 400 from VEP probe)
+    # Treat best WARN as usable route rather than failing entirely.
+    warned = [r for r in results if r["status"] == "WARN"]
+    if warned:
+        best = min(warned, key=lambda r: r["latency_ms"])
+        return ProxyRoute(
+            api_name=name,
+            best_proxy=best["proxy"],
+            latency_ms=best["latency_ms"],
+            status="WARN",
             all_results=list(results),
         )
 
