@@ -814,6 +814,41 @@ async def run_two_phase_pipeline(
 
     Returns dict with report_markdown, summary, tier1/2/3_variants, etc.
     """
+    try:
+        return await _run_two_phase_pipeline_impl(
+            variants_data, config, user_phenotypes, max_candidates
+        )
+    except Exception as e:  # noqa: BROAD_EXCEPT — outer process-level guard: never let pipeline crash the host process
+        import traceback
+        err_msg = f"{type(e).__name__}: {e}"
+        print(f"[GPA Two-Phase] PIPELINE CRASH: {err_msg}")
+        traceback.print_exc()
+        return {
+            "error": err_msg,
+            "report_markdown": f"# Analysis Failed\\n\\nPipeline crashed: `{err_msg}`\\n",
+            "summary": {
+                "tier1_variant_count": 0,
+                "tier2_variant_count": 0,
+                "tier3_variant_count": 0,
+                "total_variants": len(variants_data),
+                "error": err_msg,
+            },
+            "tier1_variants": [],
+            "tier2_variants": [],
+            "tier3_variants": [],
+            "multi_hit_details": [],
+            "meta": {"error": err_msg, "offline_mode": getattr(config, "offline_mode", False)},
+            "json_report": {},
+        }
+
+
+async def _run_two_phase_pipeline_impl(
+    variants_data: List[Dict],
+    config: Optional[GPAConfig] = None,
+    user_phenotypes: Optional[str] = None,
+    max_candidates: int = 150,
+) -> Dict[str, Any]:
+    """Internal implementation — protected by run_two_phase_pipeline wrapper."""
     if config is None:
         config = GPAConfig()
 

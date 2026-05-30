@@ -106,6 +106,20 @@ class VCFAnnotator:
                 chrom, pos, ref, alt, qual, filter, dp, gt,
                 and transcript_consequences (list of all transcript annotations).
         """
+        try:
+            return await self._annotate_internal(vcf_path, progress_callback)
+        except Exception as e:  # noqa: BROAD_EXCEPT — process-level guard: ensures session cleanup on any failure
+            logger.error(f"[VCFAnnotator] Annotation failed: {type(e).__name__}: {e}")
+            raise
+        finally:
+            await self.close()
+
+    async def _annotate_internal(
+        self,
+        vcf_path: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Internal annotate implementation."""
         vcf_path = Path(vcf_path)
         if not vcf_path.exists():
             raise FileNotFoundError(f"VCF not found: {vcf_path}")
@@ -485,6 +499,16 @@ class VCFAnnotator:
                             continue
                     except aiohttp.ClientError as e:
                         logger.warning(f"VEP API client error: {e}, attempt {attempt + 1}")
+                        if delay is not None:
+                            await asyncio.sleep(delay)
+                            continue
+                    except OSError as e:
+                        logger.warning(f"VEP API network error: {e}, attempt {attempt + 1}")
+                        if delay is not None:
+                            await asyncio.sleep(delay)
+                            continue
+                    except Exception as e:  # noqa: BROAD_EXCEPT — last-resort guard for unanticipated API failures
+                        logger.error(f"VEP API unexpected error: {type(e).__name__}: {e}, attempt {attempt + 1}")
                         if delay is not None:
                             await asyncio.sleep(delay)
                             continue

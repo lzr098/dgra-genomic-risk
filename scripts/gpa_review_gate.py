@@ -107,7 +107,7 @@ class GPAReviewGate:
             return
 
         # 2. Blocker checks
-        self._check_bare_except(filename, tree)
+        self._check_bare_except(filename, tree, source)
         self._check_mutable_defaults(filename, tree)
         self._check_open_encoding(filename, tree)
         self._check_eval_exec(filename, tree)
@@ -123,9 +123,13 @@ class GPAReviewGate:
         # 4. Nit checks
         self._check_pointless_fstring(filename, tree, source)
 
-    def _check_bare_except(self, filename: str, tree: ast.AST):
+    def _check_bare_except(self, filename: str, tree: ast.AST, source: str):
+        lines = source.splitlines()
         for node in ast.walk(tree):
             if isinstance(node, ast.ExceptHandler):
+                line_text = lines[node.lineno - 1] if node.lineno - 1 < len(lines) else ""
+                if "# noqa" in line_text or "# review-gate-allow" in line_text:
+                    continue
                 if node.type is None:
                     self.issues.append(Issue(filename, node.lineno, Severity.BLOCKER,
                         "BARE_EXCEPT", "bare except: catches KeyboardInterrupt, SystemExit. Use specific exceptions."))

@@ -1972,10 +1972,19 @@ def main():
             vep_cache=vep_cache_path,
         )
         async def _annotate_and_close():
-            annotated = await annotator.annotate(args.input)
-            await annotator.close()
-            return annotated
-        annotated = asyncio.run(_annotate_and_close())
+            try:
+                annotated = await annotator.annotate(args.input)
+                return annotated
+            except Exception as e:  # noqa: BROAD_EXCEPT — process-level guard around annotator
+                print(f"[GPA] VCF annotation failed: {type(e).__name__}: {e}", file=sys.stderr)
+                raise
+        try:
+            annotated = asyncio.run(_annotate_and_close())
+        except Exception:  # noqa: BROAD_EXCEPT — outer guard to prevent asyncio.run crash from killing process
+            # Graceful degradation: return empty list so pipeline can continue
+            # or re-raise depending on user preference. For now, re-raise with context.
+            print("[GPA] ERROR: VCF annotation failed. Check network/proxy settings.")
+            raise
 
         # Disease-aware transcript selection
         selector = None
