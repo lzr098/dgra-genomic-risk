@@ -21,7 +21,8 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
 
 from gpa_pipeline import run_dgra_pipeline
-from dgra_core import GPAConfig
+from gpa_types import GPAConfig
+
 
 
 # =============================================================================
@@ -196,7 +197,6 @@ async def test_circular_import_fix():
 
     # This should not raise ImportError
     from gpa_pipeline import run_dgra_pipeline as rdp
-    from dgra_core import GPAConfig as GC
     assert rdp is not None
     assert GC is not None
 

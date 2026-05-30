@@ -11,8 +11,7 @@ Extracted from dgra_core.py in v0.10.0 God Module refactoring.
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
-
-from dgra_core import (
+from gpa_types import (
     Variant,
     GPAConfig,
     Evidence,
@@ -21,10 +20,14 @@ from dgra_core import (
     _COMMON_TS_GENES,
     _KNOWN_AML_DRIVERS,
     _GENE_FAMILY_REDUNDANCY,
-    evaluate_gene_constraint,
-    predict_nmd,
-    evaluate_missense_tier,
 )
+from gpa_analysis import (
+    evaluate_gene_constraint,
+    evaluate_missense_tier,
+    predict_nmd,
+)
+
+
 
 
 # v0.7 Phase 3: Rare disease gene list (from gene_phenotype_map.json)

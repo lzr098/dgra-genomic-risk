@@ -343,7 +343,10 @@ def run_gpa_batched(
 
 def main():
     import argparse
-    from dgra_cli_wrapper import run_gpa_from_file  # Reuse input parsing
+    # v0.10.11: Dynamic import to avoid circular dependency with dgra_cli_wrapper
+    import importlib
+    _cli_wrapper = importlib.import_module('dgra_cli_wrapper')
+    run_gpa_from_file = _cli_wrapper.run_gpa_from_file
     
     parser = argparse.ArgumentParser(description="GPA Batch Runner v0.7.1")
     parser.add_argument("--input-file", "-i", type=Path, required=True)

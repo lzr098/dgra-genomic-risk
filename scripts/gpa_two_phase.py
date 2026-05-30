@@ -20,14 +20,21 @@ import time
 from typing import List, Dict, Optional, Any, Tuple, Set
 
 # Import from core (lazy to avoid circular)
-from dgra_core import (
-    Variant, GPAConfig, _UNKNOWN, classify_gnomad_frequency,
-    normalize_gene_symbols, map_variant_to_domain, assess_tissue_relevance,
-    predict_nmd, correct_transcript_priority, detect_pseudogene_artifact,
-    _save_offline_archive, _load_offline_archive,
-)
 from dgra_cache import DGRACache
 from dgra_api import DGRAAPIClient
+from gpa_types import Variant, GPAConfig, _UNKNOWN
+from gpa_analysis import (
+    classify_gnomad_frequency,
+    normalize_gene_symbols,
+    map_variant_to_domain,
+    assess_tissue_relevance,
+    predict_nmd,
+    correct_transcript_priority,
+    detect_pseudogene_artifact,
+    _save_offline_archive,
+    _load_offline_archive,
+)
+
 
 
 # ─── Phase 1: Fast Local Triage ────────────────────────────────────────────

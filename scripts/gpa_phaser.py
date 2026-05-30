@@ -12,9 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List, Dict, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from dgra_core import Variant
+from gpa_types import Variant
 
 
 @dataclass

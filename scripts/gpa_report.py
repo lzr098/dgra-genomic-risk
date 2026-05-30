@@ -22,10 +22,9 @@ except ImportError:
     _HAS_JINJA2 = False
     Template = None  # type: ignore
 
-if TYPE_CHECKING:
-    from dgra_core import Variant, GPAConfig
-
 from version import __version__
+from gpa_types import Variant, GPAConfig, _UNKNOWN
+
 
 # Offline archive path (shared with dgra_core)
 _OFFLINE_ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "references" / "offline_data"
@@ -35,7 +34,6 @@ _OFFLINE_ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "references" / "
 
 def _format_gnomad_af(v: Variant) -> str:
     """Format gnomAD overall + EAS AF for table display."""
-    from dgra_core import _UNKNOWN
     af = v.gnomad_af
     # Try EAS from populations
     eas_af = None
@@ -67,7 +65,6 @@ def _format_gnomad_af(v: Variant) -> str:
 
 def _format_clinvar(v: Variant) -> str:
     """Format ClinVar significance + review status for table display."""
-    from dgra_core import _UNKNOWN
     cv = v.clinvar
     if not cv or cv == _UNKNOWN:
         return "N/A"
@@ -118,7 +115,6 @@ def _format_acmg_preliminary(v: Variant) -> str:
 
 def _compute_acmg_tags(v: Variant) -> List[str]:
     """Compute preliminary ACMG evidence tags from available data."""
-    from dgra_core import _UNKNOWN
     tags = []
     # PM2: absent or very low frequency in gnomAD
     if v.gnomad_af is not None and v.gnomad_af < 0.0001:
@@ -1237,7 +1233,6 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
     Generate structured JSON report for downstream system consumption.
     v0.5 P1-12: Complete structured output alongside Markdown report.
     """
-    from dgra_core import _UNKNOWN
 
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 

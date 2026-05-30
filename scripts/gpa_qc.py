@@ -12,8 +12,9 @@ import json
 import re
 from pathlib import Path
 from typing import List, Dict
+from gpa_types import Variant
 
-from dgra_core import Variant
+
 
 
 # =============================================================================

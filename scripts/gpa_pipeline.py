@@ -19,21 +19,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
 
-from dgra_core import (
-    Variant, GPAConfig, _UNKNOWN,
-    _COMMON_TS_GENES, _KNOWN_AML_DRIVERS, _GENE_FAMILY_REDUNDANCY,
-    OFFLINE_ARCHIVE_DIR,
-    _save_offline_archive, _load_offline_archive,
-    assess_tissue_relevance,
-    classify_gnomad_frequency, normalize_gene_symbols,
-    map_variant_to_domain, evaluate_gene_constraint,
-    predict_nmd, evaluate_missense_tier,
-    aggregate_gtex_expression,
-    _x_linked_female_adjustment,
-    detect_pseudogene_artifact,
-    _variant_has_pathogenic_evidence,
-    correct_transcript_priority,
-)
 from gpa_tier_classifier import classify_variant_tier, _is_rare_disease_gene
 from gpa_phaser import PhaseResult
 from gpa_multi_hit import detect_multi_hit_genes
@@ -41,6 +26,32 @@ from gpa_qc import _run_qc_checks
 from gpa_report import generate_tier_report, generate_json_report
 from dgra_cache import DGRACache
 from dgra_api import DGRAAPIClient
+from gpa_types import (
+    Variant,
+    GPAConfig,
+    _UNKNOWN,
+    _COMMON_TS_GENES,
+    _KNOWN_AML_DRIVERS,
+    _GENE_FAMILY_REDUNDANCY,
+)
+from gpa_analysis import (
+    OFFLINE_ARCHIVE_DIR,
+    _save_offline_archive,
+    _load_offline_archive,
+    assess_tissue_relevance,
+    classify_gnomad_frequency,
+    normalize_gene_symbols,
+    map_variant_to_domain,
+    evaluate_gene_constraint,
+    predict_nmd,
+    evaluate_missense_tier,
+    aggregate_gtex_expression,
+    _x_linked_female_adjustment,
+    detect_pseudogene_artifact,
+    _variant_has_pathogenic_evidence,
+    correct_transcript_priority,
+)
+
 
 
 def _select_for_api_enrichment(variants: List[Variant], max_total: int = 150) -> List[Variant]:

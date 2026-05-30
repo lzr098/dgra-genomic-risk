@@ -13,10 +13,10 @@ from __future__ import annotations
 
 from typing import List, Dict, Optional, TYPE_CHECKING
 
-from gpa_phaser import determine_phase
-
-if TYPE_CHECKING:
-    from dgra_core import Variant
+from gpa_types import Variant
+from gpa_analysis import (
+    _variant_has_pathogenic_evidence,
+)
 
 
 def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = None) -> List[Dict]:
@@ -37,7 +37,9 @@ def detect_multi_hit_genes(variants: List[Variant], gtex_data: Optional[Dict] = 
 
     Normal polymorphisms (benign / common / no domain impact) are excluded.
     """
-    from dgra_core import _variant_has_pathogenic_evidence
+
+    # v0.10.11: Lazy import to avoid circular dependency
+    from gpa_phaser import determine_phase
 
     # Group variants by gene
     gene_variants = {}
