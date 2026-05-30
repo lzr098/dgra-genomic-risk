@@ -144,7 +144,7 @@ class PhenotypeMatcher:
                         "confidence": parsed.get("confidence", "low"),
                         "reasoning": parsed.get("reasoning", ""),
                     }
-        except (ConnectionError, TimeoutError) as e:
+        except Exception as e:
             return {
                 "score": 0.0,
                 "matched_pairs": [],

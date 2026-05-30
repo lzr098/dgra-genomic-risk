@@ -255,7 +255,7 @@ async def query_myvariant_single(
             status="error",
             error=f"Client error: {e}",
         )
-    except (RuntimeError, ValueError) as e:
+    except Exception as e:
         return MyVariantResult(
             variant_id=variant_id,
             queried=True,
@@ -390,7 +390,7 @@ async def query_myvariant_batch(
                         status="error",
                         error=f"Batch client error: {e}",
                     )
-            except (RuntimeError, ValueError) as e:
+            except Exception as e:
                 for vid in batch_ids:
                     results[vid] = MyVariantResult(
                         variant_id=vid,
@@ -419,8 +419,6 @@ async def query_myvariant_batch(
 def apply_myvariant_results(
     variants: List[Any],  # List[Variant] - avoid circular import
     myvariant_results: Dict[str, MyVariantResult],
-    fill_clinvar: bool = True,
-    fill_cadd: bool = True,
 ) -> Dict[str, int]:
     """Apply MyVariant.info results to GPA Variant objects.
     
@@ -430,9 +428,6 @@ def apply_myvariant_results(
     Args:
         variants: List of GPA Variant objects
         myvariant_results: Dict from query_myvariant_batch
-        fill_clinvar: Whether to fill ClinVar data (False for variants where
-                     functional impact is already certain, e.g., stop_gained)
-        fill_cadd: Whether to fill CADD scores
     
     Returns:
         Stats dict: {gnomad_filled, clinvar_filled, cadd_filled, not_found, errors}
@@ -463,7 +458,7 @@ def apply_myvariant_results(
                 result_by_key[key] = result
                 # Also store without chr prefix
                 result_by_key[chrom_pos_ref + ">" + alt] = result
-        except (RuntimeError, ValueError):
+        except Exception:
             pass
     
     for v in variants:
@@ -492,19 +487,19 @@ def apply_myvariant_results(
                 v.gnomad_populations = result.gnomad_populations
             stats["gnomad_filled"] += 1
         
-        # Fill ClinVar if missing or UNKNOWN AND fill_clinvar is enabled
+        # Fill ClinVar if missing or UNKNOWN
         _UNKNOWN_MARKER = "_UNKNOWN_"
-        if fill_clinvar:
-            clinvar_current = getattr(v, 'clinvar', '') or ''
-            is_clinvar_missing = not clinvar_current or clinvar_current == _UNKNOWN_MARKER or clinvar_current == "UNKNOWN"
-            if is_clinvar_missing and result.clinvar_significance:
-                v.clinvar = result.clinvar_significance
-                if result.clinvar_review_status:
-                    v.clinvar_review_status = result.clinvar_review_status
-                stats["clinvar_filled"] += 1
+        clinvar_current = getattr(v, 'clinvar', '') or ''
+        is_clinvar_missing = not clinvar_current or clinvar_current == _UNKNOWN_MARKER or clinvar_current == "UNKNOWN"
+        if is_clinvar_missing and result.clinvar_significance:
+            v.clinvar = result.clinvar_significance
+            if result.clinvar_review_status:
+                v.clinvar_review_status = result.clinvar_review_status
+            stats["clinvar_filled"] += 1
         
-        # Store CADD phred in vcf_info if enabled
-        if fill_cadd and result.cadd_phred is not None:
+        # Store CADD phred in gene_constraint or a new field
+        # Since Variant doesn't have cadd_phred field, store in vcf_info
+        if result.cadd_phred is not None:
             if not hasattr(v, 'vcf_info') or v.vcf_info is None:
                 v.vcf_info = {}
             v.vcf_info["cadd_phred"] = result.cadd_phred

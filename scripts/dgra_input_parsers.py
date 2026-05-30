@@ -81,7 +81,7 @@ def auto_detect(path: Path) -> str:
         return "freetext"
 
     # Fallback: read first 2KB and look for VCF header
-    with open(path, "rb", encoding='utf-8') as f:
+    with open(path, "rb") as f:
         head = f.read(2048)
     if b"##fileformat=VCF" in head:
         return "vcf"
@@ -155,17 +155,13 @@ class TSVParser(InputParser):
 
 class VCFParser(InputParser):
     """
-    Parse VCF using pure Python (stdlib only).
+    Parse VCF using cyvcf2.
 
     Supports:
-      - Plain VCF and uncompressed .vcf.gz (ASCII text)
-      - bgzipped VCF via gzip module
+      - Plain VCF, bgzipped VCF, BCF
       - VEP-annotated VCF (INFO/CSQ)
       - Multi-allelic sites split into separate records
       - GT, DP, GQ, VAF extracted from FORMAT
-
-    v0.10.9: Replaced cyvcf2 (C extension, macOS Team ID signature issue)
-    with pure-Python parser that works in any sandboxed environment.
     """
     def __init__(self, sample_idx: int = 0, prefer_canonical: bool = True,
                  keep_all_transcripts: bool = False):
@@ -173,174 +169,148 @@ class VCFParser(InputParser):
         self.prefer_canonical = prefer_canonical
         self.keep_all_transcripts = keep_all_transcripts
 
-    def _open_vcf(self, path: Path):
-        """Open plain or gzip-compressed VCF. Returns iterable of lines."""
-        path = Path(path)
-        # Try gzip first (handles both real .gz and ASCII .vcf.gz)
-        try:
-            f = gzip.open(str(path), "rt", encoding="utf-8", errors="replace")
-            # Peek to confirm it's readable
-            f.read(1)
-            f.seek(0)
-            return f
-        except (OSError, gzip.BadGzipFile):
-            return open(str(path), "r", encoding="utf-8", errors="replace")
-
-    def _parse_csq_header_lines(self, header_lines: List[str]) -> Dict[str, int]:
-        """Extract CSQ field order from header lines."""
-        for line in header_lines:
-            if 'ID=CSQ' in line and 'Description=' in line:
-                m = re.search(r'Format:\s*([^"]+)"', line)
-                if m:
-                    fields = m.group(1).strip().split("|")
-                    return {name: idx for idx, name in enumerate(fields)}
-        return VEP_CSQ_MAP  # fallback
+    def _parse_csq_header(self, vcf) -> Dict[str, int]:
+        """Extract CSQ field order from VCF header."""
+        csq_fmt = None
+        for h in vcf.header_iter():
+            try:
+                val = str(h)
+                if 'ID=CSQ' in val and 'Description=' in val:
+                    m = re.search(r'Format:\s*([^"]+)"', val)
+                    if m:
+                        csq_fmt = m.group(1).strip().split("|")
+                        break
+            except Exception:
+                continue
+        if csq_fmt:
+            return {name: idx for idx, name in enumerate(csq_fmt)}
+        return VEP_CSQ_MAP  # fallback to canonical
 
     def _pick_csq(self, csq_entries: List[List[str]], csq_map: Dict[str, int]) -> List[str]:
         """Pick one transcript per allele. Prefer CANONICAL=YES or MANE_SELECT."""
         if not csq_entries:
             return []
         if self.keep_all_transcripts:
+            # Return first for now; caller could expand
             return csq_entries[0]
+        # Prefer CANONICAL=YES
         for entry in csq_entries:
             can_idx = csq_map.get("CANONICAL")
             if can_idx is not None and len(entry) > can_idx and entry[can_idx] == "YES":
                 return entry
+        # Fallback: MANE_SELECT present
         for entry in csq_entries:
             mane_idx = csq_map.get("MANE_SELECT")
             if mane_idx is not None and len(entry) > mane_idx and entry[mane_idx]:
                 return entry
+        # Fallback: first entry
         return csq_entries[0]
 
-    def _parse_info(self, info_str: str) -> Dict[str, str]:
-        """Parse VCF INFO field into a dict."""
-        info = {}
-        if info_str == "." or not info_str:
-            return info
-        for part in info_str.split(";"):
-            if "=" in part:
-                k, _, v = part.partition("=")
-                info[k] = v
-            else:
-                info[part] = "1"
-        return info
-
-    def _parse_format(self, fmt_str: str, sample_str: str) -> Dict[str, str]:
-        """Parse FORMAT + sample string into a dict."""
-        if not fmt_str or not sample_str:
-            return {}
-        keys = fmt_str.split(":")
-        vals = sample_str.split(":")
-        return {k: (vals[i] if i < len(vals) else "") for i, k in enumerate(keys)}
-
-    def _extract_gt_fields(self, fmt_dict: Dict[str, str]):
-        """Extract GT, DP, GQ, VAF from parsed FORMAT dict."""
-        gt_raw = fmt_dict.get("GT", "").replace("|", "/")
-        dp = fmt_dict.get("DP", "")
-        gq = fmt_dict.get("GQ", "")
-        vaf = ""
-        # VAF from AD
-        ad_str = fmt_dict.get("AD", "")
-        if ad_str and ad_str != ".":
-            try:
-                parts = [int(x) for x in ad_str.split(",") if x not in (".", "")]
-                if len(parts) >= 2:
-                    total = sum(parts)
-                    if total > 0:
-                        alt_depth = sum(parts[1:])
-                        vaf = f"{alt_depth / total:.4f}"
-            except (RuntimeError, ValueError):
-                pass
-        if not vaf:
-            af_str = fmt_dict.get("AF", "")
-            if af_str and af_str not in (".", ""):
-                vaf = af_str.split(",")[0]
-        return gt_raw, dp, gq, vaf
-
     def parse(self, path: Path) -> List[Dict[str, Any]]:
-        variants: List[Dict[str, Any]] = []
-        header_lines = []
-        col_names = []
-        csq_map: Dict[str, int] = {}
-        samples: List[str] = []
-
-        fh = self._open_vcf(path)
         try:
-            for raw_line in fh:
-                line = raw_line.rstrip("\n\r")
-                if line.startswith("##"):
-                    header_lines.append(line)
-                    continue
-                if line.startswith("#CHROM"):
-                    col_names = line.lstrip("#").split("\t")
-                    # samples start at column index 9
-                    samples = col_names[9:] if len(col_names) > 9 else []
-                    csq_map = self._parse_csq_header_lines(header_lines)
-                    continue
-                if not line or not col_names:
-                    continue
+            import cyvcf2
+        except ImportError as e:
+            raise ImportError("cyvcf2 is required for VCF parsing. Install: pip install cyvcf2") from e
 
-                fields = line.split("\t")
-                if len(fields) < 8:
-                    continue
+        vcf = cyvcf2.VCF(str(path))
+        csq_map = self._parse_csq_header(vcf)
+        variants: List[Dict[str, Any]] = []
 
-                chrom = fields[0].replace("chr", "")
-                pos = int(fields[1])
-                ref = fields[3]
-                alt_field = fields[4]
-                info_str = fields[7] if len(fields) > 7 else ""
-                fmt_str = fields[8] if len(fields) > 8 else ""
-                sample_str = fields[9] if len(fields) > 9 else ""
+        samples = vcf.samples
+        sample_name = samples[self.sample_idx] if samples else None
 
-                # Handle multi-allelic ALTs
-                alts = [a for a in alt_field.split(",") if a != "."]
-                if not alts:
-                    continue
+        for record in vcf:
+            chrom = record.CHROM.replace("chr", "")
+            pos = record.POS
+            ref = record.REF
+            alts = record.ALT or []
 
-                fmt_dict = self._parse_format(fmt_str, sample_str)
-                gt_raw, dp, gq, vaf = self._extract_gt_fields(fmt_dict)
+            # FORMAT fields
+            gt_raw = ""
+            dp = ""
+            gq = ""
+            vaf = ""
+            if sample_name:
+                # GT
+                try:
+                    gt_arr = record.genotypes[self.sample_idx]
+                    if gt_arr and len(gt_arr) >= 2:
+                        gt_raw = "/".join(str(a) for a in gt_arr[:2])
+                except Exception:
+                    pass
+                # DP
+                try:
+                    dp = str(record.format("DP")[self.sample_idx][0])
+                except Exception:
+                    pass
+                # GQ
+                try:
+                    gq = str(record.format("GQ")[self.sample_idx][0])
+                except Exception:
+                    pass
+                # VAF (AD ratio or AF)
+                try:
+                    ad = record.format("AD")
+                    if ad is not None:
+                        ref_ad = ad[self.sample_idx][0]
+                        alt_ad = sum(ad[self.sample_idx][1:])
+                        total = ref_ad + alt_ad
+                        if total > 0:
+                            vaf = f"{alt_ad / total:.4f}"
+                except Exception:
+                    try:
+                        af = record.format("AF")
+                        if af is not None:
+                            vaf = str(af[self.sample_idx][0])
+                    except Exception:
+                        pass
 
-                info = self._parse_info(info_str)
-                csq_raw = info.get(VEP_ANNOTATION_FIELD, "")
+            # INFO/CSQ parsing
+            csq_raw = None
+            try:
+                csq_raw = record.INFO.get(VEP_ANNOTATION_FIELD)
+            except Exception:
+                pass
 
-                if csq_raw:
-                    csq_strings = csq_raw.split(",")
-                    for alt in alts:
-                        allele_csq = []
-                        for csq_str in csq_strings:
-                            parts = csq_str.split("|")
-                            if parts[0] == alt:
-                                allele_csq.append(parts)
-                        chosen = self._pick_csq(allele_csq, csq_map)
-                        variant = self._csq_to_variant(
-                            chrom, pos, ref, alt, chosen, csq_map,
-                            gt=gt_raw, dp=dp, gq=gq, vaf=vaf
-                        )
-                        variants.append(variant)
-                else:
-                    # No VEP annotation — emit minimal record
-                    for alt in alts:
-                        variants.append({
-                            "CHROM": chrom,
-                            "POS": str(pos),
-                            "REF": ref,
-                            "ALT": alt,
-                            "GENE": "",
-                            "Feature": "",
-                            "EXON": "",
-                            "IMPACT": "",
-                            "Consequence": "",
-                            "HGVSp": "",
-                            "HGVSc": "",
-                            "CLIN_SIG": "",
-                            "GT": gt_raw,
-                            "DP": dp,
-                            "GQ": gq,
-                            "VAF": vaf,
-                            "gnomAD_AF": "",
-                        })
-        finally:
-            fh.close()
+            if csq_raw:
+                # cyvcf2 returns CSQ as comma-separated string for multiple alleles
+                csq_strings = str(csq_raw).split(",") if isinstance(csq_raw, str) else [str(csq_raw)]
+                for alt_idx, alt in enumerate(alts):
+                    # Filter CSQ entries matching this allele
+                    allele_csq = []
+                    for csq_str in csq_strings:
+                        parts = csq_str.split("|")
+                        if len(parts) > 0 and parts[0] == alt:
+                            allele_csq.append(parts)
+                    chosen = self._pick_csq(allele_csq, csq_map)
+                    variant = self._csq_to_variant(
+                        chrom, pos, ref, alt, chosen, csq_map,
+                        gt=gt_raw, dp=dp, gq=gq, vaf=vaf
+                    )
+                    variants.append(variant)
+            else:
+                # No VEP annotation — emit minimal record with coordinates only
+                for alt in alts:
+                    variants.append({
+                        "CHROM": chrom,
+                        "POS": str(pos),
+                        "REF": ref,
+                        "ALT": alt,
+                        "GENE": "",
+                        "Feature": "",
+                        "EXON": "",
+                        "IMPACT": "",
+                        "Consequence": "",
+                        "HGVSp": "",
+                        "HGVSc": "",
+                        "CLIN_SIG": "",
+                        "GT": gt_raw,
+                        "DP": dp,
+                        "GQ": gq,
+                        "VAF": vaf,
+                        "gnomAD_AF": "",
+                    })
+        vcf.close()
         return variants
 
     def _csq_to_variant(self, chrom: str, pos: int, ref: str, alt: str,

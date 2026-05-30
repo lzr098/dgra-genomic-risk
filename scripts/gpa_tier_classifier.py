@@ -11,7 +11,8 @@ Extracted from dgra_core.py in v0.10.0 God Module refactoring.
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
-from gpa_types import (
+
+from dgra_core import (
     Variant,
     GPAConfig,
     Evidence,
@@ -20,14 +21,10 @@ from gpa_types import (
     _COMMON_TS_GENES,
     _KNOWN_AML_DRIVERS,
     _GENE_FAMILY_REDUNDANCY,
-)
-from gpa_analysis import (
     evaluate_gene_constraint,
-    evaluate_missense_tier,
     predict_nmd,
+    evaluate_missense_tier,
 )
-
-
 
 
 # v0.7 Phase 3: Rare disease gene list (from gene_phenotype_map.json)
@@ -44,11 +41,11 @@ def _load_rare_disease_genes() -> set:
 
     map_path = Path(__file__).parent.parent / "references" / "gene_phenotype_map.json"
     try:
-        with open(map_path, 'r', encoding='utf-8') as f:
+        with open(map_path, 'r') as f:
             data = json.load(f)
         _RARE_DISEASE_GENES = set(data.keys())
         return _RARE_DISEASE_GENES
-    except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
+    except Exception:
         _RARE_DISEASE_GENES = set()
         return _RARE_DISEASE_GENES
 

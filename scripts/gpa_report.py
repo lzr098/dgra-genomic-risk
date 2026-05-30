@@ -22,221 +22,13 @@ except ImportError:
     _HAS_JINJA2 = False
     Template = None  # type: ignore
 
-from version import __version__
-from gpa_types import Variant, GPAConfig, _UNKNOWN
-from gpa_analysis import _load_pseudogene_lookup
+if TYPE_CHECKING:
+    from dgra_core import Variant, GPAConfig
 
+from version import __version__
 
 # Offline archive path (shared with dgra_core)
 _OFFLINE_ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "references" / "offline_data"
-
-
-# ─── v0.10.2: Report formatting helpers ─────────────────────────────────
-
-def _format_gnomad_af(v: Variant) -> str:
-    """Format gnomAD overall + EAS AF for table display."""
-    af = v.gnomad_af
-    # Try EAS from populations
-    eas_af = None
-    if v.gnomad_populations:
-        eas_data = v.gnomad_populations.get("EAS")
-        if eas_data:
-            eas_af = eas_data.get("af")
-    # Also check variant-level clinvar fields for VEP-provided AF
-    if af is None:
-        vcf_info = getattr(v, 'vcf_info', None) or {}
-        af = vcf_info.get("gnomAD_AF")
-        if af is not None:
-            try:
-                af = float(af)
-            except (ValueError, TypeError):
-                af = None
-
-    if af is not None:
-        af_str = f"{af:.6f}" if af < 0.0001 else f"{af:.4f}"
-        if eas_af is not None:
-            eas_str = f"{eas_af:.6f}" if eas_af < 0.0001 else f"{eas_af:.4f}"
-            return f"{af_str} (EAS: {eas_str})"
-        return af_str
-    elif v.gnomad_status == "NOT_CAPTURED":
-        return "NOT_CAPTURED"
-    else:
-        return "N/A"
-
-
-def _format_clinvar(v: Variant) -> str:
-    """Format ClinVar significance + review status for table display."""
-    cv = v.clinvar
-    if not cv or cv == _UNKNOWN:
-        return "N/A"
-    # Truncate long ClinVar strings
-    cv_short = cv[:25] + ".." if len(cv) > 25 else cv
-    review = getattr(v, 'clinvar_review_status', None)
-    if review:
-        review_short = review[:12] + ".." if len(review) > 12 else review
-        return f"{cv_short} ({review_short})"
-    return cv_short
-
-
-def _format_cadd(v: Variant) -> str:
-    """Format CADD phred score for table display."""
-    vcf_info = getattr(v, 'vcf_info', None) or {}
-    cadd = vcf_info.get("cadd_phred")
-    if cadd is not None:
-        return f"{cadd:.1f}"
-    return "N/A"
-
-
-def _format_spliceai(v: Variant) -> str:
-    """Format SpliceAI delta score for table display."""
-    sr = v.spliceai_result
-    if not sr:
-        return "N/A"
-    # v0.10.2: spliceai_result may be SpliceAIResult object or dict
-    if hasattr(sr, 'delta_score'):
-        ds = sr.delta_score
-        pred = sr.predicted_impact
-    elif isinstance(sr, dict):
-        ds = sr.get("delta_score")
-        pred = sr.get("predicted_impact", "N/A")
-    else:
-        return str(sr)[:10]
-    if ds is not None:
-        return f"{ds:.2f}"
-    return str(pred)[:10] if pred else "N/A"
-
-
-def _format_acmg_preliminary(v: Variant) -> str:
-    """Format preliminary ACMG evidence tags."""
-    tags = _compute_acmg_tags(v)
-    if not tags:
-        return "-"
-    return ", ".join(tags)
-
-
-def _compute_acmg_tags(v: Variant) -> List[str]:
-    """Compute preliminary ACMG evidence tags from available data."""
-    tags = []
-    # PM2: absent or very low frequency in gnomAD
-    if v.gnomad_af is not None and v.gnomad_af < 0.0001:
-        tags.append("PM2")
-    elif v.gnomad_status == "NOT_CAPTURED":
-        tags.append("PM2?")
-    # PP3: computational evidence supports deleterious effect
-    vcf_info = getattr(v, 'vcf_info', None) or {}
-    cadd = vcf_info.get("cadd_phred")
-    if cadd is not None and cadd >= 20:
-        tags.append("PP3")
-    elif cadd is not None and cadd >= 10:
-        tags.append("PP3?")
-    # PVS1: null variant (stop_gained, frameshift, splice)
-    if v.impact == "HIGH":
-        lof_terms = {"stop_gained", "frameshift", "splice_donor", "splice_acceptor"}
-        if any(t in (v.consequence or "").lower() for t in lof_terms):
-            tags.append("PVS1")
-    # PS1: ClinVar Pathogenic at same amino acid position
-    cv = v.clinvar or ""
-    if "pathogenic" in cv.lower() and "conflicting" not in cv.lower():
-        if "likely" in cv.lower():
-            tags.append("PS1?")
-        else:
-            tags.append("PS1")
-    # PM1: in mutational hot-spot or functional domain
-    di = v.domain_info
-    if di and di.get("domain") and di.get("domain") not in ("unknown", "N/A", "inter-domain / unannotated"):
-        tags.append("PM1")
-    return tags
-
-
-def _report_gnomad_detail(report: list, v: Variant) -> None:
-    """Append gnomAD population detail lines to report."""
-    af = v.gnomad_af
-    pops = v.gnomad_populations
-    if af is None and v.gnomad_status != "NOT_CAPTURED":
-        return
-    parts = [f"gnomAD AF: {af:.6f}" if af is not None else "gnomAD: NOT_CAPTURED"]
-    if pops:
-        pop_parts = []
-        for pop_code in ["EAS", "AFR", "AMR", "SAS", "NFE", "ASJ", "FIN"]:
-            pd = pops.get(pop_code)
-            if pd and pd.get("af") is not None:
-                pop_parts.append(f"{pop_code}={pd['af']:.6f} (AC={pd.get('ac', '?')}/AN={pd.get('an', '?')})")
-        if pop_parts:
-            parts.append(" | ".join(pop_parts[:4]))
-            if len(pop_parts) > 4:
-                parts.append(f" ... +{len(pop_parts)-4} populations")
-    report.append(f"   - {' | '.join(parts)}\n")
-
-
-def _report_clinvar_detail(report: list, v: Variant) -> None:
-    """Append ClinVar review status detail."""
-    cv = v.clinvar or ""
-    if not cv or cv == "N/A" or cv == "UNKNOWN":
-        return
-    review = getattr(v, 'clinvar_review_status', None)
-    review_str = f" (Review: {review})" if review else ""
-    report.append(f"   - ClinVar: {cv}{review_str}\n")
-
-
-def _report_cadd_detail(report: list, v: Variant) -> None:
-    """Append CADD detail."""
-    vcf_info = getattr(v, 'vcf_info', None) or {}
-    cadd = vcf_info.get("cadd_phred")
-    if cadd is not None:
-        level = "⚠️ 致病性高" if cadd >= 25 else "⚠️ 可能致病" if cadd >= 20 else "不确定" if cadd >= 10 else "可能良性"
-        report.append(f"   - CADD Phred: {cadd:.1f} ({level})\n")
-
-
-def _report_spliceai_detail(report: list, v: Variant) -> None:
-    """Append SpliceAI detail."""
-    sr = v.spliceai_result
-    if not sr:
-        return
-    # v0.10.2: handle both SpliceAIResult object and dict
-    if hasattr(sr, 'delta_score'):
-        ds = sr.delta_score
-        pred = sr.predicted_impact
-        dag = sr.delta_acceptor_gain
-        dal = sr.delta_acceptor_loss
-        ddg = sr.delta_donor_gain
-        ddl = sr.delta_donor_loss
-    elif isinstance(sr, dict):
-        ds = sr.get("delta_score")
-        pred = sr.get("predicted_impact")
-        dag = dal = ddg = ddl = None
-    else:
-        return
-    if ds is not None:
-        level = "⚠️ 高风险" if ds >= 0.5 else "⚠️ 中风险" if ds >= 0.2 else "低风险"
-        detail_parts = [f"delta_score={ds:.3f}"]
-        if dag is not None:
-            detail_parts.append(f"AG={dag:.3f}")
-            detail_parts.append(f"AL={dal:.3f}")
-            detail_parts.append(f"DG={ddg:.3f}")
-            detail_parts.append(f"DL={ddl:.3f}")
-        report.append(f"   - SpliceAI: {', '.join(detail_parts)}, {pred} ({level})\n")
-
-
-def _report_acmg_detail(report: list, v: Variant) -> None:
-    """Append ACMG preliminary evidence detail."""
-    tags = _compute_acmg_tags(v)
-    if not tags:
-        return
-    tag_explanations = {
-        "PVS1": "PVS1: Null variant (截短/移码/剪接),推测导致基因功能丧失",
-        "PVS1?": "PVS1?: 可能的 null variant,需确认 NMD 逃逸或下游起始密码子",
-        "PS1": "PS1: ClinVar 已标注为致病性变异",
-        "PS1?": "PS1?: ClinVar 可能致病 (Likely pathogenic)",
-        "PM1": "PM1: 位于已知功能域/热点突变区域",
-        "PM2": "PM2: gnomAD 中缺失或极低频 (AF < 0.01%)",
-        "PM2?": "PM2?: gnomAD 未捕获该变异,频率未知",
-        "PP3": "PP3: 多种算法预测支持致病变异 (CADD ≥ 20)",
-        "PP3?": "PP3?: 部分算法预测支持致病变异 (CADD 10-20)",
-    }
-    report.append(f"   - **ACMG 初步证据** (自动推断,需人工复核): {', '.join(tags)}\n")
-    for tag in tags:
-        if tag in tag_explanations:
-            report.append(f"     - {tag_explanations[tag]}\n")
 
 # v0.10.0: Jinja2 report templates — header/summary separated from per-variant logic
 if _HAS_JINJA2:
@@ -357,10 +149,10 @@ def _get_version_info(config: GPAConfig) -> Dict:
     cache_path = getattr(config, 'cache_db_path', None)
     if cache_path and Path(cache_path).exists():
         try:
-            with open(cache_path, 'rb', encoding='utf-8') as f:
+            with open(cache_path, 'rb') as f:
                 cache_hash = hashlib.sha256(f.read()).hexdigest()[:16]
             version_info["cache_version"] = cache_hash
-        except (FileNotFoundError, IsADirectoryError, PermissionError):
+        except Exception:
             version_info["cache_version"] = "unknown"
     else:
         version_info["cache_version"] = "no_cache"
@@ -374,7 +166,7 @@ def _get_version_info(config: GPAConfig) -> Dict:
                 version_info["offline_archive_date"] = datetime.fromtimestamp(latest_mtime).isoformat()
             else:
                 version_info["offline_archive_date"] = "empty"
-        except (RuntimeError, ValueError):
+        except Exception:
             version_info["offline_archive_date"] = "unknown"
     else:
         version_info["offline_archive_date"] = "no_archive"
@@ -390,7 +182,7 @@ def _get_version_info(config: GPAConfig) -> Dict:
             version_info["dgra_core_commit"] = result.stdout.strip()[:12]
         else:
             version_info["dgra_core_commit"] = "unknown"
-    except (RuntimeError, ValueError):
+    except Exception:
         version_info["dgra_core_commit"] = "unknown"
 
     # Database version override (CLI --database-version)
@@ -924,8 +716,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     if multi_hits:
         report.append("## ⚠️ Multi-Hit Gene Warnings\n")
         for mh in multi_hits:
-            gene_name = mh.get('gene', '') or 'UNKNOWN'
-            report.append(f"### {gene_name} - {mh['variant_count']} variants detected\n")
+            report.append(f"### {mh['gene']} - {mh['variant_count']} variants detected\n")
             report.append(f"- **Warning**: {mh['warning']}\n")
 
             # v0.10.3: Phase analysis — concise display
@@ -1027,31 +818,44 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
             else:
                 report.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
 
-            # Variant table (v0.10.2: enhanced with gnomAD/EAS, CADD, SpliceAI, ACMG)
-            report.append("| # | 位置 | 转录本 | 变异名称 | 后果 | 合子型 | gnomAD AF (EAS) | ClinVar (Review) | CADD | SpliceAI | 功能域 | ACMG | 说明 |\n")
-            report.append("|---|------|--------|---------|------|--------|----------------|-----------------|------|---------|--------|------|------|\n")
+            # Variant table with tier column
+            report.append("| # | Tier | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 基因约束 | 置信度 | 说明 |\n")
+            report.append("|---|------|-----------|--------|---------|--------|--------|---------|----------|--------|------|\n")
 
             for i, v in enumerate(var_list, 1):
                 pos = f"{v.chrom}:{v.pos}"
                 tx = v.transcript or "N/A"
                 var_name = v.hgvsp or v.hgvsc or "N/A"
-                cons = v.consequence or v.impact or "N/A"
-                if len(cons) > 20:
-                    cons = cons[:18] + ".."
-                zyg = v.gt or "N/A"
-                af_str = _format_gnomad_af(v)
-                cv_str = _format_clinvar(v)
-                cadd_str = _format_cadd(v)
-                spliceai_str = _format_spliceai(v)
                 di = v.domain_info
-                domain = f"{di.get('domain', 'N/A')}" if di else "N/A"
-                if len(domain) > 15:
-                    domain = domain[:13] + ".."
-                acmg_str = _format_acmg_preliminary(v)
-                reason = v.tier_reason[:60] + ".." if len(v.tier_reason) > 60 else v.tier_reason
+                if di:
+                    domain = f"{di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')})"
+                else:
+                    domain = "N/A"
+                zyg = v.gt or "N/A"
+                clin = v.clinvar or "N/A"
+                reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
                 reason = reason.replace("|", "/")
 
-                report.append(f"| {i} | {pos} | {tx} | {var_name} | {cons} | {zyg} | {af_str} | {cv_str} | {cadd_str} | {spliceai_str} | {domain} | {acmg_str} | {reason} |\n")
+                # Tier badge
+                tier_badge = "🔴" if v.tier == 1 else "🟡" if v.tier == 2 else "⚪"
+
+                # Gene constraint
+                gc_info = ""
+                if v.gene_constraint:
+                    pLI = v.gene_constraint.get("pLI")
+                    loeuf = v.gene_constraint.get("loeuf")
+                    parts = []
+                    if pLI is not None:
+                        parts.append(f"pLI={pLI:.2f}")
+                    if loeuf is not None:
+                        parts.append(f"LOEUF={loeuf:.2f}")
+                    if parts:
+                        gc_info = " | ".join(parts)
+
+                conf = v.tier_confidence or "UNKNOWN"
+                conf_icon = "⚠️" if conf == "LOW" else ""
+
+                report.append(f"| {i} | {tier_badge} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {gc_info} | {conf_icon} {conf} | {reason} |\n")
 
             report.append(f"\n**详细说明**:\n")
             for i, v in enumerate(var_list, 1):
@@ -1070,10 +874,6 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     except (json.JSONDecodeError, TypeError):
                         pass
                 report.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
-                _report_gnomad_detail(report, v)
-                _report_clinvar_detail(report, v)
-                _report_cadd_detail(report, v)
-                _report_spliceai_detail(report, v)
                 if v.domain_info:
                     di = v.domain_info
                     report.append(f"   - 功能域: {di.get('domain', 'N/A')} {di.get('domain_range', 'N/A')}\n")
@@ -1085,27 +885,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                     report.append(f"   - 损伤评估: {di.get('damage_type', 'N/A')}\n")
                 if v.tissue_relevance:
                     tr = v.tissue_relevance
-                    gtex_tpm = tr.get('gtex_tpm', 'N/A')
-                    global_max = tr.get('global_max_tpm')
-                    relevance = tr.get('relevance', 'N/A')
-                    # v0.10.8: Detect tissue-specific genes with low proxy-tissue expression
-                    tissue_note = ""
-                    if global_max and isinstance(gtex_tpm, (int, float)) and global_max > gtex_tpm * 10:
-                        tissue_note = f" [全局最高 TPM={global_max:.1f}，提示组织特异性表达]"
-                    # Check if phenotype tissues are missing key tissues (e.g. retina not in GTEx)
-                    phenotype_tissues = tr.get('phenotype_tissues', [])
-                    if phenotype_tissues and relevance == "none" and isinstance(gtex_tpm, (int, float)) and gtex_tpm < 1.0:
-                        missing_special = []
-                        for special in ["retina", "eye", "cornea", "RPE", "optic"]:
-                            if any(special in t.lower() for t in phenotype_tissues):
-                                continue
-                            # If user phenotype mentions eye but GTEx has no eye tissues
-                        # Simple heuristic: if user mentioned eye/retina and TPM is very low
-                        if tr.get('clinical_note') and 'GTEx v8 lacks' in tr.get('clinical_note', ''):
-                            tissue_note += " ⚠️ GTEx 无对应组织数据"
-                    report.append(f"   - 组织相关性: {relevance} | GTEx TPM: {gtex_tpm}{tissue_note}\n")
-                    if tr.get('clinical_note'):
-                        report.append(f"     - 临床注释: {tr['clinical_note']}\n")
+                    report.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
                 if v.gene_constraint:
                     gc = v.gene_constraint
                     parts = []
@@ -1119,7 +899,6 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                         parts.append(f"mis_z={gc['mis_z']:.2f}")
                     if parts:
                         report.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
-                _report_acmg_detail(report, v)
                 report.append(f"   - 分级原因: {v.tier_reason}\n")
                 if v.phenotype_match_score is not None:
                     score = v.phenotype_match_score
@@ -1220,7 +999,7 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     report.append("8. **基因检测历史记录**: 保留变异信息用于后续分析\n")
     report.append("9. **缓存**: 所有 API 响应缓存 30 天 (SQLite); 离线模式仅用缓存\n")
 
-    return "".join(report)
+    return "\n".join(report)
 
 # =============================================================================
 # JSON Structured Report Generation (v0.5 P1-12)
@@ -1234,6 +1013,7 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
     Generate structured JSON report for downstream system consumption.
     v0.5 P1-12: Complete structured output alongside Markdown report.
     """
+    from dgra_core import _UNKNOWN
 
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 

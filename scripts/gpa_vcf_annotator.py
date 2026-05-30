@@ -165,7 +165,7 @@ class VCFAnnotator:
                     else:
                         # Only scan first 50 non-header lines
                         break
-        except (IndexError, ValueError) as e:
+        except Exception as e:
             logger.warning(f"[VCFAnnotator] Cannot check annotation status: {e}")
         return False
 
@@ -191,11 +191,11 @@ class VCFAnnotator:
     def _vcf_opener(self, vcf_path: Path):
         """Return appropriate file opener based on actual file content, not just extension."""
         try:
-            with open(vcf_path, "rb", encoding='utf-8') as fh:
+            with open(vcf_path, "rb") as fh:
                 magic = fh.read(2)
                 if magic == b'\x1f\x8b':
                     return gzip.open
-        except (FileNotFoundError, IndexError, IsADirectoryError, PermissionError, ValueError):
+        except Exception:
             pass
         return open
 
@@ -230,15 +230,11 @@ class VCFAnnotator:
                     }
                     # Extract DP from INFO
                     v["dp"] = self._extract_dp(info)
-                    # Extract GT, GQ, VAF from FORMAT/SAMPLE if available
+                    # Extract GT from FORMAT/SAMPLE if available
                     if len(parts) >= 10:
                         v["gt"] = self._extract_gt(parts[8], parts[9])
-                        v["gq"] = self._extract_gq(parts[8], parts[9])
-                        v["vaf"] = self._extract_vaf(parts[8], parts[9])
                     else:
                         v["gt"] = "./."
-                        v["gq"] = None
-                        v["vaf"] = None
                     variants.append(v)
         return variants
 
@@ -275,43 +271,6 @@ class VCFAnnotator:
         if gt_idx < len(vals):
             return vals[gt_idx]
         return "./."
-
-    @staticmethod
-    def _extract_gq(format_col: str, sample_col: str) -> Optional[int]:
-        """Extract GQ from FORMAT/SAMPLE columns."""
-        fmt = format_col.split(":")
-        if "GQ" not in fmt:
-            return None
-        gq_idx = fmt.index("GQ")
-        vals = sample_col.split(":")
-        if gq_idx < len(vals):
-            try:
-                return int(vals[gq_idx])
-            except ValueError:
-                return None
-        return None
-
-    @staticmethod
-    def _extract_vaf(format_col: str, sample_col: str) -> Optional[float]:
-        """Extract VAF from FORMAT/SAMPLE columns (AD field)."""
-        fmt = format_col.split(":")
-        if "AD" not in fmt:
-            return None
-        ad_idx = fmt.index("AD")
-        vals = sample_col.split(":")
-        if ad_idx < len(vals):
-            ad_str = vals[ad_idx]
-            try:
-                ad_parts = ad_str.split(",")
-                if len(ad_parts) >= 2:
-                    ref_count = float(ad_parts[0])
-                    alt_count = float(ad_parts[1])
-                    total = ref_count + alt_count
-                    if total > 0:
-                        return round(alt_count / total, 4)
-            except (ValueError, ZeroDivisionError):
-                return None
-        return None
 
     # ------------------------------------------------------------------
     # Pre-filtering
@@ -392,12 +351,12 @@ class VCFAnnotator:
         if not index_path.exists():
             return set()
         try:
-            with open(index_path, "r", encoding='utf-8') as f:
+            with open(index_path, "r") as f:
                 missing = json.load(f)
             total_shards = missing.get("total_shards", 0)
             done = missing.get("completed_shards", [])
             return set(done)
-        except (ValueError, json.JSONDecodeError):
+        except Exception:
             return set()
 
     def _save_shard_atomic(self, shard_idx: int, data: list) -> None:
@@ -405,7 +364,7 @@ class VCFAnnotator:
         import os as _os
         shard_path = self._shard_path(shard_idx)
         tmp_path = Path(str(shard_path) + ".tmp")
-        with open(tmp_path, "w", encoding='utf-8') as f:
+        with open(tmp_path, "w") as f:
             json.dump(data, f, ensure_ascii=False)
         _os.replace(str(tmp_path), str(shard_path))
 
@@ -415,7 +374,7 @@ class VCFAnnotator:
         tmp_path = Path(str(index_path) + ".tmp")
         try:
             if index_path.exists():
-                with open(index_path, "r", encoding='utf-8') as f:
+                with open(index_path, "r") as f:
                     index = json.load(f)
             else:
                 index = {}
@@ -423,11 +382,11 @@ class VCFAnnotator:
             completed.add(shard_idx)
             index["completed_shards"] = sorted(completed)
             index["updated_at"] = datetime.now().isoformat()
-            with open(tmp_path, "w", encoding='utf-8') as f:
+            with open(tmp_path, "w") as f:
                 json.dump(index, f, ensure_ascii=False)
             import os as _os
             _os.replace(str(tmp_path), str(index_path))
-        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
+        except Exception:
             pass
 
     def _init_shard_dir(self, total_variants: int) -> None:
@@ -444,7 +403,7 @@ class VCFAnnotator:
                 "completed_shards": [],
                 "created_at": datetime.now().isoformat(),
             }
-            with open(index_path, "w", encoding='utf-8') as f:
+            with open(index_path, "w") as f:
                 json.dump(index, f, ensure_ascii=False)
 
     # ------------------------------------------------------------------
@@ -570,12 +529,10 @@ class VCFAnnotator:
         # VEP returns one entry per input line
         for entry, v in zip(data, batch):
             if not isinstance(entry, dict):
-                result = dict(v)
-                result.update({
+                results.append({
                     "transcript_consequences": [],
                     "vep_summary": {"error": "Invalid VEP response format"},
                 })
-                results.append(result)
                 continue
 
             # Summary info
@@ -603,30 +560,23 @@ class VCFAnnotator:
                     "exon": tc.get("exon", ""),
                     "intron": tc.get("intron", ""),
                     "protein_domains": tc.get("domains", []),
-                    # v0.10.1: Capture ClinVar from VEP to avoid MyVariant re-query
-                    "clin_sig": tc.get("clin_sig", ""),
-                    "clin_sig_allele": tc.get("clin_sig_allele", ""),
                 }
                 tx_list.append(tx)
 
-            result = dict(v)
-            result.update({
+            results.append({
                 "transcript_consequences": tx_list,
                 "vep_summary": summary,
             })
-            results.append(result)
 
         # v0.10.0 P2-2: VEP may return fewer results than input batch (filtered rows)
         # Pad remaining slots with error-marked entries so caller gets exactly len(batch) items
         missing = len(batch) - len(results)
         if missing > 0:
-            for v in batch[len(results):]:
-                result = dict(v)
-                result.update({
+            for _ in range(missing):
+                results.append({
                     "transcript_consequences": [],
                     "vep_summary": {"error": "VEP response shorter than input batch"},
                 })
-                results.append(result)
 
         return results
 
@@ -694,7 +644,7 @@ class VCFAnnotator:
                         "vep_summary": {"error": f"Local VEP exit {proc.returncode}"},
                     }
                 ] * len(variants)
-        except (RuntimeError, ValueError) as e:
+        except Exception as e:
             logger.error(f"Local VEP execution error: {e}")
             return [
                 {

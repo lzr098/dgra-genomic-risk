@@ -154,7 +154,7 @@ class GeneListSynchronizer:
                         merged[list_name] = list(genes)
                     else:
                         merged[list_name] = list(set(merged[list_name]) | set(genes))
-            except (RuntimeError, ValueError) as e:
+            except Exception as e:
                 self._log_sync_event("SYNC_FAILED", f"External sync failed: {e}")
                 # Silently continue with static + core
 
@@ -186,7 +186,7 @@ class GeneListSynchronizer:
         if not self.sources_config_path.exists():
             return {}
 
-        with open(self.sources_config_path, "r", encoding='utf-8') as f:
+        with open(self.sources_config_path, "r") as f:
             config = json.load(f)
 
         sources = config.get("sources", {})
@@ -199,7 +199,7 @@ class GeneListSynchronizer:
                 orphanet_result = await self._sync_orphanet(orphanet_cfg)
                 for k, v in orphanet_result.items():
                     all_synced[k] = list(set(all_synced.get(k, [])) | set(v))
-            except (RuntimeError, ValueError) as e:
+            except Exception as e:
                 self._log_sync_event("ORPHANET_FAILED", str(e))
 
         # OMIM (only if enabled + api_key present)
@@ -209,7 +209,7 @@ class GeneListSynchronizer:
                 omim_result = await self._sync_omim(omim_cfg)
                 for k, v in omim_result.items():
                     all_synced[k] = list(set(all_synced.get(k, [])) | set(v))
-            except (RuntimeError, ValueError) as e:
+            except Exception as e:
                 self._log_sync_event("OMIM_FAILED", str(e))
 
         return all_synced
@@ -258,7 +258,7 @@ class GeneListSynchronizer:
                                 "ORPHANET_OK",
                                 f"{orpha_id} -> {list_name}: {len(genes)} genes",
                             )
-                except (RuntimeError, ValueError) as e:
+                except Exception as e:
                     self._log_sync_event(
                         "ORPHANET_EXCEPTION",
                         f"{orpha_id} -> {e}",
@@ -322,12 +322,12 @@ class GeneListSynchronizer:
     def _load_static_lists(self, tissue_profile: str) -> Dict[str, List[str]]:
         """Load special_gene_lists from tissue_context.json for the given profile."""
         try:
-            with open(self.tissue_context_path, "r", encoding='utf-8') as f:
+            with open(self.tissue_context_path, "r") as f:
                 data = json.load(f)
             profiles = data.get("profiles", {})
             profile = profiles.get(tissue_profile, {})
             return profile.get("special_gene_lists", {})
-        except (ValueError, json.JSONDecodeError):
+        except Exception:
             return {}
 
     def _load_cached_lists(self, tissue_profile: str) -> Optional[Dict[str, List[str]]]:
@@ -353,7 +353,7 @@ class GeneListSynchronizer:
             conn.close()
             if row:
                 return json.loads(row[0])
-        except (ValueError, json.JSONDecodeError):
+        except Exception:
             pass
         return None
 
@@ -381,7 +381,7 @@ class GeneListSynchronizer:
             )
             conn.commit()
             conn.close()
-        except (ValueError, json.JSONDecodeError, sqlite3.Error) as e:
+        except Exception as e:
             self._log_sync_event("CACHE_SAVE_FAILED", str(e))
 
     def _is_cache_expired(self, tissue_profile: str) -> bool:
@@ -399,7 +399,7 @@ class GeneListSynchronizer:
             if row:
                 cached_at = datetime.fromisoformat(row[0])
                 return datetime.utcnow() - cached_at > timedelta(days=self.ttl_days)
-        except (ValueError):
+        except Exception:
             pass
         return True  # No cache or error → treat as expired
 
@@ -413,9 +413,9 @@ class GeneListSynchronizer:
             return merged
 
         try:
-            with open(self.user_lists_path, "r", encoding='utf-8') as f:
+            with open(self.user_lists_path, "r") as f:
                 user_cfg = json.load(f)
-        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
+        except Exception:
             return merged
 
         result = {k: list(v) for k, v in merged.items()}
@@ -464,9 +464,9 @@ class GeneListSynchronizer:
             return synced
 
         try:
-            with open(self.sources_config_path, "r", encoding='utf-8') as f:
+            with open(self.sources_config_path, "r") as f:
                 config = json.load(f)
-        except (FileNotFoundError, IsADirectoryError, PermissionError, ValueError, json.JSONDecodeError):
+        except Exception:
             return synced
 
         mapping = config.get("mapping_rules", {})
@@ -518,7 +518,7 @@ class GeneListSynchronizer:
             log_file = self.log_dir / f"gene_sync_{datetime.utcnow().strftime('%Y-%m-%d')}.log"
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{timestamp}] [{event_type}] {message}\n")
-        except (FileNotFoundError, IsADirectoryError, PermissionError):
+        except Exception:
             pass  # Logging must never fail
 
 
