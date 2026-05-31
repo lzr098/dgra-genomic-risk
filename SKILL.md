@@ -1,7 +1,7 @@
 ---
 name: gpa-genomic-phenotype
 description: |
-  GPA (Genomic Phenotype Association) v0.9.3。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx/gnomAD 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + SpliceAI 剪接预测集成 + gnomAD 频率自动查询 + Raw VCF 实时注释 + 疾病感知转录本选择。
+  GPA (Genomic Phenotype Association) v0.10.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx/gnomAD 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + SpliceAI 剪接预测集成 + gnomAD 频率自动查询 + Raw VCF 实时注释 + 疾病感知转录本选择 + 两阶段管线优化 + Preflight 健康检查。
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
@@ -31,7 +31,7 @@ description: |
 
 ---
 
-## ⚠️ 执行前必读：上下文确认规则（v0.5.1 新增）
+## ⚠️ 执行前必读：上下文确认规则（v0.10.0）
 
 **收到基因组变异数据时，禁止直接执行分析。必须先确认以下信息：**
 
@@ -212,6 +212,39 @@ python3 ~/.openclaw/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
 - 当存在歧义或 LLM 介入时，Markdown 报告新增 **转录本选择评估章节**
 - 列出 primary transcript、selection method、alternatives
 - 歧义案例标 ⚠️
+
+---
+
+### 两阶段管线优化（v0.10.1+）
+
+针对大型 VCF（>5,000 变异）的 API 调用优化。Phase 1 用本地规则快速 triage，Phase 2 仅对 Tier 1/2 候选变异调用外部 API。
+
+```bash
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --input-file large_wes.vcf.gz \
+  --tissue general \
+  --two-phase
+```
+
+**Phase 1**（本地，<30 秒）：VEP 注释 + 本地基因列表 → 过滤 >95% 常见 SNP/低影响变异
+**Phase 2**（API 仅查候选）：gnomAD、SpliceAI、表型 LLM 仅对候选变异执行
+
+典型 germline VCF 的 API 调用量减少 **50-200x**。
+
+---
+
+### Preflight 健康检查（v0.10.1+）
+
+每次接到全新分析任务时，可先执行可用性检查，确认依赖就绪后再启动耗时分析：
+
+```bash
+python3 ~/.workbuddy/skills/dgra-genomic-risk/scripts/dgra_cli_wrapper.py \
+  --input-file patient.vcf.gz \
+  --tissue hematopoietic \
+  --preflight
+```
+
+检查范围：Python 依赖包、在线 API 连通性（8 个 API）、本地文件/目录、磁盘空间、网络/代理环境。未就绪项自动标记，可选跳过或切换离线模式。
 
 ---
 
@@ -416,7 +449,16 @@ dgra-genomic-risk/
   config.json               # 元数据配置
   scripts/
     dgra_cli_wrapper.py     # ⭐ 推荐入口：agent 调用此 wrapper
-    dgra_core.py            # 核心分析引擎（async API-first）
+    dgra_core.py            # 核心分析引擎入口（向后兼容，~200行）
+    gpa_pipeline.py         # Pipeline 主流程（v0.10.0 God Module 拆分）
+    gpa_tier_classifier.py  # 三级分级 + 证据链（v0.10.0）
+    gpa_report.py           # Markdown/JSON 报告生成（v0.10.0）
+    gpa_phaser.py           # 相位分析（v0.10.0）
+    gpa_multi_hit.py        # 多基因命中检测（v0.10.0）
+    gpa_qc.py               # QC 检查（v0.10.0）
+    gpa_two_phase.py        # 两阶段管线优化（v0.10.1）
+    gpa_preflight.py        # Preflight 健康检查（v0.10.1）
+    gpa_workflow.py         # Workflow-as-Code 定义（v0.11.0）
     dgra_api.py             # API 查询层
     dgra_cache.py           # SQLite 缓存
     dgra_config.py          # 配置管理
