@@ -59,6 +59,57 @@ CSQ_TO_DGRA = {
 # Format auto-detection
 # =============================================================================
 
+def _detect_encoding(file_path: Path) -> str:
+    """Auto-detect file encoding for text files (CSV/TSV/TXT).
+
+    v0.10.2: Uses chardet if available, otherwise falls back to a heuristic
+    encoding chain: utf-8 -> utf-8-sig -> gbk -> gb2312 -> latin-1.
+    Handles BGE platform GBK-encoded CSVs gracefully.
+
+    Args:
+        file_path: Path to the text file.
+
+    Returns:
+        Best-guess encoding string (e.g., "utf-8", "gbk").
+    """
+    # Try chardet first for robust detection
+    try:
+        import chardet
+        with open(file_path, "rb") as f:
+            raw = f.read(8192)
+            if raw:
+                result = chardet.detect(raw)
+                if result and result.get("encoding") and result.get("confidence", 0) > 0.5:
+                    enc = result["encoding"]
+                    # Validate by decoding
+                    try:
+                        raw.decode(enc)
+                        return enc
+                    except (UnicodeDecodeError, LookupError):
+                        pass
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback: try encodings in order with strict decoding.
+    # latin-1 is excluded from scoring because it accepts any byte sequence;
+    # it is used only as an absolute last resort.
+    candidates = ("utf-8", "utf-8-sig", "gbk", "gb2312")
+    for encoding in candidates:
+        try:
+            with open(file_path, "r", encoding=encoding, errors="strict") as f:
+                f.read(8192)
+            return encoding
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        except Exception:
+            continue
+
+    # Absolute fallback: latin-1 never fails but may produce gibberish
+    return "latin-1"
+
+
 def auto_detect(path: Path) -> str:
     """Detect input format from extension + file content."""
     suffix = path.suffix.lower()
@@ -72,7 +123,8 @@ def auto_detect(path: Path) -> str:
         return "excel"
     if suffix in (".tsv", ".csv"):
         # Peek first line to distinguish TSV from CSV
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        encoding = _detect_encoding(path)
+        with open(path, "r", encoding=encoding, errors="replace") as f:
             first = f.readline()
             if "\t" in first:
                 return "tsv"
@@ -113,7 +165,9 @@ class TSVParser(InputParser):
 
     def parse(self, path: Path) -> List[Dict[str, Any]]:
         variants: List[Dict[str, Any]] = []
-        with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        # v0.10.2: Auto-detect encoding to handle GBK/UTF-8/latin-1 etc.
+        encoding = _detect_encoding(path)
+        with open(path, "r", encoding=encoding, errors="replace", newline="") as f:
             if self.dialect == "auto":
                 sample = f.read(8192)
                 f.seek(0)
@@ -624,7 +678,9 @@ class FreeTextParser:
     def parse(self, path: Path) -> List[Dict[str, Any]]:
         """Parse a text file with one variant per line (ignores blank/comment lines)."""
         variants: List[Dict[str, Any]] = []
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        # v0.10.2: Auto-detect encoding for free-text files too
+        encoding = _detect_encoding(path)
+        with open(path, "r", encoding=encoding, errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):

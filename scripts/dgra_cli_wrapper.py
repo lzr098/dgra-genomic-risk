@@ -25,6 +25,9 @@ from typing import List, Dict, Any, Optional
 # v0.5 P0-1: Unified input parsing layer
 from dgra_input_parsers import parse_input, FreeTextParser, auto_detect
 
+# v0.10.2: Auto two-phase and companion file detection
+from gpa_input import detect_input_type, InputType, _has_vcf_annotation
+
 
 # GPA core script path
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -183,6 +186,55 @@ _Analyzed via direct Python API (bypassed batch CLI for performance)._
         }
 
 
+def _find_companion_annotation(vcf_path: Path) -> Optional[Path]:
+    """Search the same directory for companion annotation files.
+
+    v0.10.2: Looks for pre-computed annotation files that may accompany a raw VCF.
+    Patterns: *base_annotation.csv, *annotation.csv, *.annotated.tsv, *annotation*.xlsx
+    """
+    directory = vcf_path.parent
+    base_name = vcf_path.stem
+    if base_name.endswith(".vcf"):
+        base_name = base_name[:-4]
+
+    # Search patterns in priority order
+    patterns = [
+        f"{base_name}*base_annotation.csv",
+        f"{base_name}*annotation.csv",
+        f"{base_name}*.annotated.tsv",
+        f"{base_name}*annotation*.xlsx",
+        "*base_annotation.csv",
+        "*annotation.csv",
+        "*.annotated.tsv",
+        "*annotation*.xlsx",
+    ]
+
+    for pattern in patterns:
+        matches = list(directory.glob(pattern))
+        for match in matches:
+            if match.is_file() and match != vcf_path:
+                return match
+    return None
+
+
+def _count_vcf_variants(vcf_path: Path) -> int:
+    """Count variants in a VCF file (excluding header lines).
+
+    v0.10.2: Simple line-count approach for VEP time estimation.
+    """
+    import gzip
+    count = 0
+    opener = gzip.open if str(vcf_path).endswith(".gz") else open
+    try:
+        with opener(vcf_path, "rt", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.startswith("#"):
+                    count += 1
+    except Exception:
+        pass
+    return count
+
+
 def _run_gpa_vcf_direct(
     input_path: Path,
     tissue: str = "general",
@@ -205,8 +257,12 @@ def _run_gpa_vcf_direct(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
+    two_phase: bool = False,
 ) -> Dict[str, Any]:
-    """Pass raw VCF directly to dgra_core.py which handles VEP annotation."""
+    """Pass raw VCF directly to dgra_core.py which handles VEP annotation.
+
+    v0.10.2: Supports --two-phase flag passthrough.
+    """
     import tempfile, subprocess, json as _json
     with tempfile.TemporaryDirectory(prefix="dgra_vcf_direct_") as tmpdir:
         tmp = Path(tmpdir)
@@ -251,6 +307,8 @@ def _run_gpa_vcf_direct(
             cmd.extend(["--annotator", annotator])
         if vep_cache:
             cmd.extend(["--vep-cache", vep_cache])
+        if two_phase:
+            cmd.append("--two-phase")
 
         try:
             result = subprocess.run(
@@ -316,6 +374,9 @@ def run_gpa_from_file(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
+    # v0.10.2: Two-phase pipeline and companion annotation file
+    two_phase: bool = False,
+    annotation_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -326,12 +387,63 @@ def run_gpa_from_file(
     v0.5 P1-9: Supports evidence_detail for evidence chain detail level.
     v0.5 P2-3: Supports config_path for YAML config file.
     v0.9.0: Supports raw VCF annotation with disease-aware transcript selection.
+    v0.10.2: Auto two-phase for raw VCF; companion annotation file detection.
     """
+    # v0.10.2: If --annotation-file is provided, parse it directly as TSV/CSV
+    if annotation_file is not None:
+        try:
+            variants = parse_input(annotation_file, fmt=None, annotation_fmt=annotation_fmt)
+        except Exception as e:
+            return {"success": False, "error": f"Failed to parse annotation file {annotation_file}: {e}"}
+        return run_gpa(
+            variants=variants,
+            tissue=tissue,
+            user_phenotypes=user_phenotypes,
+            offline=offline,
+            somatic=somatic,
+            target_population=target_population,
+            multi_organ=multi_organ,
+            force_sync=force_sync,
+            evidence_detail=evidence_detail,
+            database_version=database_version,
+            config_path=config_path,
+            filter_preset=filter_preset,
+            auto_batch=auto_batch,
+            batch_size=batch_size,
+            timeout_per_batch=timeout_per_batch,
+            max_batch_retries=max_batch_retries,
+            spliceai_enabled=spliceai_enabled,
+            spliceai_concurrency=spliceai_concurrency,
+            disease_description=disease_description,
+            annotator=annotator,
+            vep_cache=vep_cache,
+        )
+
     # v0.9.0 fix: When input is a raw VCF, pass it directly to dgra_core.py
     # instead of converting to TSV — the core module has its own VCF annotation
     # pipeline that handles VEP API + transcript selection.
     is_vcf = str(input_path).lower().endswith(('.vcf', '.vcf.gz', '.bcf'))
     if is_vcf:
+        # v0.10.2: Auto two-phase pipeline selection based on annotation status
+        input_type = detect_input_type(str(input_path))
+        auto_two_phase = False
+        if input_type == InputType.RAW_VCF and not two_phase:
+            auto_two_phase = True
+            print(f"[GPA] Auto-enabling two-phase pipeline for raw VCF (fast local triage + API enrichment)")
+
+        # v0.10.2: Companion annotation file detection for raw VCF
+        if input_type == InputType.RAW_VCF:
+            companion = _find_companion_annotation(input_path)
+            if companion is not None:
+                variant_count = _count_vcf_variants(input_path)
+                # VEP REST API estimate: (variant_count / 100) * 15 seconds per batch
+                est_seconds = (variant_count / 100.0) * 15.0
+                est_minutes = max(1, round(est_seconds / 60.0))
+                print(f"[GPA] Found potential companion annotation file: {companion.name}")
+                print(f"[GPA] Use companion file (faster) or run VEP REST API annotation (slower but up-to-date)?")
+                print(f"[GPA] Estimated VEP REST API time: ~{est_minutes} minutes for {variant_count} variants")
+                print(f"[GPA] Tip: re-run with --annotation-file {companion} to use the companion file")
+
         return _run_gpa_vcf_direct(
             input_path=input_path,
             tissue=tissue,
@@ -354,6 +466,7 @@ def run_gpa_from_file(
             disease_description=disease_description,
             annotator=annotator,
             vep_cache=vep_cache,
+            two_phase=two_phase or auto_two_phase,
         )
 
     try:
@@ -472,6 +585,9 @@ def run_gpa(
             batch_size=batch_size,
             timeout_per_batch=timeout_per_batch,
             max_retries=max_batch_retries,
+            # v0.10.13: Pass SpliceAI parameters through batch runner
+            spliceai_enabled=spliceai_enabled,
+            spliceai_concurrency=spliceai_concurrency,
         )
     
     if not variants:
@@ -612,6 +728,13 @@ def main():
                              "vep_api (Ensembl REST), vep_local (local VEP command). (v0.9.0)")
     parser.add_argument("--vep-cache", default=None,
                         help="Path to local VEP cache directory. Required for --annotator vep_local. (v0.9.0)")
+    # v0.10.2: Companion annotation file and two-phase pipeline
+    parser.add_argument("--annotation-file", type=Path, default=None,
+                        help="Path to a companion annotation file (TSV/CSV/Excel) to use instead of VEP REST API. "
+                             "Useful when a pre-annotated companion file exists alongside a raw VCF.")
+    parser.add_argument("--two-phase", action="store_true",
+                        help="Enable two-phase pipeline: fast local triage first, then API enrichment only for "
+                             "Tier 1/2 candidates. For raw VCFs, this is auto-enabled unless explicitly disabled. (v0.10.2)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
@@ -672,6 +795,9 @@ def main():
             disease_description=args.disease_description,
             annotator=args.annotator,
             vep_cache=args.vep_cache,
+            # v0.10.2: Two-phase pipeline and companion annotation file
+            two_phase=args.two_phase,
+            annotation_file=args.annotation_file,
         )
     elif args.free_text:
         try:

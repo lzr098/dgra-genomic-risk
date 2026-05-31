@@ -485,11 +485,17 @@ async def query_spliceai_batch(
     max_concurrency: int = 5,
     timeout: int = 30,
 ) -> Dict[str, SpliceAIResult]:
-    """批量查询 SpliceAI，供 gpa_pipeline.py 调用。
+    """批量查询 SpliceAI，供 gpa_pipeline.py 与 gpa_two_phase.py 调用。
 
     v0.9.5: Removed unused 'session' parameter. Each SpliceAIPredictor
     creates its own aiohttp ClientSession internally (with retry/fallback
     logic) — passing an external session was never actually used.
+
+    v0.10.13: Now handles ANY variant type (not just splice-relevant variants).
+    For non-splice variants, the Broad API may return empty scores or 404;
+    these are handled gracefully by returning delta_score=0.0, which is
+    valid evidence (confirms no splicing impact). The caller (two-phase
+    pipeline) attaches results to variant.spliceai_result for tier classification.
 
     Args:
         variants: 需要查询的变异列表（需有 chrom, pos, ref, alt 属性）

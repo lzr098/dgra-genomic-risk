@@ -590,49 +590,67 @@ async def _enrich_variant_frequencies(
     config: GPAConfig,
 ) -> None:
     """
-    Phase 2: gnomAD frequency lookup ONLY for candidate variants.
+    Phase 2: gnomAD frequency lookup ONLY for Tier 1/2 candidate variants.
+
+    v0.10.13 OPTIMIZATION: Skip gnomAD queries for Tier 3 variants entirely.
+    Phase 1 _fast_tier_classification() already assigns preliminary tiers.
+    We only enrich variants with preliminary tier 1 or 2, since Tier 3 variants
+    (common SNPs, low impact, high AF) do not need gnomAD frequency data for
+    final classification.
     """
     if not candidate_indices:
         return
 
     import aiohttp
     global_config = config.to_global()
-    candidates_no_af = [
+
+    # v0.10.13: Filter to Tier 1/2 candidates only before querying gnomAD
+    tier12_candidates_no_af = [
         variants[i] for i in candidate_indices
-        if variants[i].gnomad_af is None
+        if variants[i].gnomad_af is None and getattr(variants[i], 'tier', 3) in (1, 2)
     ]
 
-    if not candidates_no_af:
-        print(f"[GPA Phase 2] All candidates already have AF data — skipping gnomAD queries")
+    # Count how many were skipped due to Tier 3 status
+    tier3_skipped = [
+        variants[i] for i in candidate_indices
+        if variants[i].gnomad_af is None and getattr(variants[i], 'tier', 3) == 3
+    ]
+    if tier3_skipped:
+        print(f"[GPA Phase 2] gnomAD: skipping {len(tier3_skipped)} Tier 3 variants (no AF enrichment needed)")
+
+    if not tier12_candidates_no_af:
+        print(f"[GPA Phase 2] All Tier 1/2 candidates already have AF data — skipping gnomAD queries")
         return
 
-    print(f"[GPA Phase 2] gnomAD: querying {len(candidates_no_af)} candidate variants for AF")
+    print(f"[GPA Phase 2] gnomAD: querying {len(tier12_candidates_no_af)} Tier 1/2 candidate variants for AF")
 
-    # Try MyVariant.info batch first — query ALL candidates for gnomAD AF + ClinVar + CADD.
+    # Try MyVariant.info batch first — query Tier 1/2 candidates for gnomAD AF + ClinVar + CADD.
     # v0.10.4: All candidate variants get ClinVar/CADD regardless of consequence.
     # Frameshift/stop_gained may still have ClinVar conflict annotations or
     # additional phenotypic evidence that affects tier weighting.
+    # v0.10.13: Restricted to Tier 1/2 only to reduce API calls.
     try:
         from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
         mv_sem = asyncio.Semaphore(10)
         timeout_obj = aiohttp.ClientTimeout(total=120)
-        mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in candidates_no_af]
+        mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in tier12_candidates_no_af]
         # v0.10.4: Always fill ClinVar and CADD for all candidates
+        # v0.10.13: Only for Tier 1/2 candidates
         async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as mv_session:
             mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
-        mv_stats = apply_myvariant_results(candidates_no_af, mv_results)
+        mv_stats = apply_myvariant_results(tier12_candidates_no_af, mv_results)
         print(f"[GPA Phase 2] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, "
               f"{mv_stats['clinvar_filled']} ClinVar, "
               f"{mv_stats['cadd_filled']} CADD filled")
     except Exception as e:
         print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
 
-    # Fallback: gnomAD GraphQL ONLY for candidates still without AF
-    still_no_af = [v for v in candidates_no_af if v.gnomad_af is None]
+    # Fallback: gnomAD GraphQL ONLY for Tier 1/2 candidates still without AF
+    still_no_af = [v for v in tier12_candidates_no_af if v.gnomad_af is None]
     if not still_no_af:
         return
 
-    print(f"[GPA Phase 2] gnomAD GraphQL: querying {len(still_no_af)} candidates without AF")
+    print(f"[GPA Phase 2] gnomAD GraphQL: querying {len(still_no_af)} Tier 1/2 candidates without AF")
     cache = DGRACache(global_config.cache_db_path)
     async with DGRAAPIClient(global_config, cache) as client:
         gnomad_sem = asyncio.Semaphore(2)
@@ -653,8 +671,9 @@ async def _enrich_variant_frequencies(
 
         # v0.10.6 FIX: NCBI ClinVar direct query for variants still UNKNOWN after MyVariant.info.
         # MyVariant.info ClinVar coverage is incomplete; NCBI ESummary provides accurate data.
+        # v0.10.13: Only query Tier 1/2 variants for ClinVar.
         clinvar_unknown = [variants[i] for i in candidate_indices
-                          if variants[i].clinvar in (_UNKNOWN, "UNKNOWN", "")]
+                          if variants[i].clinvar in (_UNKNOWN, "UNKNOWN", "") and getattr(variants[i], 'tier', 3) in (1, 2)]
         if clinvar_unknown:
             # Consequence-aware filtering: skip intron/UTR where ClinVar is rarely informative
             cv_candidates = [v for v in clinvar_unknown if _variant_needs_clinvar(v)]
@@ -686,42 +705,59 @@ async def _enrich_spliceai(
     candidate_indices: List[int],
     config: GPAConfig,
 ) -> None:
-    """Phase 2: SpliceAI for candidate splice variants — AUTO-ENABLED in v0.10.7.
-    
+    """Phase 2: SpliceAI for ALL Tier 1/2 candidate variants — AUTO-ENABLED in v0.10.7.
+
     v0.10.7 CHANGE: Removed manual spliceai_enabled gate. SpliceAI is now
     automatically queried for any candidate variant with splice-relevant
     consequences. This ensures HIGH-impact splice variants (e.g. SAG c.72_75+15del)
     are always assessed without requiring user to pass --spliceai.
+
+    v0.10.13 OPTIMIZATION: SpliceAI is now queried for ALL Tier 1/2 variants,
+    not just those with splice-relevant consequences. Variants without splice
+    changes will return delta=0, which is valid evidence (confirms no splicing
+    impact). This provides comprehensive splicing evidence for all candidate
+    variants and enables splice-aware classification for missense and other
+    non-canonical variants that may still affect splicing.
     """
     if not candidate_indices:
         return
 
     from dgra_splice_predictor import (
-        query_spliceai_batch, should_query_spliceai, _cache_key as _splice_key
+        query_spliceai_batch, _cache_key as _splice_key
     )
 
-    candidates = [variants[i] for i in candidate_indices]
-    # v0.10.3: Use our consequence-aware filter in addition to should_query_spliceai
-    splice_candidates = [v for v in candidates if _variant_needs_spliceai(v)]
+    # v0.10.13: Query SpliceAI for ALL Tier 1/2 candidates, not just splice-relevant ones.
+    # The SpliceAI API handles non-splice variants gracefully (returns delta=0 or not_in_db).
+    # This ensures we have complete splicing evidence for every candidate variant.
+    tier12_candidates = [
+        variants[i] for i in candidate_indices
+        if getattr(variants[i], 'tier', 3) in (1, 2)
+    ]
 
-    if not splice_candidates:
-        print(f"[GPA Phase 2] SpliceAI: no splice-relevant variants among candidates — skipping")
+    if not tier12_candidates:
+        print(f"[GPA Phase 2] SpliceAI: no Tier 1/2 variants — skipping")
         return
 
-    print(f"[GPA Phase 2] SpliceAI: querying {len(splice_candidates)} candidate splice-relevant variants "
+    print(f"[GPA Phase 2] SpliceAI: querying {len(tier12_candidates)} Tier 1/2 candidate variants "
           f"(concurrency={getattr(config, 'spliceai_concurrency', 5)})")
 
     spliceai_sem = asyncio.Semaphore(getattr(config, 'spliceai_concurrency', 5))
-    spliceai_results = await query_spliceai_batch(splice_candidates, spliceai_sem)
+    spliceai_results = await query_spliceai_batch(tier12_candidates, spliceai_sem)
 
-    for v in candidates:
+    # Attach SpliceAI results to all Tier 1/2 candidates.
+    # For variants without splice changes, the API returns delta=0 or not_in_db,
+    # both of which are valid evidence entries.
+    for v in tier12_candidates:
         key = _splice_key(v.chrom, v.pos, v.ref, v.alt)
         if key in spliceai_results:
             v.spliceai_result = spliceai_results[key]
-        elif _variant_needs_spliceai(v):
+        else:
+            # Not queried or not in results — mark as not_in_db with null scores.
+            # delta_score=None is used by the tier classifier to distinguish
+            # "not queried" from "queried and delta=0".
             v.spliceai_result = {"source": "not_in_db", "delta_score": None, "predicted_impact": None}
 
-    print(f"[GPA Phase 2] SpliceAI: batch complete")
+    print(f"[GPA Phase 2] SpliceAI: batch complete for {len(tier12_candidates)} variants")
 
 
 async def _enrich_phenotype(
@@ -971,7 +1007,12 @@ async def _run_two_phase_pipeline_impl(
     # Phase 2.2: gnomAD frequency enrichment
     await _enrich_variant_frequencies(variants, all_candidate_indices, config)
 
-    # Phase 2.3: SpliceAI (if enabled)
+    # Phase 2.3: SpliceAI (auto-enabled for Tier 1/2 candidates in v0.10.7/0.10.13)
+    # v0.10.13: Enable SpliceAI flag so that classify_variant_tier uses the results.
+    # The two-phase pipeline auto-queries SpliceAI for all Tier 1/2 candidates,
+    # so we set spliceai_enabled=True to ensure the classifier evaluates upgrades/downgrades.
+    if all_candidate_indices:
+        config.spliceai_enabled = True
     await _enrich_spliceai(variants, all_candidate_indices, config)
 
     # Phase 2.4: Phenotype LLM matching

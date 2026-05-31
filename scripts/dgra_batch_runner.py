@@ -63,6 +63,9 @@ def run_batch(
     config_path: Optional[Path] = None,
     timeout: int = 300,
     batch_id: int = 0,
+    # v0.10.13: SpliceAI propagation
+    spliceai_enabled: bool = False,
+    spliceai_concurrency: int = 5,
 ) -> Dict[str, Any]:
     """Run a single batch of variants through GPA core."""
     
@@ -94,6 +97,10 @@ def run_batch(
             cmd.extend(["--phenotypes", user_phenotypes])
         if config_path:
             cmd.extend(["--config", str(config_path)])
+        # v0.10.13: Pass SpliceAI flag through to dgra_core.py
+        if spliceai_enabled:
+            cmd.append("--spliceai")
+            cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
 
         try:
             start = time.time()
@@ -267,6 +274,9 @@ def run_gpa_batched(
     batch_size: int = 500,
     timeout_per_batch: int = 300,
     max_retries: int = 1,
+    # v0.10.13: SpliceAI propagation
+    spliceai_enabled: bool = False,
+    spliceai_concurrency: int = 5,
 ) -> Dict[str, Any]:
     """Run GPA with automatic batching for large variant sets."""
     
@@ -285,6 +295,8 @@ def run_gpa_batched(
             offline=offline, somatic=somatic, target_population=target_population,
             evidence_detail=evidence_detail, config_path=config_path,
             timeout=timeout_per_batch, batch_id=0,
+            spliceai_enabled=spliceai_enabled,
+            spliceai_concurrency=spliceai_concurrency,
         )
     
     # Large set: split into batches
@@ -306,6 +318,8 @@ def run_gpa_batched(
                 offline=offline, somatic=somatic, target_population=target_population,
                 evidence_detail=evidence_detail, config_path=config_path,
                 timeout=timeout_per_batch, batch_id=batch_id,
+                spliceai_enabled=spliceai_enabled,
+                spliceai_concurrency=spliceai_concurrency,
             )
             
             if result.get("success"):

@@ -2105,7 +2105,13 @@ def main():
 
     # Single-organ path (original behavior)
     # v0.10.1: Two-phase pipeline for large VCF datasets
-    if getattr(args, 'two_phase', False) or getattr(config, 'two_phase', False):
+    # v0.10.2: Auto-enable two-phase for raw VCF unless explicitly overridden
+    two_phase_explicit = getattr(args, 'two_phase', False)
+    two_phase_enabled = two_phase_explicit or getattr(config, 'two_phase', False)
+    if not two_phase_enabled and input_type == InputType.RAW_VCF:
+        two_phase_enabled = True
+        print("[GPA] Auto-enabling two-phase pipeline for raw VCF (fast local triage + API enrichment for candidates)")
+    if two_phase_enabled:
         print("[GPA] Two-phase pipeline enabled — Phase 1: fast local triage, Phase 2: API enrichment for candidates only")
         from gpa_two_phase import run_two_phase_pipeline
         results = asyncio.run(run_two_phase_pipeline(variants_data, config=config, user_phenotypes=args.phenotypes, max_candidates=150))

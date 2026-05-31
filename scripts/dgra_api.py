@@ -1044,9 +1044,14 @@ class DGRAAPIClient:
         """
         Query gnomAD for variant allele frequency and constraint metrics.
         v0.5 P1-1: Population subgroup frequencies (EAS, AMR, AFR, NFE, SAS, etc.)
-        
+
         Uses GraphQL API. Returns structured frequency data including per-population AFs.
-        
+
+        NOTE (v0.10.13): Callers should filter variants BEFORE calling this method.
+        Only query gnomAD for Tier 1/2 candidate variants — skip Tier 3 variants
+        (common SNPs, low impact, high AF) to reduce unnecessary API calls.
+        The two-phase pipeline (_enrich_variant_frequencies) handles this filtering.
+
         Args:
             populations: List of population codes to query. Default: ["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN"]
         
