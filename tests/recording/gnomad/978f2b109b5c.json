@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "api_name": "gnomad",
+    "variant_id": "TP53-17-7675088-C-T",
+    "recorded_at": "2026-05-31T08:57:42.987937+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "data": {
+        "variant": {
+          "variantId": "17-7675088-C-T",
+          "exome": {
+            "af": 4.104365813916263e-06,
+            "ac": 6,
+            "an": 1461858
+          },
+          "genome": {
+            "af": 6.570129562954982e-06,
+            "ac": 1,
+            "an": 152204
+          }
+        }
+      }
+    }
+  }
+}

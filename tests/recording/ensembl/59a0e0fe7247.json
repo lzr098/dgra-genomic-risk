@@ -1,0 +1,176 @@
+{
+  "meta": {
+    "api_name": "ensembl",
+    "variant_id": "transcript-TP53-ENST00000269305",
+    "recorded_at": "2026-05-31T08:57:59.449365+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "end": 7687490,
+      "biotype": "protein_coding",
+      "db_type": "core",
+      "logic_name": "havana_homo_sapiens",
+      "source": "havana",
+      "Parent": "ENSG00000141510",
+      "Translation": {
+        "db_type": "core",
+        "object_type": "Translation",
+        "end": 7676594,
+        "version": 4,
+        "Parent": "ENST00000269305",
+        "length": 393,
+        "id": "ENSP00000269305",
+        "start": 7669609,
+        "species": "homo_sapiens"
+      },
+      "length": 2512,
+      "id": "ENST00000269305",
+      "is_canonical": 1,
+      "display_name": "TP53-201",
+      "Exon": [
+        {
+          "seq_region_name": "17",
+          "start": 7687377,
+          "strand": -1,
+          "id": "ENSE00003753508",
+          "species": "homo_sapiens",
+          "db_type": "core",
+          "end": 7687490,
+          "version": 2,
+          "assembly_name": "GRCh38",
+          "object_type": "Exon"
+        },
+        {
+          "db_type": "core",
+          "end": 7676622,
+          "version": 1,
+          "assembly_name": "GRCh38",
+          "object_type": "Exon",
+          "seq_region_name": "17",
+          "strand": -1,
+          "start": 7676521,
+          "id": "ENSE00004023728",
+          "species": "homo_sapiens"
+        },
+        {
+          "species": "homo_sapiens",
+          "strand": -1,
+          "start": 7676382,
+          "seq_region_name": "17",
+          "id": "ENSE00002419584",
+          "object_type": "Exon",
+          "assembly_name": "GRCh38",
+          "end": 7676403,
+          "version": 1,
+          "db_type": "core"
+        },
+        {
+          "id": "ENSE00003625790",
+          "strand": -1,
+          "start": 7675994,
+          "seq_region_name": "17",
+          "species": "homo_sapiens",
+          "db_type": "core",
+          "object_type": "Exon",
+          "assembly_name": "GRCh38",
+          "end": 7676272,
+          "version": 1
+        },
+        {
+          "version": 1,
+          "end": 7675236,
+          "assembly_name": "GRCh38",
+          "object_type": "Exon",
+          "db_type": "core",
+          "species": "homo_sapiens",
+          "seq_region_name": "17",
+          "strand": -1,
+          "start": 7675053,
+          "id": "ENSE00003518480"
+        },
+        {
+          "id": "ENSE00003723991",
+          "seq_region_name": "17",
+          "strand": -1,
+          "start": 7674859,
+          "species": "homo_sapiens",
+          "db_type": "core",
+          "assembly_name": "GRCh38",
+          "end": 7674971,
+          "version": 1,
+          "object_type": "Exon"
+        },
+        {
+          "db_type": "core",
+          "object_type": "Exon",
+          "version": 1,
+          "end": 7674290,
+          "assembly_name": "GRCh38",
+          "id": "ENSE00003712342",
+          "start": 7674181,
+          "strand": -1,
+          "seq_region_name": "17",
+          "species": "homo_sapiens"
+        },
+        {
+          "end": 7673837,
+          "version": 1,
+          "assembly_name": "GRCh38",
+          "object_type": "Exon",
+          "db_type": "core",
+          "species": "homo_sapiens",
+          "id": "ENSE00003725258",
+          "seq_region_name": "17",
+          "start": 7673701,
+          "strand": -1
+        },
+        {
+          "id": "ENSE00003786593",
+          "start": 7673535,
+          "strand": -1,
+          "seq_region_name": "17",
+          "species": "homo_sapiens",
+          "db_type": "core",
+          "object_type": "Exon",
+          "end": 7673608,
+          "assembly_name": "GRCh38",
+          "version": 1
+        },
+        {
+          "db_type": "core",
+          "end": 7670715,
+          "assembly_name": "GRCh38",
+          "version": 1,
+          "object_type": "Exon",
+          "seq_region_name": "17",
+          "start": 7670609,
+          "strand": -1,
+          "id": "ENSE00003545950",
+          "species": "homo_sapiens"
+        },
+        {
+          "db_type": "core",
+          "end": 7669690,
+          "assembly_name": "GRCh38",
+          "version": 1,
+          "object_type": "Exon",
+          "id": "ENSE00004023724",
+          "seq_region_name": "17",
+          "strand": -1,
+          "start": 7668421,
+          "species": "homo_sapiens"
+        }
+      ],
+      "version": 9,
+      "assembly_name": "GRCh38",
+      "object_type": "Transcript",
+      "species": "homo_sapiens",
+      "gencode_primary": 1,
+      "seq_region_name": "17",
+      "start": 7668421,
+      "strand": -1
+    }
+  }
+}

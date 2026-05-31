@@ -1,0 +1,19 @@
+[run]
+source = scripts
+omit =
+    scripts/test_*.py
+    scripts/fix_except_exception.py
+    scripts/convert_csv_to_gpa.py
+    scripts/_backup_refactor/*
+    scripts/BLACKBOX_TEST_PLAN_v010.md
+
+[report]
+skip_covered = False
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:

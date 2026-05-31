@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "api_name": "gtex",
+    "variant_id": "TP53",
+    "recorded_at": "2026-05-31T08:58:00.984458+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "data": [
+        {
+          "chromosome": "chr17",
+          "dataSource": "HAVANA",
+          "description": "tumor protein p53 [Source:HGNC Symbol;Acc:HGNC:11998]",
+          "end": 7687550,
+          "entrezGeneId": 7157,
+          "gencodeId": "ENSG00000141510.16",
+          "gencodeVersion": "v26",
+          "geneStatus": "",
+          "geneSymbol": "TP53",
+          "geneSymbolUpper": "TP53",
+          "geneType": "protein coding",
+          "genomeBuild": "GRCh38/hg38",
+          "start": 7661779,
+          "strand": "-",
+          "tss": 7687550
+        }
+      ],
+      "paging_info": {
+        "numberOfPages": 1,
+        "page": 0,
+        "maxItemsPerPage": 250,
+        "totalNumberOfItems": 1
+      }
+    }
+  }
+}

@@ -333,7 +333,7 @@ def test_version_module_exists():
     from version import __version__
 
     assert isinstance(__version__, str)
-    assert __version__.startswith("0.9.")
+    assert __version__.startswith("0.10.")
 
 
 def test_core_imports_version():

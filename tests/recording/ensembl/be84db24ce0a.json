@@ -1,0 +1,627 @@
+{
+  "meta": {
+    "api_name": "ensembl",
+    "variant_id": "BRCA1-17-43044295-T-G",
+    "recorded_at": "2026-05-31T08:57:40.597779+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": [
+      {
+        "transcript_consequences": [
+          {
+            "gene_id": "ENSG00000012048",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "hgvsc": "ENST00000352993.7:c.*1383A>C",
+            "protein_id": "ENSP00000312236",
+            "exon": "22/22",
+            "cdna_start": 3668,
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "transcript_id": "ENST00000352993",
+            "hgnc_id": "HGNC:1100",
+            "strand": -1,
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "variant_allele": "G",
+            "cdna_end": 3668
+          },
+          {
+            "gene_id": "ENSG00000012048",
+            "hgvsc": "ENST00000357654.9:c.*1383A>C",
+            "protein_id": "ENSP00000350283",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "canonical": 1,
+            "exon": "23/23",
+            "cdna_start": 7088,
+            "hgnc_id": "HGNC:1100",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "transcript_id": "ENST00000357654",
+            "strand": -1,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "cdna_end": 7088,
+            "variant_allele": "G"
+          },
+          {
+            "gene_id": "ENSG00000012048",
+            "protein_id": "ENSP00000418548",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "gene_symbol": "BRCA1",
+            "biotype": "nonsense_mediated_decay",
+            "distance": 1383,
+            "hgnc_id": "HGNC:1100",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "transcript_id": "ENST00000461221",
+            "variant_allele": "G"
+          },
+          {
+            "hgnc_id": "HGNC:1100",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "transcript_id": "ENST00000461574",
+            "variant_allele": "G",
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "distance": 9,
+            "protein_id": "ENSP00000417241",
+            "impact": "MODIFIER",
+            "strand": -1,
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "transcript_id": "ENST00000468300",
+            "variant_allele": "G",
+            "hgnc_id": "HGNC:1100",
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "distance": 510,
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "protein_id": "ENSP00000417148",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "strand": -1,
+            "protein_id": "ENSP00000419274",
+            "gene_id": "ENSG00000012048",
+            "transcript_id": "ENST00000470026",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "hgnc_id": "HGNC:1100",
+            "distance": 9,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1"
+          },
+          {
+            "strand": -1,
+            "variant_allele": "G",
+            "cdna_end": 7270,
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "hgvsc": "ENST00000471181.7:c.*1383A>C",
+            "protein_id": "ENSP00000418960",
+            "gene_id": "ENSG00000012048",
+            "transcript_id": "ENST00000471181",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "hgnc_id": "HGNC:1100",
+            "exon": "24/24",
+            "cdna_start": 7270
+          },
+          {
+            "cdna_start": 6962,
+            "exon": "21/21",
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000473961",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "gene_id": "ENSG00000012048",
+            "protein_id": "ENSP00000420201",
+            "hgvsc": "ENST00000473961.6:c.*1383A>C",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "cdna_end": 6962,
+            "variant_allele": "G",
+            "strand": -1
+          },
+          {
+            "protein_id": "ENSP00000417554",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "strand": -1,
+            "gene_id": "ENSG00000012048",
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000476777",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "distance": 3,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1"
+          },
+          {
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "variant_allele": "G",
+            "cdna_end": 7010,
+            "strand": -1,
+            "cdna_start": 7010,
+            "exon": "22/22",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "transcript_id": "ENST00000477152",
+            "hgnc_id": "HGNC:1100",
+            "gene_id": "ENSG00000012048",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "hgvsc": "ENST00000477152.6:c.*1383A>C",
+            "protein_id": "ENSP00000419988"
+          },
+          {
+            "variant_allele": "G",
+            "cdna_end": 3765,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "strand": -1,
+            "transcript_id": "ENST00000478531",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "hgnc_id": "HGNC:1100",
+            "cdna_start": 3765,
+            "exon": "23/23",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000420412",
+            "hgvsc": "ENST00000478531.6:c.*1383A>C",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "hgnc_id": "HGNC:1100",
+            "variant_allele": "G",
+            "transcript_id": "ENST00000484087",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "distance": 1139,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "protein_id": "ENSP00000419481",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "variant_allele": "G",
+            "cdna_end": 7056,
+            "strand": -1,
+            "cdna_start": 7056,
+            "exon": "22/22",
+            "transcript_id": "ENST00000489037",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "hgnc_id": "HGNC:1100",
+            "gene_id": "ENSG00000012048",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000420781",
+            "hgvsc": "ENST00000489037.2:c.*1383A>C"
+          },
+          {
+            "distance": 1383,
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000491747",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "gene_id": "ENSG00000012048",
+            "protein_id": "ENSP00000420705",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER"
+          },
+          {
+            "protein_id": "ENSP00000418775",
+            "impact": "MODIFIER",
+            "strand": -1,
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000012048",
+            "hgnc_id": "HGNC:1100",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "transcript_id": "ENST00000493795",
+            "variant_allele": "G",
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "distance": 1334
+          },
+          {
+            "protein_id": "ENSP00000418819",
+            "hgvsc": "ENST00000493919.6:c.*1383A>C",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "gene_id": "ENSG00000012048",
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000493919",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "exon": "22/22",
+            "cdna_start": 3757,
+            "strand": -1,
+            "cdna_end": 3757,
+            "variant_allele": "G",
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding"
+          },
+          {
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "variant_allele": "G",
+            "cdna_end": 7168,
+            "strand": -1,
+            "cdna_start": 7168,
+            "exon": "23/23",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "transcript_id": "ENST00000494123",
+            "hgnc_id": "HGNC:1100",
+            "gene_id": "ENSG00000012048",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "hgvsc": "ENST00000494123.6:c.*1383A>C",
+            "protein_id": "ENSP00000419103"
+          },
+          {
+            "gene_id": "ENSG00000012048",
+            "protein_id": "ENSP00000418986",
+            "hgvsc": "ENST00000497488.2:c.*1383A>C",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "cdna_start": 6335,
+            "exon": "15/15",
+            "hgnc_id": "HGNC:1100",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "transcript_id": "ENST00000497488",
+            "strand": -1,
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "cdna_end": 6335,
+            "variant_allele": "G"
+          },
+          {
+            "protein_id": "ENSP00000465818",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_id": "ENSG00000012048",
+            "hgnc_id": "HGNC:1100",
+            "variant_allele": "G",
+            "transcript_id": "ENST00000586385",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "distance": 1268,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1"
+          },
+          {
+            "gene_id": "ENSG00000012048",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "protein_id": "ENSP00000467329",
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "distance": 1268,
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "transcript_id": "ENST00000591534",
+            "variant_allele": "G",
+            "hgnc_id": "HGNC:1100"
+          },
+          {
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "protein_id": "ENSP00000465347",
+            "gene_id": "ENSG00000012048",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "transcript_id": "ENST00000591849",
+            "variant_allele": "G",
+            "hgnc_id": "HGNC:1100",
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "distance": 1268
+          },
+          {
+            "transcript_id": "ENST00000618469",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "hgnc_id": "HGNC:1100",
+            "distance": 9,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "strand": -1,
+            "protein_id": "ENSP00000478114",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "cdna_start": 6991,
+            "exon": "21/21",
+            "transcript_id": "ENST00000634433",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "hgnc_id": "HGNC:1100",
+            "gene_id": "ENSG00000012048",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000489431",
+            "hgvsc": "ENST00000634433.2:c.*1383A>C",
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "variant_allele": "G",
+            "cdna_end": 6991,
+            "strand": -1
+          },
+          {
+            "hgnc_id": "HGNC:1100",
+            "variant_allele": "G",
+            "transcript_id": "ENST00000644379",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "distance": 791,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "protein_id": "ENSP00000496570",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "hgnc_id": "HGNC:1100",
+            "variant_allele": "G",
+            "transcript_id": "ENST00000644555",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "distance": 9,
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "protein_id": "ENSP00000494614",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "strand": -1,
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "strand": -1,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "variant_allele": "G",
+            "cdna_end": 7320,
+            "gene_id": "ENSG00000012048",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "hgvsc": "ENST00000652672.2:c.*1383A>C",
+            "protein_id": "ENSP00000498906",
+            "cdna_start": 7320,
+            "exon": "24/24",
+            "transcript_id": "ENST00000652672",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "hgnc_id": "HGNC:1100"
+          },
+          {
+            "gene_id": "ENSG00000012048",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "distance": 7,
+            "biotype": "retained_intron",
+            "gene_symbol": "BRCA1",
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000700081",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ]
+          },
+          {
+            "gene_id": "ENSG00000012048",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "strand": -1,
+            "distance": 686,
+            "biotype": "retained_intron",
+            "gene_symbol": "BRCA1",
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000700082",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ]
+          },
+          {
+            "distance": 9,
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding",
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000713676",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "gene_id": "ENSG00000012048",
+            "protein_id": "ENSP00000518978",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER"
+          },
+          {
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "variant_allele": "G",
+            "transcript_id": "ENST00000899954",
+            "hgnc_id": "HGNC:1100",
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "distance": 510,
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "protein_id": "ENSP00000570013",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "cdna_end": 3888,
+            "variant_allele": "G",
+            "strand": -1,
+            "exon": "23/23",
+            "cdna_start": 3888,
+            "hgnc_id": "HGNC:1100",
+            "transcript_id": "ENST00000921914",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "gene_id": "ENSG00000012048",
+            "protein_id": "ENSP00000591973",
+            "hgvsc": "ENST00000921914.1:c.*1383A>C",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER"
+          },
+          {
+            "exon": "23/23",
+            "cdna_start": 4313,
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "transcript_id": "ENST00000921915",
+            "hgnc_id": "HGNC:1100",
+            "gene_id": "ENSG00000012048",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "hgvsc": "ENST00000921915.1:c.*1383A>C",
+            "protein_id": "ENSP00000591974",
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "variant_allele": "G",
+            "cdna_end": 4313,
+            "strand": -1
+          },
+          {
+            "protein_id": "ENSP00000591975",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "gene_id": "ENSG00000012048",
+            "hgnc_id": "HGNC:1100",
+            "variant_allele": "G",
+            "transcript_id": "ENST00000921916",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "distance": 9,
+            "gene_symbol": "BRCA1",
+            "biotype": "protein_coding"
+          },
+          {
+            "transcript_id": "ENST00000945268",
+            "variant_allele": "G",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "hgnc_id": "HGNC:1100",
+            "distance": 4,
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "gene_symbol_source": "HGNC",
+            "strand": -1,
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000615327",
+            "gene_id": "ENSG00000012048"
+          },
+          {
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "variant_allele": "G",
+            "transcript_id": "ENST00000945269",
+            "hgnc_id": "HGNC:1100",
+            "biotype": "protein_coding",
+            "gene_symbol": "BRCA1",
+            "distance": 529,
+            "impact": "MODIFIER",
+            "strand": -1,
+            "gene_symbol_source": "HGNC",
+            "protein_id": "ENSP00000615328",
+            "gene_id": "ENSG00000012048"
+          }
+        ],
+        "seq_region_name": "17",
+        "assembly_name": "GRCh38",
+        "start": 43044295,
+        "allele_string": "T/G",
+        "strand": 1,
+        "most_severe_consequence": "3_prime_UTR_variant",
+        "id": ".",
+        "input": "17 43044295 . T G . . .",
+        "end": 43044295
+      }
+    ]
+  }
+}

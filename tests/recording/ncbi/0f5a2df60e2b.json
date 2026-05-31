@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "api_name": "ncbi",
+    "variant_id": "esearch-TP53",
+    "recorded_at": "2026-05-31T08:57:46.704834+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "header": {
+        "type": "esearch",
+        "version": "0.3"
+      },
+      "esearchresult": {
+        "count": "3987",
+        "retmax": "5",
+        "retstart": "0",
+        "idlist": [
+          "4849844",
+          "4848020",
+          "4842681",
+          "4842680",
+          "4842679"
+        ],
+        "translationset": [],
+        "translationstack": [
+          {
+            "term": "TP53[Gene]",
+            "field": "Gene",
+            "count": "3987",
+            "explode": "N"
+          },
+          "GROUP"
+        ],
+        "querytranslation": "TP53[Gene]"
+      }
+    }
+  }
+}

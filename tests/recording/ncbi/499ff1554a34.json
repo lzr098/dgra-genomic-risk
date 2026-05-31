@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "api_name": "ncbi",
+    "variant_id": "esearch-BRCA1",
+    "recorded_at": "2026-05-31T08:57:46.945103+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "header": {
+        "type": "esearch",
+        "version": "0.3"
+      },
+      "esearchresult": {
+        "count": "15893",
+        "retmax": "5",
+        "retstart": "0",
+        "idlist": [
+          "4850689",
+          "4849514",
+          "4848953",
+          "4848411",
+          "4845640"
+        ],
+        "translationset": [],
+        "translationstack": [
+          {
+            "term": "BRCA1[Gene]",
+            "field": "Gene",
+            "count": "15893",
+            "explode": "N"
+          },
+          "GROUP"
+        ],
+        "querytranslation": "BRCA1[Gene]"
+      }
+    }
+  }
+}

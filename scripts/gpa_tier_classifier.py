@@ -27,6 +27,13 @@ from dgra_core import (
 )
 
 
+# Helper: uniform accessor for spliceai_result (supports both dict and dataclass)
+def _sa_get(sa, key, default=None):
+    if isinstance(sa, dict):
+        return sa.get(key, default)
+    return getattr(sa, key, default)
+
+
 # v0.7 Phase 3: Rare disease gene list (from gene_phenotype_map.json)
 _RARE_DISEASE_GENES: Optional[set] = None
 
@@ -727,11 +734,11 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     _VALID_SA_SOURCES = {"spliceai", "spliceai_lookup", "vep_rest"}
                     if getattr(config, 'spliceai_enabled', False) and variant.spliceai_result:
                         sa = variant.spliceai_result
-                        sa_source = getattr(sa, "source", "")
-                        sa_delta = getattr(sa, "delta_score", 0.0) or 0.0
+                        sa_source = _sa_get(sa, "source", "")
+                        sa_delta = _sa_get(sa, "delta_score", 0.0) or 0.0
                         if sa_source in _VALID_SA_SOURCES:
                             if sa_delta >= 0.5:
-                                _add_evidence("SpliceAI", f"SpliceAI strong (delta={sa_delta:.2f}) for {variant.consequence} — strengthens Tier 1 splice evidence", weight=0.6, confidence="high", raw_data={"delta_score": sa_delta, "details": getattr(sa, 'raw_response', None)})
+                                _add_evidence("SpliceAI", f"SpliceAI strong (delta={sa_delta:.2f}) for {variant.consequence} — strengthens Tier 1 splice evidence", weight=0.6, confidence="high", raw_data={"delta_score": sa_delta, "details": _sa_get(sa, 'raw_response', None)})
                                 actions.append(f"SpliceAI predicts strong splice disruption (delta={sa_delta:.2f}) — confirm via RNA-seq")
                             elif sa_delta == 0.0:
                                 _add_evidence("SpliceAI", f"SpliceAI delta=0 — no splice change predicted for {variant.consequence}, downgrading from Tier 1", weight=-0.5, confidence="high", raw_data={"delta_score": 0.0, "predicted_impact": "none"})
@@ -786,7 +793,7 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
             _VALID_SA_SOURCES = {"spliceai", "spliceai_lookup", "vep_rest"}
             if getattr(config, 'spliceai_enabled', False) and variant.spliceai_result:
                 sa = variant.spliceai_result
-                if getattr(sa, "source", "") in _VALID_SA_SOURCES and getattr(sa, "delta_score", 0.0) == 0.0:
+                if _sa_get(sa, "source", "") in _VALID_SA_SOURCES and _sa_get(sa, "delta_score", 0.0) == 0.0:
                     _add_evidence("SpliceAI", f"SpliceAI delta=0 — no splice change predicted for {variant.consequence}, downgrading from Tier 2", weight=-0.5, confidence="high", raw_data={"delta_score": 0.0, "predicted_impact": "none"})
                     actions.append("SpliceAI predicts no splice disruption — VEP HIGH may be overcalled; consider RNA-seq validation")
                     variant.evidence_chain = evidence_chain
@@ -893,14 +900,14 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     _VALID_SA_SOURCES = {"spliceai", "spliceai_lookup", "vep_rest"}
     if getattr(config, 'spliceai_enabled', False) and variant.spliceai_result:
         sa = variant.spliceai_result
-        source = getattr(sa, 'source', 'unknown')
+        source = _sa_get(sa, 'source', 'unknown')
         if source in _VALID_SA_SOURCES:
-            delta = getattr(sa, 'delta_score', None)
+            delta = _sa_get(sa, 'delta_score', None)
             if delta is not None:
-                impact = getattr(sa, 'predicted_impact', 'none')
+                impact = _sa_get(sa, 'predicted_impact', 'none')
                 if impact == "strong" and delta >= 0.5:
                     # Strong splice prediction for a Tier 3 variant → upgrade to Tier 2
-                    _add_evidence("SpliceAI", f"SpliceAI strong (delta={delta:.2f}) for {variant.consequence} -> upgrade to Tier 2", weight=0.8, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": getattr(sa, 'raw_response', None)})
+                    _add_evidence("SpliceAI", f"SpliceAI strong (delta={delta:.2f}) for {variant.consequence} -> upgrade to Tier 2", weight=0.8, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": _sa_get(sa, 'raw_response', None)})
                     actions.append("SpliceAI predicts strong splice disruption - confirm via RNA-seq or functional assay")
                     variant.evidence_chain = evidence_chain
                     upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
@@ -908,10 +915,10 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                     variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
                     return 2, f"SpliceAI strong splice prediction (delta={delta:.2f}) for {gene} {variant.consequence} - upgraded from Tier 3", actions
                 elif impact == "moderate" and delta >= 0.2:
-                    _add_evidence("SpliceAI", f"SpliceAI moderate (delta={delta:.2f}) for {variant.consequence}", weight=0.4, confidence="medium", raw_data={"delta_score": delta, "predicted_impact": impact, "details": getattr(sa, 'raw_response', None)})
+                    _add_evidence("SpliceAI", f"SpliceAI moderate (delta={delta:.2f}) for {variant.consequence}", weight=0.4, confidence="medium", raw_data={"delta_score": delta, "predicted_impact": impact, "details": _sa_get(sa, 'raw_response', None)})
                 elif impact in ("weak", "none") and delta == 0.0:
                     # No predicted splice change - supports VEP overcall, keep Tier 3
-                    _add_evidence("SpliceAI", f"SpliceAI delta=0 - no splice change predicted for {variant.consequence}", weight=-0.5, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": getattr(sa, 'raw_response', None)})
+                    _add_evidence("SpliceAI", f"SpliceAI delta=0 - no splice change predicted for {variant.consequence}", weight=-0.5, confidence="high", raw_data={"delta_score": delta, "predicted_impact": impact, "details": _sa_get(sa, 'raw_response', None)})
         elif source == "api_error":
             variant.qc_flags.append("SPLICEAI_API_ERROR")
         elif source == "not_in_db":

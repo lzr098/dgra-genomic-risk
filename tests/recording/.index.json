@@ -1,0 +1,18 @@
+{
+  "TP53-17-7675088-C-T": "gnomad/978f2b109b5c.json",
+  "BRCA1-17-43044295-T-G": "gnomad/be84db24ce0a.json",
+  "DMD-X-31140024-C-T": "gnomad/20ff0b6c90b0.json",
+  "CFTR-7-117559590-AT-A": "gnomad/b25341d70985.json",
+  "TP53": "gtex/c49ca96a258c.json",
+  "BRCA1": "gtex/aa389e880a9c.json",
+  "DMD": "gtex/c335b067dfb8.json",
+  "esearch-TP53": "ncbi/0f5a2df60e2b.json",
+  "esearch-BRCA1": "ncbi/499ff1554a34.json",
+  "esearch-DMD": "ncbi/16f91e2383d4.json",
+  "efetch-BRCA1-4850689": "ncbi/e44dbe5f8d7d.json",
+  "lookup-TP53": "ensembl/2dd1a0ddef8c.json",
+  "lookup-BRCA1": "ensembl/7df141636bbf.json",
+  "lookup-DMD": "ensembl/19a13f95c46d.json",
+  "transcript-TP53-ENST00000269305": "ensembl/59a0e0fe7247.json",
+  "transcript-BRCA1-ENST00000357654": "ensembl/bb7522783c72.json"
+}

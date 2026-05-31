@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "api_name": "gnomad",
+    "variant_id": "BRCA1-17-43044295-T-G",
+    "recorded_at": "2026-05-31T08:57:43.249921+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "errors": [
+        {
+          "message": "Variant not found"
+        }
+      ],
+      "data": {
+        "variant": null
+      }
+    }
+  }
+}

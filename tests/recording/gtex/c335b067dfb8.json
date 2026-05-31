@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "api_name": "gtex",
+    "variant_id": "DMD",
+    "recorded_at": "2026-05-31T08:58:02.619261+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "data": [
+        {
+          "chromosome": "chrX",
+          "dataSource": "HAVANA",
+          "description": "dystrophin [Source:HGNC Symbol;Acc:HGNC:2928]",
+          "end": 33339441,
+          "entrezGeneId": 1756,
+          "gencodeId": "ENSG00000198947.15",
+          "gencodeVersion": "v26",
+          "geneStatus": "",
+          "geneSymbol": "DMD",
+          "geneSymbolUpper": "DMD",
+          "geneType": "protein coding",
+          "genomeBuild": "GRCh38/hg38",
+          "start": 31097677,
+          "strand": "-",
+          "tss": 33339441
+        }
+      ],
+      "paging_info": {
+        "numberOfPages": 1,
+        "page": 0,
+        "maxItemsPerPage": 250,
+        "totalNumberOfItems": 1
+      }
+    }
+  }
+}

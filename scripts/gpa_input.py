@@ -15,6 +15,43 @@ from typing import List, Dict, Any, Optional
 from dgra_input_parsers import VEP_ANNOTATION_FIELD
 
 
+def parse_annotated_vcf(vcf_path: str, sample_idx: int = 0) -> List[Dict[str, Any]]:
+    """
+    Parse a VEP-annotated VCF (INFO/CSQ) into dgra_core variants_data format.
+
+    This is a thin wrapper around dgra_input_parsers.VCFParser, which already
+    handles CSQ header extraction, canonical transcript selection, and
+    FORMAT field (GT/DP/GQ/VAF) extraction.
+
+    Args:
+        vcf_path: Path to annotated VCF (.vcf or .vcf.gz)
+        sample_idx: Sample column index (default 0, first sample)
+
+    Returns:
+        List of variant dicts with keys: CHROM, POS, REF, ALT, GENE, Feature,
+        EXON, IMPACT, Consequence, HGVSc, HGVSp, CLIN_SIG, GT, DP, GQ, VAF, gnomAD_AF
+
+    Raises:
+        ImportError: if vcfpy is not installed
+        ValueError: if file is not a valid annotated VCF
+    """
+    from pathlib import Path
+    from dgra_input_parsers import VCFParser
+
+    path = Path(vcf_path)
+    if not path.exists():
+        raise ValueError(f"VCF file not found: {vcf_path}")
+
+    parser = VCFParser(sample_idx=sample_idx, prefer_canonical=True)
+    variants = parser.parse(path)
+
+    if not variants:
+        print(f"[GPA] Warning: No variants parsed from {vcf_path}. "
+              "Check that the VCF has INFO/{VEP_ANNOTATION_FIELD} annotations.")
+
+    return variants
+
+
 class InputType(Enum):
     RAW_VCF = "raw_vcf"
     ANNOTATED_VCF = "annotated_vcf"

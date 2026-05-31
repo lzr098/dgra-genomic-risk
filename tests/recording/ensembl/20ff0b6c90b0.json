@@ -1,0 +1,769 @@
+{
+  "meta": {
+    "api_name": "ensembl",
+    "variant_id": "DMD-X-31140024-C-T",
+    "recorded_at": "2026-05-31T08:57:41.574154+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": [
+      {
+        "most_severe_consequence": "intron_variant",
+        "allele_string": "C/T",
+        "id": ".",
+        "input": "X 31140024 . C T . . .",
+        "end": 31140024,
+        "strand": 1,
+        "assembly_name": "GRCh38",
+        "start": 31140024,
+        "seq_region_name": "X",
+        "transcript_consequences": [
+          {
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "strand": -1,
+            "variant_allele": "T",
+            "intron": "22/24",
+            "protein_id": "ENSP00000340057",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "transcript_id": "ENST00000343523"
+          },
+          {
+            "canonical": 1,
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "transcript_id": "ENST00000357033",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000354923",
+            "intron": "76/78",
+            "variant_allele": "T",
+            "strand": -1
+          },
+          {
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "strand": -1,
+            "protein_id": "ENSP00000350765",
+            "variant_allele": "T",
+            "intron": "39/40",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "flags": [
+              "cds_start_NF"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000358062"
+          },
+          {
+            "transcript_id": "ENST00000359836",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "variant_allele": "T",
+            "intron": "32/33",
+            "protein_id": "ENSP00000352894",
+            "strand": -1,
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947"
+          },
+          {
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "protein_id": "ENSP00000354464",
+            "intron": "14/15",
+            "variant_allele": "T",
+            "strand": -1,
+            "transcript_id": "ENST00000361471",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER"
+          },
+          {
+            "transcript_id": "ENST00000378677",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "intron": "76/78",
+            "variant_allele": "T",
+            "protein_id": "ENSP00000367948",
+            "strand": -1,
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928"
+          },
+          {
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "transcript_id": "ENST00000378680",
+            "strand": -1,
+            "intron": "11/12",
+            "variant_allele": "T",
+            "protein_id": "ENSP00000367951",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding"
+          },
+          {
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "transcript_id": "ENST00000378702",
+            "strand": -1,
+            "intron": "15/17",
+            "variant_allele": "T",
+            "protein_id": "ENSP00000367974",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding"
+          },
+          {
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "transcript_id": "ENST00000378707",
+            "strand": -1,
+            "intron": "33/35",
+            "variant_allele": "T",
+            "protein_id": "ENSP00000367979"
+          },
+          {
+            "strand": -1,
+            "protein_id": "ENSP00000367997",
+            "intron": "15/16",
+            "variant_allele": "T",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000378723",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding"
+          },
+          {
+            "strand": -1,
+            "variant_allele": "T",
+            "intron": "33/34",
+            "protein_id": "ENSP00000417123",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "transcript_id": "ENST00000474231",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding"
+          },
+          {
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "biotype": "protein_coding_CDS_not_defined",
+            "gene_symbol_source": "HGNC",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000481143",
+            "strand": -1,
+            "variant_allele": "T",
+            "intron": "1/1"
+          },
+          {
+            "strand": -1,
+            "protein_id": "ENSP00000444119",
+            "intron": "29/31",
+            "variant_allele": "T",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000541735",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC"
+          },
+          {
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "strand": -1,
+            "protein_id": "ENSP00000479270",
+            "intron": "48/50",
+            "variant_allele": "T",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000619831"
+          },
+          {
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "transcript_id": "ENST00000620040",
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "variant_allele": "T",
+            "intron": "31/32",
+            "protein_id": "ENSP00000478150",
+            "strand": -1
+          },
+          {
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "transcript_id": "ENST00000679437",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000506629",
+            "variant_allele": "T",
+            "intron": "6/7",
+            "strand": -1
+          },
+          {
+            "protein_id": "ENSP00000506135",
+            "variant_allele": "T",
+            "intron": "10/11",
+            "strand": -1,
+            "transcript_id": "ENST00000679641",
+            "consequence_terms": [
+              "intron_variant",
+              "NMD_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "biotype": "nonsense_mediated_decay",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928"
+          },
+          {
+            "strand": -1,
+            "intron": "4/7",
+            "variant_allele": "T",
+            "protein_id": "ENSP00000506310",
+            "flags": [
+              "cds_start_NF"
+            ],
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "transcript_id": "ENST00000679706",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding"
+          },
+          {
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "retained_intron",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000679850",
+            "strand": -1,
+            "intron": "4/6",
+            "variant_allele": "T"
+          },
+          {
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "variant_allele": "T",
+            "intron": "13/14",
+            "protein_id": "ENSP00000506634",
+            "strand": -1,
+            "transcript_id": "ENST00000680162",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD"
+          },
+          {
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "transcript_id": "ENST00000680355",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000506257",
+            "variant_allele": "T",
+            "intron": "11/13",
+            "strand": -1
+          },
+          {
+            "protein_id": "ENSP00000505164",
+            "intron": "6/7",
+            "variant_allele": "T",
+            "strand": -1,
+            "transcript_id": "ENST00000680557",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928"
+          },
+          {
+            "strand": -1,
+            "intron": "5/7",
+            "variant_allele": "T",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000680701",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "retained_intron"
+          },
+          {
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000680768",
+            "strand": -1,
+            "protein_id": "ENSP00000506359",
+            "variant_allele": "T",
+            "intron": "14/16",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding"
+          },
+          {
+            "intron": "31/32",
+            "variant_allele": "T",
+            "protein_id": "ENSP00000506386",
+            "strand": -1,
+            "transcript_id": "ENST00000680961",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant",
+              "NMD_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "biotype": "nonsense_mediated_decay",
+            "gene_symbol_source": "HGNC",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947"
+          },
+          {
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000681026",
+            "strand": -1,
+            "protein_id": "ENSP00000506689",
+            "intron": "7/8",
+            "variant_allele": "T",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding"
+          },
+          {
+            "transcript_id": "ENST00000681153",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "protein_id": "ENSP00000505124",
+            "variant_allele": "T",
+            "intron": "14/15",
+            "strand": -1,
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947"
+          },
+          {
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000681989",
+            "strand": -1,
+            "intron": "14/15",
+            "variant_allele": "T",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding_CDS_not_defined"
+          },
+          {
+            "biotype": "retained_intron",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "intron": "4/5",
+            "variant_allele": "T",
+            "strand": -1,
+            "transcript_id": "ENST00000682207",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER"
+          },
+          {
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "strand": -1,
+            "protein_id": "ENSP00000508124",
+            "variant_allele": "T",
+            "intron": "29/30",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000682238"
+          },
+          {
+            "transcript_id": "ENST00000682322",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "variant_allele": "T",
+            "intron": "13/15",
+            "protein_id": "ENSP00000507690",
+            "strand": -1,
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947"
+          },
+          {
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "biotype": "protein_coding",
+            "gene_symbol_source": "HGNC",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "transcript_id": "ENST00000682600",
+            "strand": -1,
+            "variant_allele": "T",
+            "intron": "14/16",
+            "protein_id": "ENSP00000507640"
+          },
+          {
+            "intron": "1/2",
+            "variant_allele": "T",
+            "strand": -1,
+            "transcript_id": "ENST00000682746",
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "biotype": "retained_intron",
+            "gene_symbol_source": "HGNC",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947"
+          },
+          {
+            "transcript_id": "ENST00000682769",
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "variant_allele": "T",
+            "intron": "12/13",
+            "strand": -1,
+            "biotype": "protein_coding_CDS_not_defined",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928"
+          },
+          {
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "retained_intron",
+            "strand": -1,
+            "variant_allele": "T",
+            "intron": "5/5",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000683503"
+          },
+          {
+            "strand": -1,
+            "intron": "14/15",
+            "variant_allele": "T",
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "transcript_id": "ENST00000683509",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "biotype": "protein_coding_CDS_not_defined",
+            "gene_symbol_source": "HGNC"
+          },
+          {
+            "strand": -1,
+            "variant_allele": "T",
+            "intron": "17/19",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "transcript_id": "ENST00000683675",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding_CDS_not_defined"
+          },
+          {
+            "intron": "14/17",
+            "variant_allele": "T",
+            "strand": -1,
+            "transcript_id": "ENST00000683709",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding_CDS_not_defined",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928"
+          },
+          {
+            "gene_symbol_source": "HGNC",
+            "biotype": "retained_intron",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "transcript_id": "ENST00000683995",
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "variant_allele": "T",
+            "intron": "4/4",
+            "strand": -1
+          },
+          {
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "gene_symbol_source": "HGNC",
+            "biotype": "retained_intron",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000684072",
+            "strand": -1,
+            "intron": "6/8",
+            "variant_allele": "T"
+          },
+          {
+            "biotype": "retained_intron",
+            "gene_symbol_source": "HGNC",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947",
+            "transcript_id": "ENST00000684103",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "variant_allele": "T",
+            "intron": "2/2",
+            "strand": -1
+          },
+          {
+            "protein_id": "ENSP00000508037",
+            "variant_allele": "T",
+            "intron": "32/34",
+            "strand": -1,
+            "transcript_id": "ENST00000684130",
+            "consequence_terms": [
+              "intron_variant"
+            ],
+            "gene_symbol": "DMD",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "biotype": "protein_coding",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947"
+          },
+          {
+            "intron": "1/1",
+            "variant_allele": "T",
+            "strand": -1,
+            "transcript_id": "ENST00000684247",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "gene_symbol_source": "HGNC",
+            "biotype": "retained_intron",
+            "hgnc_id": "HGNC:2928",
+            "gene_id": "ENSG00000198947"
+          },
+          {
+            "biotype": "retained_intron",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "transcript_id": "ENST00000684342",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "gene_symbol": "DMD",
+            "intron": "3/3",
+            "variant_allele": "T",
+            "strand": -1
+          },
+          {
+            "strand": -1,
+            "intron": "5/6",
+            "variant_allele": "T",
+            "impact": "MODIFIER",
+            "gene_symbol": "DMD",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "transcript_id": "ENST00000684350",
+            "gene_id": "ENSG00000198947",
+            "hgnc_id": "HGNC:2928",
+            "gene_symbol_source": "HGNC",
+            "biotype": "retained_intron"
+          },
+          {
+            "intron": "2/3",
+            "variant_allele": "T",
+            "strand": 1,
+            "transcript_id": "ENST00000746482",
+            "impact": "MODIFIER",
+            "consequence_terms": [
+              "intron_variant",
+              "non_coding_transcript_variant"
+            ],
+            "biotype": "lncRNA",
+            "gene_id": "ENSG00000297249",
+            "canonical": 1
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "api_name": "gnomad",
+    "variant_id": "CFTR-7-117559590-AT-A",
+    "recorded_at": "2026-05-31T08:57:43.859595+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "errors": [
+        {
+          "message": "Variant not found"
+        }
+      ],
+      "data": {
+        "variant": null
+      }
+    }
+  }
+}

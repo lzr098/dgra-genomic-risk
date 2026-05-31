@@ -1834,7 +1834,7 @@ def main():
     from gpa_multi_hit import detect_multi_hit_genes
     from gpa_report import _get_version_info, generate_tier_report, generate_json_report
     from gpa_qc import _run_qc_checks
-    from gpa_input import InputType, detect_input_type, variants_from_vep_annotation
+    from gpa_input import InputType, detect_input_type, variants_from_vep_annotation, parse_annotated_vcf
     from gpa_pipeline import run_dgra_pipeline, run_multi_organ_assessment
 
     parser = argparse.ArgumentParser(
@@ -1999,11 +1999,10 @@ def main():
         print(f"[GPA] Annotation complete: {len(variants_data)} variant-gene entries from VCF")
 
     elif input_type == InputType.ANNOTATED_VCF:
-        # v0.9.0: Parse annotated VCF (CSQ in INFO)
+        # v0.10.0: Parse annotated VCF (CSQ in INFO) using VCFParser
         print("[GPA] Annotated VCF detected — parsing CSQ fields...")
-        # For v0.9.0, annotated VCF parsing is simplified; full support in future
-        raise NotImplementedError("Annotated VCF input parsing not yet implemented in v0.9.0. "
-                                  "Please convert to TSV/CSV or use raw VCF.")
+        variants_data = parse_annotated_vcf(args.input, sample_idx=0)
+        print(f"[GPA] Parsed {len(variants_data)} variants from annotated VCF")
 
     else:
         # Default: CSV/TSV (existing behavior)

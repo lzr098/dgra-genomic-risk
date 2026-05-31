@@ -1,0 +1,40 @@
+{
+  "meta": {
+    "api_name": "ncbi",
+    "variant_id": "esearch-DMD",
+    "recorded_at": "2026-05-31T08:57:47.261889+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": {
+      "header": {
+        "type": "esearch",
+        "version": "0.3"
+      },
+      "esearchresult": {
+        "count": "11945",
+        "retmax": "5",
+        "retstart": "0",
+        "idlist": [
+          "4851171",
+          "4851104",
+          "4851099",
+          "4851035",
+          "4849721"
+        ],
+        "translationset": [],
+        "translationstack": [
+          {
+            "term": "DMD[Gene]",
+            "field": "Gene",
+            "count": "11945",
+            "explode": "N"
+          },
+          "GROUP"
+        ],
+        "querytranslation": "DMD[Gene]"
+      }
+    }
+  }
+}

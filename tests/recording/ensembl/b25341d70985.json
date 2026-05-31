@@ -1,0 +1,1431 @@
+{
+  "meta": {
+    "api_name": "ensembl",
+    "variant_id": "CFTR-7-117559590-AT-A",
+    "recorded_at": "2026-05-31T08:57:42.357955+00:00",
+    "mode": "record"
+  },
+  "response": {
+    "http_status": 200,
+    "data": [
+      {
+        "start": 117559591,
+        "input": "7 117559590 . AT A . . .",
+        "seq_region_name": "7",
+        "most_severe_consequence": "frameshift_variant",
+        "strand": 1,
+        "allele_string": "T/-",
+        "colocated_variants": [
+          {
+            "seq_region_name": "7",
+            "strand": 1,
+            "id": "CM147279",
+            "start": 117559591,
+            "phenotype_or_disease": 1,
+            "allele_string": "HGMD_MUTATION",
+            "end": 117559591
+          }
+        ],
+        "id": ".",
+        "transcript_consequences": [
+          {
+            "gene_id": "ENSG00000001626",
+            "exon": "11/27",
+            "gene_symbol_source": "HGNC",
+            "protein_end": 507,
+            "protein_id": "ENSP00000003084",
+            "transcript_id": "ENST00000003084",
+            "hgvsp": "ENSP00000003084.6:p.Ile507ThrfsTer20",
+            "codons": "aTc/ac",
+            "cds_start": 1520,
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000003084.11:c.1520del",
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1590,
+            "cdna_end": 1590,
+            "protein_start": 507,
+            "domains": [
+              {
+                "name": "1xmi",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "1xmi"
+              },
+              {
+                "name": "1xmi",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "1xmi",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "1xmi",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "1xmj",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "2bbo"
+              },
+              {
+                "name": "2bbs",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "2bbs",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "2bbt"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "2bbt"
+              },
+              {
+                "name": "2pze",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "2pze"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "2pzf"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "2pzf"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "2pzg"
+              },
+              {
+                "name": "2pzg",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "4wz6"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "5tf7"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "5tf8"
+              },
+              {
+                "name": "5tfa",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "5tfb"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "5tfc"
+              },
+              {
+                "name": "5tfd",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "5tff"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "5tfg"
+              },
+              {
+                "name": "5tfi",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "5tfj"
+              },
+              {
+                "name": "5tgk",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "5uak",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "6gjq",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "6gjq",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "6gjq",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "6gjq",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6gjs"
+              },
+              {
+                "name": "6gju",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6gk4"
+              },
+              {
+                "name": "6gk4",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "6gkd",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6gkd"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6gkd"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6gkd"
+              },
+              {
+                "name": "6gkd",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6gkd"
+              },
+              {
+                "name": "6msm",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6o1v"
+              },
+              {
+                "name": "6o2p",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6wbs"
+              },
+              {
+                "name": "6wbs",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "6ze1"
+              },
+              {
+                "name": "7sv7",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "7svd"
+              },
+              {
+                "name": "7svr",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "8eig"
+              },
+              {
+                "name": "8eio",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "8eiq"
+              },
+              {
+                "name": "8ej1",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "8fzq",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "8gls",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "8ubr",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "8v7z"
+              },
+              {
+                "name": "8v81",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "9dw4",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "9dw5",
+                "db": "ENSP_mappings"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "9dw7"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "9dw8"
+              },
+              {
+                "name": "9dw9",
+                "db": "ENSP_mappings"
+              },
+              {
+                "name": "cd03291",
+                "db": "CDD"
+              },
+              {
+                "db": "Pfam",
+                "name": "PF00005"
+              },
+              {
+                "db": "NCBIFAM",
+                "name": "TIGR01271"
+              },
+              {
+                "name": 3,
+                "db": "Gene3D"
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF52540"
+              },
+              {
+                "name": "SM00382",
+                "db": "SMART"
+              },
+              {
+                "name": "CYTOPLASMIC_DOMAIN",
+                "db": "Phobius"
+              },
+              {
+                "db": "PROSITE_profiles",
+                "name": "PS50893"
+              },
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              },
+              {
+                "name": "AF",
+                "db": "ENSP_mappings"
+              }
+            ],
+            "amino_acids": "I/X",
+            "canonical": 1,
+            "impact": "HIGH",
+            "biotype": "protein_coding",
+            "strand": 1,
+            "variant_allele": "-"
+          },
+          {
+            "gene_id": "ENSG00000001626",
+            "flags": [
+              "cds_end_NF"
+            ],
+            "gene_symbol_source": "HGNC",
+            "exon": "10/26",
+            "protein_end": 477,
+            "transcript_id": "ENST00000426809",
+            "protein_id": "ENSP00000389119",
+            "cds_start": 1430,
+            "hgvsp": "ENSP00000389119.1:p.Ile477ThrfsTer20",
+            "codons": "aTc/ac",
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1430,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000426809.5:c.1430del",
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1430,
+            "cdna_end": 1430,
+            "protein_start": 477,
+            "amino_acids": "I/X",
+            "domains": [
+              {
+                "db": "Superfamily",
+                "name": "SSF52540"
+              },
+              {
+                "db": "Pfam",
+                "name": "PF00005"
+              },
+              {
+                "name": 3,
+                "db": "Gene3D"
+              },
+              {
+                "db": "NCBIFAM",
+                "name": "TIGR01271"
+              },
+              {
+                "name": "cd03291",
+                "db": "CDD"
+              },
+              {
+                "db": "PROSITE_profiles",
+                "name": "PS50893"
+              },
+              {
+                "name": "CYTOPLASMIC_DOMAIN",
+                "db": "Phobius"
+              },
+              {
+                "name": "SM00382",
+                "db": "SMART"
+              },
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              }
+            ],
+            "impact": "HIGH",
+            "biotype": "protein_coding",
+            "strand": 1,
+            "variant_allele": "-"
+          },
+          {
+            "distance": 1142,
+            "transcript_id": "ENST00000441019",
+            "impact": "MODIFIER",
+            "gene_symbol_source": "HGNC",
+            "canonical": 1,
+            "gene_id": "ENSG00000232661",
+            "variant_allele": "-",
+            "gene_symbol": "CFTR-AS1",
+            "consequence_terms": [
+              "downstream_gene_variant"
+            ],
+            "strand": -1,
+            "biotype": "lncRNA",
+            "hgnc_id": "HGNC:40144"
+          },
+          {
+            "gene_id": "ENSG00000001626",
+            "impact": "MODIFIER",
+            "transcript_id": "ENST00000472848",
+            "distance": 47,
+            "gene_symbol_source": "HGNC",
+            "hgnc_id": "HGNC:1884",
+            "biotype": "protein_coding_CDS_not_defined",
+            "variant_allele": "-",
+            "consequence_terms": [
+              "upstream_gene_variant"
+            ],
+            "strand": 1,
+            "gene_symbol": "CFTR"
+          },
+          {
+            "impact": "HIGH",
+            "amino_acids": "I/X",
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "nonsense_mediated_decay",
+            "protein_id": "ENSP00000497673",
+            "transcript_id": "ENST00000647720",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/27",
+            "protein_end": 507,
+            "gene_id": "ENSG00000001626",
+            "cdna_end": 1627,
+            "protein_start": 507,
+            "hgvsc": "ENST00000647720.2:c.1520del",
+            "gene_symbol": "CFTR",
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1627,
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "hgvsp": "ENSP00000497673.2:p.Ile507ThrfsTer20",
+            "cds_start": 1520,
+            "codons": "aTc/ac"
+          },
+          {
+            "exon": "11/27",
+            "gene_symbol_source": "HGNC",
+            "transcript_id": "ENST00000647978",
+            "protein_id": "ENSP00000497658",
+            "gene_id": "ENSG00000001626",
+            "consequence_terms": [
+              "3_prime_UTR_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1495,
+            "hgvsc": "ENST00000647978.2:c.*1234del",
+            "gene_symbol": "CFTR",
+            "cdna_end": 1495,
+            "hgnc_id": "HGNC:1884",
+            "impact": "MODIFIER",
+            "strand": 1,
+            "variant_allele": "-",
+            "biotype": "nonsense_mediated_decay"
+          },
+          {
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1337,
+            "codons": "aTc/ac",
+            "hgvsp": "ENSP00000497957.1:p.Ile446ThrfsTer20",
+            "cds_start": 1337,
+            "cdna_end": 1421,
+            "protein_start": 446,
+            "hgvsc": "ENST00000648260.1:c.1337del",
+            "gene_symbol": "CFTR",
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1421,
+            "gene_id": "ENSG00000001626",
+            "transcript_id": "ENST00000648260",
+            "protein_id": "ENSP00000497957",
+            "exon": "10/17",
+            "gene_symbol_source": "HGNC",
+            "protein_end": 446,
+            "biotype": "protein_coding",
+            "variant_allele": "-",
+            "strand": 1,
+            "domains": [
+              {
+                "name": "PS50893",
+                "db": "PROSITE_profiles"
+              },
+              {
+                "db": "Phobius",
+                "name": "CYTOPLASMIC_DOMAIN"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              },
+              {
+                "name": 1,
+                "db": "Gene3D"
+              },
+              {
+                "db": "PANTHER",
+                "name": "PTHR24223"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "AF"
+              }
+            ],
+            "amino_acids": "I/X",
+            "impact": "HIGH"
+          },
+          {
+            "strand": 1,
+            "variant_allele": "-",
+            "biotype": "protein_coding",
+            "impact": "HIGH",
+            "domains": [
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              },
+              {
+                "db": "Phobius",
+                "name": "CYTOPLASMIC_DOMAIN"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF90123"
+              },
+              {
+                "db": "PROSITE_profiles",
+                "name": "PS50893"
+              },
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "name": 3,
+                "db": "Gene3D"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "AF"
+              }
+            ],
+            "amino_acids": "I/X",
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1421,
+            "hgvsc": "ENST00000649406.1:c.1337del",
+            "gene_symbol": "CFTR",
+            "cdna_end": 1421,
+            "protein_start": 446,
+            "codons": "aTc/ac",
+            "cds_start": 1337,
+            "hgvsp": "ENSP00000497965.1:p.Ile446ThrfsTer20",
+            "cds_end": 1337,
+            "hgnc_id": "HGNC:1884",
+            "protein_end": 446,
+            "exon": "10/21",
+            "gene_symbol_source": "HGNC",
+            "transcript_id": "ENST00000649406",
+            "protein_id": "ENSP00000497965",
+            "gene_id": "ENSG00000001626"
+          },
+          {
+            "domains": [
+              {
+                "db": "NCBIFAM",
+                "name": "TIGR01271"
+              },
+              {
+                "db": "Pfam",
+                "name": "PF00005"
+              },
+              {
+                "name": 3,
+                "db": "Gene3D"
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF90123"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              },
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              },
+              {
+                "name": "PS50893",
+                "db": "PROSITE_profiles"
+              },
+              {
+                "db": "Phobius",
+                "name": "CYTOPLASMIC_DOMAIN"
+              },
+              {
+                "db": "ENSP_mappings",
+                "name": "AF"
+              }
+            ],
+            "amino_acids": "I/X",
+            "impact": "HIGH",
+            "biotype": "protein_coding",
+            "strand": 1,
+            "variant_allele": "-",
+            "gene_id": "ENSG00000001626",
+            "exon": "10/26",
+            "gene_symbol_source": "HGNC",
+            "protein_end": 446,
+            "transcript_id": "ENST00000649781",
+            "protein_id": "ENSP00000497203",
+            "hgvsp": "ENSP00000497203.1:p.Ile446ThrfsTer20",
+            "cds_start": 1337,
+            "codons": "aTc/ac",
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1337,
+            "hgvsc": "ENST00000649781.2:c.1337del",
+            "gene_symbol": "CFTR",
+            "cdna_start": 1421,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_end": 1421,
+            "protein_start": 446
+          },
+          {
+            "protein_start": 507,
+            "cdna_end": 1627,
+            "hgvsc": "ENST00000685018.2:c.1520del",
+            "gene_symbol": "CFTR",
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1627,
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "cds_start": 1520,
+            "codons": "aTc/ac",
+            "hgvsp": "ENSP00000510194.2:p.Ile507ThrfsTer20",
+            "protein_id": "ENSP00000510194",
+            "transcript_id": "ENST00000685018",
+            "exon": "11/28",
+            "gene_symbol_source": "HGNC",
+            "protein_end": 507,
+            "gene_id": "ENSG00000001626",
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "nonsense_mediated_decay",
+            "impact": "HIGH",
+            "amino_acids": "I/X"
+          },
+          {
+            "impact": "HIGH",
+            "amino_acids": "I/X",
+            "strand": 1,
+            "variant_allele": "-",
+            "biotype": "nonsense_mediated_decay",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/29",
+            "protein_end": 507,
+            "protein_id": "ENSP00000509593",
+            "transcript_id": "ENST00000687278",
+            "gene_id": "ENSG00000001626",
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000687278.2:c.1520del",
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1627,
+            "protein_start": 507,
+            "cdna_end": 1627,
+            "codons": "aTc/ac",
+            "hgvsp": "ENSP00000509593.2:p.Ile507ThrfsTer20",
+            "cds_start": 1520,
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520
+          },
+          {
+            "hgvsp": "ENSP00000514456.1:p.Ile507ThrfsTer20",
+            "cds_start": 1520,
+            "codons": "aTc/ac",
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000699585.1:c.1520del",
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1627,
+            "protein_start": 507,
+            "cdna_end": 1627,
+            "gene_id": "ENSG00000001626",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/27",
+            "protein_end": 507,
+            "transcript_id": "ENST00000699585",
+            "protein_id": "ENSP00000514456",
+            "biotype": "nonsense_mediated_decay",
+            "strand": 1,
+            "variant_allele": "-",
+            "amino_acids": "I/X",
+            "impact": "HIGH"
+          },
+          {
+            "transcript_id": "ENST00000699596",
+            "protein_id": "ENSP00000514465",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/11",
+            "protein_end": 507,
+            "gene_id": "ENSG00000001626",
+            "protein_start": 507,
+            "cdna_end": 1627,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000699596.1:c.1520del",
+            "cdna_start": 1627,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "hgvsp": "ENSP00000514465.1:p.Ile507ThrfsTer20",
+            "cds_start": 1520,
+            "codons": "aTc/ac",
+            "impact": "HIGH",
+            "domains": [
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "name": 3,
+                "db": "Gene3D"
+              },
+              {
+                "name": "CYTOPLASMIC_DOMAIN",
+                "db": "Phobius"
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF52540"
+              },
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              }
+            ],
+            "amino_acids": "I/X",
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "protein_coding"
+          },
+          {
+            "biotype": "protein_coding",
+            "strand": 1,
+            "variant_allele": "-",
+            "impact": "MODIFIER",
+            "hgnc_id": "HGNC:1884",
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000699597.1:c.*78del",
+            "consequence_terms": [
+              "3_prime_UTR_variant"
+            ],
+            "cdna_start": 1622,
+            "cdna_end": 1622,
+            "gene_id": "ENSG00000001626",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/11",
+            "transcript_id": "ENST00000699597",
+            "protein_id": "ENSP00000514466"
+          },
+          {
+            "impact": "HIGH",
+            "amino_acids": "I/X",
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "nonsense_mediated_decay",
+            "protein_id": "ENSP00000514467",
+            "transcript_id": "ENST00000699598",
+            "protein_end": 507,
+            "exon": "11/29",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000001626",
+            "cdna_end": 1627,
+            "protein_start": 507,
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1627,
+            "hgvsc": "ENST00000699598.1:c.1520del",
+            "gene_symbol": "CFTR",
+            "cds_end": 1520,
+            "hgnc_id": "HGNC:1884",
+            "hgvsp": "ENSP00000514467.1:p.Ile507ThrfsTer20",
+            "cds_start": 1520,
+            "codons": "aTc/ac"
+          },
+          {
+            "codons": "aTc/ac",
+            "cds_start": 1520,
+            "hgvsp": "ENSP00000514468.1:p.Ile507ThrfsTer20",
+            "cds_end": 1520,
+            "hgnc_id": "HGNC:1884",
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1627,
+            "hgvsc": "ENST00000699599.1:c.1520del",
+            "gene_symbol": "CFTR",
+            "cdna_end": 1627,
+            "protein_start": 507,
+            "gene_id": "ENSG00000001626",
+            "protein_end": 507,
+            "exon": "11/30",
+            "gene_symbol_source": "HGNC",
+            "protein_id": "ENSP00000514468",
+            "transcript_id": "ENST00000699599",
+            "biotype": "nonsense_mediated_decay",
+            "strand": 1,
+            "variant_allele": "-",
+            "amino_acids": "I/X",
+            "impact": "HIGH"
+          },
+          {
+            "protein_start": 507,
+            "cdna_end": 1627,
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1627,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000699600.1:c.1520del",
+            "cds_end": 1520,
+            "hgnc_id": "HGNC:1884",
+            "hgvsp": "ENSP00000514469.1:p.Ile507ThrfsTer20",
+            "codons": "aTc/ac",
+            "cds_start": 1520,
+            "transcript_id": "ENST00000699600",
+            "protein_id": "ENSP00000514469",
+            "protein_end": 507,
+            "exon": "11/29",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000001626",
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "nonsense_mediated_decay",
+            "impact": "HIGH",
+            "amino_acids": "I/X"
+          },
+          {
+            "protein_id": "ENSP00000514470",
+            "transcript_id": "ENST00000699601",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/27",
+            "protein_end": 507,
+            "gene_id": "ENSG00000001626",
+            "protein_start": 507,
+            "cdna_end": 1627,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000699601.1:c.1520del",
+            "cdna_start": 1627,
+            "consequence_terms": [
+              "frameshift_variant",
+              "NMD_transcript_variant"
+            ],
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "cds_start": 1520,
+            "hgvsp": "ENSP00000514470.1:p.Ile507ThrfsTer20",
+            "codons": "aTc/ac",
+            "impact": "HIGH",
+            "amino_acids": "I/X",
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "nonsense_mediated_decay"
+          },
+          {
+            "gene_id": "ENSG00000001626",
+            "protein_id": "ENSP00000514471",
+            "transcript_id": "ENST00000699602",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/27",
+            "protein_end": 507,
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "hgvsp": "ENSP00000514471.1:p.Ile507ThrfsTer20",
+            "codons": "aTc/ac",
+            "cds_start": 1520,
+            "cdna_end": 1627,
+            "protein_start": 507,
+            "hgvsc": "ENST00000699602.1:c.1520del",
+            "gene_symbol": "CFTR",
+            "cdna_start": 1627,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "domains": [
+              {
+                "db": "Gene3D",
+                "name": 3
+              },
+              {
+                "name": "CYTOPLASMIC_DOMAIN",
+                "db": "Phobius"
+              },
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "db": "PROSITE_profiles",
+                "name": "PS50893"
+              },
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              },
+              {
+                "db": "SMART",
+                "name": "SM00382"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              },
+              {
+                "db": "NCBIFAM",
+                "name": "TIGR01271"
+              },
+              {
+                "name": "cd03291",
+                "db": "CDD"
+              }
+            ],
+            "amino_acids": "I/X",
+            "impact": "HIGH",
+            "biotype": "protein_coding",
+            "variant_allele": "-",
+            "strand": 1
+          },
+          {
+            "biotype": "nonsense_mediated_decay",
+            "strand": 1,
+            "variant_allele": "-",
+            "impact": "MODIFIER",
+            "hgnc_id": "HGNC:1884",
+            "consequence_terms": [
+              "3_prime_UTR_variant",
+              "NMD_transcript_variant"
+            ],
+            "cdna_start": 1602,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000699604.1:c.*1344del",
+            "cdna_end": 1602,
+            "gene_id": "ENSG00000001626",
+            "gene_symbol_source": "HGNC",
+            "exon": "11/27",
+            "protein_id": "ENSP00000514472",
+            "transcript_id": "ENST00000699604"
+          },
+          {
+            "amino_acids": "I/X",
+            "domains": [
+              {
+                "name": "PS50893",
+                "db": "PROSITE_profiles"
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF52540"
+              },
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              },
+              {
+                "db": "Phobius",
+                "name": "CYTOPLASMIC_DOMAIN"
+              },
+              {
+                "name": "TIGR01271",
+                "db": "NCBIFAM"
+              },
+              {
+                "db": "Pfam",
+                "name": "PF00005"
+              },
+              {
+                "db": "Gene3D",
+                "name": 3
+              }
+            ],
+            "impact": "HIGH",
+            "biotype": "protein_coding",
+            "strand": 1,
+            "variant_allele": "-",
+            "gene_id": "ENSG00000001626",
+            "exon": "11/27",
+            "gene_symbol_source": "HGNC",
+            "protein_end": 365,
+            "protein_id": "ENSP00000514473",
+            "transcript_id": "ENST00000699605",
+            "codons": "aTc/ac",
+            "hgvsp": "ENSP00000514473.1:p.Ile365ThrfsTer20",
+            "cds_start": 1094,
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1094,
+            "hgvsc": "ENST00000699605.1:c.1094del",
+            "gene_symbol": "CFTR",
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1516,
+            "protein_start": 365,
+            "cdna_end": 1516
+          },
+          {
+            "strand": 1,
+            "variant_allele": "-",
+            "biotype": "protein_coding",
+            "impact": "HIGH",
+            "domains": [
+              {
+                "db": "Gene3D",
+                "name": 3
+              },
+              {
+                "db": "Pfam",
+                "name": "PF00005"
+              },
+              {
+                "name": "PS50893",
+                "db": "PROSITE_profiles"
+              },
+              {
+                "name": "SM00382",
+                "db": "SMART"
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF52540"
+              },
+              {
+                "name": "CYTOPLASMIC_DOMAIN",
+                "db": "Phobius"
+              },
+              {
+                "name": "PTHR24223",
+                "db": "PANTHER"
+              }
+            ],
+            "amino_acids": "I/X",
+            "cdna_start": 1635,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "hgvsc": "ENST00000889206.1:c.1520del",
+            "gene_symbol": "CFTR",
+            "cdna_end": 1635,
+            "protein_start": 507,
+            "codons": "aTc/ac",
+            "hgvsp": "ENSP00000559265.1:p.Ile507ThrfsTer20",
+            "cds_start": 1520,
+            "cds_end": 1520,
+            "hgnc_id": "HGNC:1884",
+            "protein_end": 507,
+            "exon": "11/26",
+            "gene_symbol_source": "HGNC",
+            "transcript_id": "ENST00000889206",
+            "protein_id": "ENSP00000559265",
+            "gene_id": "ENSG00000001626"
+          },
+          {
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "protein_coding",
+            "impact": "HIGH",
+            "amino_acids": "I/X",
+            "domains": [
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "db": "Gene3D",
+                "name": 3
+              },
+              {
+                "name": "PS50893",
+                "db": "PROSITE_profiles"
+              },
+              {
+                "name": "CYTOPLASMIC_DOMAIN",
+                "db": "Phobius"
+              },
+              {
+                "db": "PANTHER",
+                "name": "PTHR24223"
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF90123"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              }
+            ],
+            "cdna_end": 1435,
+            "protein_start": 446,
+            "cdna_start": 1435,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000889207.1:c.1337del",
+            "cds_end": 1337,
+            "hgnc_id": "HGNC:1884",
+            "codons": "aTc/ac",
+            "cds_start": 1337,
+            "hgvsp": "ENSP00000559266.1:p.Ile446ThrfsTer20",
+            "protein_id": "ENSP00000559266",
+            "transcript_id": "ENST00000889207",
+            "protein_end": 446,
+            "exon": "10/26",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000001626"
+          },
+          {
+            "hgvsc": "ENST00000889208.1:c.1520del",
+            "gene_symbol": "CFTR",
+            "cdna_start": 1590,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_end": 1590,
+            "protein_start": 507,
+            "cds_start": 1520,
+            "codons": "aTc/ac",
+            "hgvsp": "ENSP00000559267.1:p.Ile507ThrfsTer20",
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "gene_symbol_source": "HGNC",
+            "exon": "11/26",
+            "protein_end": 507,
+            "protein_id": "ENSP00000559267",
+            "transcript_id": "ENST00000889208",
+            "gene_id": "ENSG00000001626",
+            "strand": 1,
+            "variant_allele": "-",
+            "biotype": "protein_coding",
+            "impact": "HIGH",
+            "amino_acids": "I/X",
+            "domains": [
+              {
+                "db": "CDD",
+                "name": "cd03291"
+              },
+              {
+                "db": "PROSITE_profiles",
+                "name": "PS50893"
+              },
+              {
+                "db": "Gene3D",
+                "name": 3
+              },
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "db": "PANTHER",
+                "name": "PTHR24223"
+              },
+              {
+                "name": "CYTOPLASMIC_DOMAIN",
+                "db": "Phobius"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              },
+              {
+                "name": "SM00382",
+                "db": "SMART"
+              }
+            ]
+          },
+          {
+            "impact": "HIGH",
+            "domains": [
+              {
+                "db": "NCBIFAM",
+                "name": "TIGR01271"
+              },
+              {
+                "name": 3,
+                "db": "Gene3D"
+              },
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "db": "PROSITE_profiles",
+                "name": "PS50893"
+              },
+              {
+                "db": "CDD",
+                "name": "cd03291"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              },
+              {
+                "db": "SMART",
+                "name": "SM00382"
+              },
+              {
+                "db": "Phobius",
+                "name": "CYTOPLASMIC_DOMAIN"
+              },
+              {
+                "db": "PANTHER",
+                "name": "PTHR24223"
+              }
+            ],
+            "amino_acids": "I/X",
+            "variant_allele": "-",
+            "strand": 1,
+            "biotype": "protein_coding",
+            "transcript_id": "ENST00000889209",
+            "protein_id": "ENSP00000559268",
+            "protein_end": 507,
+            "exon": "11/26",
+            "gene_symbol_source": "HGNC",
+            "gene_id": "ENSG00000001626",
+            "protein_start": 507,
+            "cdna_end": 1588,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1588,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000889209.1:c.1520del",
+            "cds_end": 1520,
+            "hgnc_id": "HGNC:1884",
+            "hgvsp": "ENSP00000559268.1:p.Ile507ThrfsTer20",
+            "cds_start": 1520,
+            "codons": "aTc/ac"
+          },
+          {
+            "biotype": "protein_coding",
+            "variant_allele": "-",
+            "strand": 1,
+            "amino_acids": "I/X",
+            "domains": [
+              {
+                "db": "Gene3D",
+                "name": 3
+              },
+              {
+                "db": "Phobius",
+                "name": "CYTOPLASMIC_DOMAIN"
+              },
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "db": "PROSITE_profiles",
+                "name": "PS50893"
+              },
+              {
+                "db": "PANTHER",
+                "name": "PTHR24223"
+              },
+              {
+                "name": "SSF52540",
+                "db": "Superfamily"
+              }
+            ],
+            "impact": "HIGH",
+            "cds_end": 1337,
+            "hgnc_id": "HGNC:1884",
+            "codons": "aTc/ac",
+            "cds_start": 1337,
+            "hgvsp": "ENSP00000559269.1:p.Ile446ThrfsTer20",
+            "cdna_end": 1407,
+            "protein_start": 446,
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1407,
+            "gene_symbol": "CFTR",
+            "hgvsc": "ENST00000889210.1:c.1337del",
+            "gene_id": "ENSG00000001626",
+            "transcript_id": "ENST00000889210",
+            "protein_id": "ENSP00000559269",
+            "protein_end": 446,
+            "gene_symbol_source": "HGNC",
+            "exon": "10/25"
+          },
+          {
+            "domains": [
+              {
+                "name": "SM00382",
+                "db": "SMART"
+              },
+              {
+                "name": "PS50893",
+                "db": "PROSITE_profiles"
+              },
+              {
+                "db": "Phobius",
+                "name": "CYTOPLASMIC_DOMAIN"
+              },
+              {
+                "name": "PF00005",
+                "db": "Pfam"
+              },
+              {
+                "db": "Gene3D",
+                "name": 3
+              },
+              {
+                "db": "Superfamily",
+                "name": "SSF52540"
+              }
+            ],
+            "amino_acids": "I/X",
+            "impact": "HIGH",
+            "biotype": "protein_coding",
+            "strand": 1,
+            "variant_allele": "-",
+            "gene_id": "ENSG00000001626",
+            "exon": "11/23",
+            "gene_symbol_source": "HGNC",
+            "protein_end": 507,
+            "transcript_id": "ENST00000950799",
+            "protein_id": "ENSP00000620858",
+            "codons": "aTc/ac",
+            "cds_start": 1520,
+            "hgvsp": "ENSP00000620858.1:p.Ile507ThrfsTer20",
+            "hgnc_id": "HGNC:1884",
+            "cds_end": 1520,
+            "hgvsc": "ENST00000950799.1:c.1520del",
+            "gene_symbol": "CFTR",
+            "consequence_terms": [
+              "frameshift_variant"
+            ],
+            "cdna_start": 1656,
+            "cdna_end": 1656,
+            "protein_start": 507
+          }
+        ],
+        "assembly_name": "GRCh38",
+        "end": 117559591
+      }
+    ]
+  }
+}

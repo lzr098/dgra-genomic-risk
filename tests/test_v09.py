@@ -22,15 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch, mock_open
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from dgra_core import (
-    Variant,
-    GPAConfig,
-    detect_input_type,
-    InputType,
-    variants_from_vep_annotation,
-    _generate_transcript_selection_section,
-    generate_tier_report,
-)
+from dgra_core import Variant, GPAConfig
+from gpa_input import detect_input_type, InputType, variants_from_vep_annotation
+from gpa_report import _generate_transcript_selection_section, generate_tier_report
 from dgra_cli_wrapper import run_gpa_from_file
 from gpa_transcript_selector import TranscriptSelector, TranscriptSelectionResult
 

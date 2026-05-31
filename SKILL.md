@@ -495,3 +495,74 @@ dgra-genomic-risk/
 **多基因命中**需确认相位：cis（同一条染色体）风险更高，trans（两条染色体）通常为复合杂合
 
 **GPA 是辅助决策工具，最终临床决策需结合完整临床评估。**
+
+---
+
+## 🧪 测试方案
+
+GPA 采用 **pytest** 框架，测试架构为 **L0~L6 分层 + E2E**，覆盖全部 ~30 个模块。详细测试计划见 `tests/TEST_PLAN.md`。
+
+### 快速开始
+
+```bash
+# 安装开发依赖
+cd tests && pip install -r requirements-dev.txt
+
+# 运行全部测试
+pytest
+
+# 运行指定分层
+pytest -m l2          # 单元测试
+pytest -m l3          # 集成测试
+pytest -m "l2 or l3"  # 单元+集成
+
+# 运行指定优先级
+pytest -m p0          # 仅 P0（关键路径）
+
+# 运行纯 mock（无网络，最快）
+pytest -m "mock and not recording"
+
+# 录制-回放模式（外部 API）
+pytest -m recording
+
+# 重新录制 API 响应（需要网络）
+pytest -m recording --record-mode=refresh
+
+# 覆盖率报告
+pytest --cov=scripts --cov-report=html
+```
+
+### 测试分层
+
+| 分层 | 说明 | 用例数 |
+|------|------|--------|
+| **L0** | 契约测试：输入/输出 Schema 验证 | ~20 |
+| **L1** | 静态测试：模块导入、数据结构、循环依赖 | ~20 |
+| **L2** | 单元测试：单模块独立测试（纯 mock） | ~140 |
+| **L3** | 集成测试：模块间交互、Pipeline 端到端 | ~20 |
+| **L4** | 性能测试：基准、内存、缓存吞吐 | ~30 |
+| **L5** | 边界测试：极端输入、畸形数据、编码、并发 | ~30 |
+| **L6** | 回归测试：版本间向后兼容性 | ~16 |
+| **E2E** | 端到端：完整临床场景 | ~16 |
+
+### 覆盖率目标
+
+- **核心模块**（`gpa_tier_classifier.py`, `gpa_pipeline.py`, `gpa_report.py`, `dgra_api.py`, `gpa_vcf_annotator.py`, `dgra_cli_wrapper.py`）：**≥ 80%**
+- **其他模块**：**≥ 60%**
+
+### 录制-回放机制
+
+外部 API（Ensembl/UniProt/GTEx/gnomAD 等）采用录制-回放模式：
+- **首次运行**：真实调用 API，响应保存到 `tests/recording/`
+- **后续运行**：从录制文件加载，秒级完成
+- **API 变更检测**：`--record-mode=refresh` 重新录制，diff 发现 schema 变更
+
+### 关键文件
+
+| 文件 | 说明 |
+|------|------|
+| `tests/TEST_PLAN.md` | 完整测试计划文档 |
+| `tests/pytest.ini` | pytest 配置（markers、覆盖率、超时） |
+| `tests/requirements-dev.txt` | 开发依赖（pytest、pytest-asyncio、pytest-cov） |
+| `tests/conftest.py` | pytest fixtures + 录制-回放基础设施 + Mock 工具 |
+| `tests/recording/` | API 录制响应存储目录 |
