@@ -261,6 +261,7 @@ class WorkflowPM:
             phase.status = "completed"
             phase.processed_items = phase.total_items  # Force 100%
             duration = phase.elapsed_sec
+            self.current_phase = None
 
         self.report_callback(
             f"Phase complete: {phase.name} — "

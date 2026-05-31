@@ -428,6 +428,7 @@ class WorkflowRunner:
             "description": description,
             "old_steps": old_steps,
             "new_steps": new_steps,
+            "status": "PENDING",
             "proposed_at": datetime.now().isoformat(),
         })
 
@@ -460,6 +461,7 @@ class WorkflowRunner:
             # Remove
             self.workflow = [s for s in self.workflow if s.name not in {o.name for o in old_steps}]
 
+        change["status"] = "CONFIRMED"
         print(f"[WorkflowRunner] Change APPLIED: {change['description']}")
         return True
 
