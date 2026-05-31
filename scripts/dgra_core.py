@@ -2065,6 +2065,12 @@ def main():
             print("[GPA Preflight] 环境检查未通过，中止分析。")
             print(preflight.to_markdown())
             sys.exit(1)
+        elif action == "offline":
+            # v0.11.1: offline mode requires explicit user confirmation
+            print("[GPA Preflight] 环境检查未通过，建议切换到离线模式（跳过所有 API 调用）。")
+            print("  如需继续离线模式，请显式设置 --offline 参数后重试。")
+            print("  当前默认行为：中止任务，保持在线优先。")
+            sys.exit(1)
 
     # v0.5 P1-7: Multi-organ path
     if multi_organ:

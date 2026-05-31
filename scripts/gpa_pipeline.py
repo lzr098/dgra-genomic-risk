@@ -74,6 +74,12 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             print("[GPA Preflight] 环境检查未通过，中止分析。")
             print(preflight.to_markdown())
             return {"error": "Preflight failed", "report": preflight.to_dict()}
+        elif action == "offline":
+            # v0.11.1: offline mode requires explicit user confirmation
+            print("[GPA Preflight] 环境检查未通过，建议切换到离线模式（跳过所有 API 调用）。")
+            print("  如需继续离线模式，请显式设置 config.offline_mode=True 后重试。")
+            print("  当前默认行为：中止任务，保持在线优先。")
+            return {"error": "Preflight failed — online mode required. Set offline_mode=True explicitly to proceed.", "report": preflight.to_dict()}
 
     # v0.9.5: Respect global proxy config for all standalone aiohttp sessions
     # (DGRAAPIClient already handles this; these sessions need it too)
