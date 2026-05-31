@@ -1970,6 +1970,7 @@ def main():
             max_concurrency=5,
             timeout=30,
             vep_cache=vep_cache_path,
+            interactive=False,
         )
         async def _annotate_and_close():
             try:
