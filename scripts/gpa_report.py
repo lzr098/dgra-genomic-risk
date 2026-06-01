@@ -230,6 +230,56 @@ def _format_vep_reannotation_note(v: Variant) -> Optional[str]:
     return note
 
 
+def _generate_hla_region_section(variants: List[Variant]) -> Optional[str]:
+    """
+    v0.11.4: Generate HLA region reliability warning section.
+
+    The HLA region (chr6:29.7M-33.1M) is highly polymorphic with extensive
+    pseudogene homology. Short-read sequencing cannot reliably distinguish
+    true variants from mapping artifacts in this region.
+
+    This section provides:
+      - Summary count of HLA-region variants
+      - Tier 1/2 HLA variants highlighted for validation
+      - Recommended validation methods
+    """
+    hla_variants = [v for v in variants if "HLA_REGION_SHORT_READ_UNRELIABLE" in v.qc_flags]
+    if not hla_variants:
+        return None
+
+    lines = []
+    lines.append("## ⚠️ HLA 区域变异可靠性提示\n")
+    lines.append(
+        "**背景**: HLA 区域（chr6:29.7M-33.1M）高度多态且存在大量假基因同源序列，"
+        "短读长测序在此区域的比对准确性显著下降，变异检出可能存在伪影。\n"
+    )
+
+    lines.append(f"**检测到的 HLA 区域变异**: {len(hla_variants)} 个\n")
+
+    # Highlight Tier 1/2 variants (these are the ones that matter)
+    hla_tier12 = [v for v in hla_variants if v.tier is not None and v.tier <= 2]
+    if hla_tier12:
+        lines.append(
+            f"\n**需要特别关注的 Tier 1/2 变异** ({len(hla_tier12)} 个，"
+            "短读数据可靠性存疑):\n"
+        )
+        lines.append("| 位置 | 基因 | 变异 | Tier | 提示 |\n")
+        lines.append("|------|------|------|------|------|\n")
+        for v in hla_tier12:
+            hgvsp_short = v.hgvsp if len(v.hgvsp) < 30 else v.hgvsp[:27] + "..."
+            lines.append(
+                f"| {v.chrom}:{v.pos} | {v.gene} | {hgvsp_short} | "
+                f"Tier {v.tier} | 建议验证 |\n"
+            )
+
+    lines.append("\n**建议验证方法**:\n")
+    lines.append("1. **HLA 独立分型**: 使用 HLA-HD、OptiType 或 xHLA 进行专用分型\n")
+    lines.append("2. **长读测序验证**: PacBio HiFi 或 Oxford Nanopore 可解决比对歧义\n")
+    lines.append("3. **家系验证**: 若变异为 de novo 且位于 HLA 区，需高度怀疑伪影\n")
+
+    return "".join(lines)
+
+
 def _generate_pseudogene_assessment_section(variants: List[Variant]) -> Optional[str]:
     """
     v0.6: Generate standalone pseudogene interference assessment section.
@@ -885,6 +935,12 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
         if len([v for v in variants if v.qc_flags]) > 5:
             report.append(f"\n*... 共 {len([v for v in variants if v.qc_flags])} 个变异有异常,详见 JSON 输出*\n")
 
+        report.append("\n")
+
+    # v0.11.4: HLA region reliability warning - independent section
+    hla_section = _generate_hla_region_section(variants)
+    if hla_section:
+        report.append(hla_section)
         report.append("\n")
 
     # v0.6: Pseudogene interference assessment - independent section

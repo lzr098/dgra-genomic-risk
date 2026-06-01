@@ -727,6 +727,14 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         v.tier_reason = reason
         v.tier_actions = actions
 
+        # v0.11.4: HLA region short-read reliability warning for Tier 1/2 variants
+        if "HLA_REGION_SHORT_READ_UNRELIABLE" in v.qc_flags and v.tier <= 2:
+            v.tier_actions.append(
+                "⚠️ HLA_REGION: 该变异位于 HLA 高多态区域（chr6:29.7M-33.1M），"
+                "短读测序数据在此区域可能不可靠（比对伪影、参考基因组偏差）。"
+                "建议通过 HLA 分型工具（HLA-HD、OptiType）或长读测序验证。"
+            )
+
     # Handle multi-hit elevation
     # v0.5.2 CHANGE: Do NOT elevate individual variants due to multi-hit status.
     # Multi-hit genes are flagged in the report for attention, but each variant

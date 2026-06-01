@@ -21,6 +21,7 @@ from dgra_core import (
     _COMMON_TS_GENES,
     _KNOWN_AML_DRIVERS,
     _GENE_FAMILY_REDUNDANCY,
+    _is_hla_region,
     evaluate_gene_constraint,
     predict_nmd,
     evaluate_missense_tier,
@@ -73,6 +74,13 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     """
     gene = variant.gene
     actions = []
+
+    # v0.11.4: HLA region short-read reliability warning
+    # The HLA region is highly polymorphic with many pseudogenes; short-read
+    # sequencing cannot reliably distinguish true variants from mapping artifacts.
+    if _is_hla_region(variant.chrom, variant.pos):
+        variant.qc_flags.append("HLA_REGION_SHORT_READ_UNRELIABLE")
+
     # v0.5 P1-9: Initialize evidence chain for structured traceability
     # If variant already has evidence (e.g., from previous analysis or testing), preserve it
     evidence_chain = list(variant.evidence_chain)

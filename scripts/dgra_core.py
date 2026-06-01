@@ -115,6 +115,35 @@ _KNOWN_AML_DRIVERS = {
     "SMC3", "ZRSR2", "SRSF2", "SF3B1", "U2AF1", "U2AF2",
 }
 
+# v0.11.4: HLA region coordinates for short-read reliability warnings
+# The HLA region (chr6:29.7M-33.1M) is notoriously difficult for short-read
+# sequencing due to high homology, polymorphism, and reference genome bias.
+_HLA_REGIONS = {
+    # GRCh38 / hg38
+    "GRCh38": {"chrom": "6", "start": 29_690_683, "end": 33_079_845},
+    # GRCh37 / hg19
+    "GRCh37": {"chrom": "6", "start": 29_941_030, "end": 33_330_192},
+}
+
+
+def _is_hla_region(chrom: str, pos: int, genome_build: str = "GRCh38") -> bool:
+    """Check if a variant falls within the HLA region.
+
+    Args:
+        chrom: Chromosome (supports "6", "chr6", "chr06", etc.)
+        pos: 1-based genomic position
+        genome_build: "GRCh38" or "GRCh37"
+
+    Returns:
+        True if the variant is in the HLA region.
+    """
+    chrom_norm = chrom.replace("chr", "").lstrip("0") or "0"
+    if chrom_norm != "6":
+        return False
+    region = _HLA_REGIONS.get(genome_build, _HLA_REGIONS["GRCh38"])
+    return region["start"] <= pos <= region["end"]
+
+
 # v0.5.1 OPT-P2-2: Gene family redundancy - reduce multi-hit false positives
 # Genes with functional paralogs/isoforms that can compensate for LOF
 _GENE_FAMILY_REDUNDANCY = {
