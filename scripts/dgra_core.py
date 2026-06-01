@@ -270,6 +270,7 @@ class GPAConfig:
     # v0.8.0: SpliceAI splice-prediction integration (default OFF - must be explicitly enabled)
     spliceai_enabled: bool = False
     spliceai_concurrency: int = 5
+    spliceai_timeout: int = 45  # v0.11.3: configurable timeout (was hardcoded 30)
     # v0.9.0: VCF annotation + disease-aware transcript selection
     disease_description: Optional[str] = None
     annotator: str = "auto"
@@ -1898,6 +1899,8 @@ def main():
                              "(v0.8.0)")
     parser.add_argument("--spliceai-concurrency", type=int, default=5,
                         help="Max concurrent SpliceAI API requests (default: 5). (v0.8.0)")
+    parser.add_argument("--spliceai-timeout", type=int, default=45,
+                        help="SpliceAI query timeout in seconds (default: 45). (v0.11.3)")
 
     # v0.9.0: VCF annotation + transcript selection
     parser.add_argument("--disease-description", default=None,
@@ -2037,6 +2040,7 @@ def main():
         # v0.8.0: SpliceAI
         spliceai_enabled=getattr(args, 'spliceai', False),
         spliceai_concurrency=getattr(args, 'spliceai_concurrency', 5),
+        spliceai_timeout=getattr(args, 'spliceai_timeout', 45),
         # v0.9.0: VCF annotation + transcript selection
         disease_description=args.disease_description,
         annotator=args.annotator,

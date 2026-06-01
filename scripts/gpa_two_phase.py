@@ -742,7 +742,10 @@ async def _enrich_spliceai(
           f"(concurrency={getattr(config, 'spliceai_concurrency', 5)})")
 
     spliceai_sem = asyncio.Semaphore(getattr(config, 'spliceai_concurrency', 5))
-    spliceai_results = await query_spliceai_batch(tier12_candidates, spliceai_sem)
+    spliceai_results = await query_spliceai_batch(
+        tier12_candidates, spliceai_sem,
+        timeout=getattr(config, 'spliceai_timeout', 45),
+    )
 
     # Attach SpliceAI results to all Tier 1/2 candidates.
     # For variants without splice changes, the API returns delta=0 or not_in_db,

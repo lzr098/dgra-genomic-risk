@@ -695,7 +695,8 @@ async def run_dgra_pipeline(variants_data: List[Dict],
             print(f"[GPA] SpliceAI: querying {len(spliceai_candidates)} splice variants (concurrency={getattr(config, 'spliceai_concurrency', 5)})")
             timeout_obj = aiohttp.ClientTimeout(total=120)
             spliceai_results = await query_spliceai_batch(
-                spliceai_candidates, spliceai_sem
+                spliceai_candidates, spliceai_sem,
+                timeout=getattr(config, 'spliceai_timeout', 45),
             )
             # Attach results back to variants
             for v in variants:

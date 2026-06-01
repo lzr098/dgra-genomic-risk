@@ -66,6 +66,7 @@ def run_batch(
     # v0.10.13: SpliceAI propagation
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    spliceai_timeout: int = 45,
 ) -> Dict[str, Any]:
     """Run a single batch of variants through GPA core."""
     
@@ -101,6 +102,7 @@ def run_batch(
         if spliceai_enabled:
             cmd.append("--spliceai")
             cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
+            cmd.extend(["--spliceai-timeout", str(spliceai_timeout)])
 
         try:
             start = time.time()
@@ -277,6 +279,7 @@ def run_gpa_batched(
     # v0.10.13: SpliceAI propagation
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    spliceai_timeout: int = 45,
 ) -> Dict[str, Any]:
     """Run GPA with automatic batching for large variant sets."""
     
@@ -297,8 +300,9 @@ def run_gpa_batched(
             timeout=timeout_per_batch, batch_id=0,
             spliceai_enabled=spliceai_enabled,
             spliceai_concurrency=spliceai_concurrency,
+            spliceai_timeout=spliceai_timeout,
         )
-    
+
     # Large set: split into batches
     print(f"[GPA Batch] {len(variants)} variants > {batch_size} threshold, splitting into batches...", file=sys.stderr)
     
@@ -320,8 +324,9 @@ def run_gpa_batched(
                 timeout=timeout_per_batch, batch_id=batch_id,
                 spliceai_enabled=spliceai_enabled,
                 spliceai_concurrency=spliceai_concurrency,
+                spliceai_timeout=spliceai_timeout,
             )
-            
+
             if result.get("success"):
                 print(f"[GPA Batch] Batch {batch_id} completed in {result.get('elapsed_seconds', 0):.1f}s", file=sys.stderr)
                 batch_results.append(result)

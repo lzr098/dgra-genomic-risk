@@ -10,6 +10,8 @@ dgra_splice_predictor.py — SpliceAI 剪接预测集成（GPA v0.8.0）
 import asyncio
 import aiohttp
 import logging
+import os
+import traceback
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
@@ -21,8 +23,14 @@ logger = logging.getLogger(__name__)
 # GRCh38: https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/?hg=38&variant=chr-pos-ref-alt
 # GRCh37: https://spliceai-37-xwkwwwxdwq-uc.a.run.app/spliceai/?hg=37&variant=chr-pos-ref-alt
 # Rate limit: interactive use only (~few req/min). For bulk, run local Docker instance.
-SPLICEAI_BASE_URL_GRCh38 = "https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/"
-SPLICEAI_BASE_URL_GRCh37 = "https://spliceai-37-xwkwwwxdwq-uc.a.run.app/spliceai/"
+SPLICEAI_BASE_URL_GRCh38 = os.environ.get(
+    "GPA_SPLICEAI_URL_38",
+    "https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/",
+)
+SPLICEAI_BASE_URL_GRCh37 = os.environ.get(
+    "GPA_SPLICEAI_URL_37",
+    "https://spliceai-37-xwkwwwxdwq-uc.a.run.app/spliceai/",
+)
 
 # v0.9.5: Add Ensembl VEP REST API as fallback source for SpliceAI scores.
 # The Broad Institute endpoints are frequently rate-limited or unavailable.
@@ -81,7 +89,7 @@ class SpliceAIResult:
 class SpliceAIPredictor:
     """SpliceAI 预测器，支持异步批量查询、缓存、退避重试。"""
 
-    def __init__(self, max_concurrency: int = 5, timeout: int = 30, vep_enabled: bool = True):
+    def __init__(self, max_concurrency: int = 5, timeout: int = 45, vep_enabled: bool = True):
         self.max_concurrency = max_concurrency
         self.timeout = timeout
         self.vep_enabled = vep_enabled  # v0.9.5: fallback to VEP REST when Broad endpoint fails
@@ -183,8 +191,8 @@ class SpliceAIPredictor:
             "variant": variant_str,
         }
 
-        # 指数退避：2s → 4s → 8s（新 API 有限流，延迟更长）
-        backoff = [2, 4, 8]
+        # v0.11.3: 延长退避时间 5s → 10s → 15s → 20s（应对 HLA/复杂变异慢响应）
+        backoff = [5, 10, 15, 20]
 
         async with self._semaphore:
             # Step 1: Try Broad Institute endpoint
@@ -233,8 +241,8 @@ class SpliceAIPredictor:
     async def _query_vep_rest(self, chrom: str, pos: int, ref: str, alt: str, genome: str = "GRCh38") -> SpliceAIResult:
         """通过 Ensembl VEP REST API 查询 SpliceAI 分数。
 
-        v0.9.5: Fallback source when Broad Institute endpoint is unavailable.
-        URL: GET /vep/human/region/:region/:allele?content-type=application/json&SpliceAI=1
+        v0.11.3: 改用 POST /vep/human/region 格式，显式传递 ref/alt，避免 REF mismatch。
+        格式: "CHROM POS END REF/ALT STRAND"
         Response: transcript_consequences[].spliceai = {DS_AG, DS_AL, DS_DG, DS_DL, DP_AG, ...}
 
         Args:
@@ -248,22 +256,25 @@ class SpliceAIPredictor:
             SpliceAIResult 对象（source="vep_rest"）
         """
         chrom_std = chrom.replace("chr", "") if chrom.startswith("chr") else chrom
-        region = f"{chrom_std}:{pos}-{pos}:1"
-        url = f"{VEP_REST_BASE_URL}/vep/human/region/{region}/{alt}"
-        params = {
-            "content-type": "application/json",
+        variant_str = f"{chrom_std} {pos} {pos} {ref}/{alt} 1"
+        url = f"{VEP_REST_BASE_URL}/vep/human/region"
+        payload = {
+            "variants": [variant_str],
             "SpliceAI": "1",
         }
 
         try:
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-                async with session.get(url, params=params) as resp:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return self._parse_vep_response(data[0] if isinstance(data, list) else data)
                     elif resp.status == 400:
-                        # 可能是 reference allele mismatch
                         logger.warning(f"VEP REST 400 for {chrom}:{pos}:{ref}:{alt} — possible REF mismatch")
                         return SpliceAIResult(source="api_error", raw_response={"status": 400, "reason": "REF mismatch"})
                     else:
@@ -365,12 +376,15 @@ class SpliceAIPredictor:
             scores_list = data.get("scores", [])
             
             if not scores_list:
-                # 无 scores = 无剪接影响
-                return SpliceAIResult(
-                    delta_score=0.0,
-                    source=source,
-                    raw_response=data,
-                )
+                # v0.11.3: 区分"不在数据库"和"无剪接影响"
+                if data.get("source") == "not_in_db" or data.get("error"):
+                    return SpliceAIResult(source="not_in_db", raw_response=data)
+                else:
+                    return SpliceAIResult(
+                        delta_score=0.0,
+                        source=source,
+                        raw_response=data,
+                    )
 
             # 取所有 transcript 中 delta score 最大值（保守策略）
             max_delta = 0.0
@@ -429,13 +443,20 @@ class SpliceAIPredictor:
         if not tasks:
             return dict(self._cache)
 
+        total = len(tasks)
+        logger.info(f"SpliceAI batch query start: {total} variants")
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for key, res in zip(keys, results):
+        for idx, (key, res) in enumerate(zip(keys, results)):
             if isinstance(res, Exception):
                 logger.error(f"SpliceAI batch query error for {key}: {res}")
-                self._cache[key] = SpliceAIResult(source="api_error")
+                logger.debug(f"Traceback: {''.join(traceback.format_exception(type(res), res, res.__traceback__))}")
+                self._cache[key] = SpliceAIResult(source="api_error", raw_response={"error": str(res)})
             else:
                 self._cache[key] = res
+            # v0.11.3: 每 10 个或最后一个打印进度
+            if (idx + 1) % 10 == 0 or idx == total - 1:
+                logger.info(f"SpliceAI batch progress: {idx + 1}/{total} variants queried")
 
         return dict(self._cache)
 
@@ -463,7 +484,7 @@ def _cache_key(chrom: str, pos: int, ref: str, alt: str) -> str:
 _spliceai_predictor: Optional[SpliceAIPredictor] = None
 
 
-def _get_predictor(max_concurrency: int = 5, timeout: int = 30) -> SpliceAIPredictor:
+def _get_predictor(max_concurrency: int = 5, timeout: int = 45) -> SpliceAIPredictor:
     """获取/创建全局 SpliceAI predictor 实例。"""
     global _spliceai_predictor
     if _spliceai_predictor is None:
@@ -509,22 +530,22 @@ async def query_spliceai_batch(
     predictor = _get_predictor(max_concurrency=max_concurrency, timeout=timeout)
     results: Dict[str, SpliceAIResult] = {}
 
+    # v0.11.3: 移除外层 semaphore，predictor.query() 内部已有 self._semaphore 控制并发
     for v in variants:
         cache_key = _cache_key(v.chrom, v.pos, v.ref, v.alt)
         if cache_key in predictor._cache:
             results[cache_key] = predictor._cache[cache_key]
             continue
 
-        async with semaphore:
-            try:
-                result = await predictor.query(v.chrom, v.pos, v.ref, v.alt)
-                results[cache_key] = result
-                predictor._cache[cache_key] = result
-            except Exception as e:
-                logger.error(f"SpliceAI batch query error for {cache_key}: {e}")
-                err_result = SpliceAIResult(source="api_error")
-                results[cache_key] = err_result
-                predictor._cache[cache_key] = err_result
+        try:
+            result = await predictor.query(v.chrom, v.pos, v.ref, v.alt)
+            results[cache_key] = result
+            predictor._cache[cache_key] = result
+        except Exception as e:
+            logger.error(f"SpliceAI batch query error for {cache_key}: {e}")
+            err_result = SpliceAIResult(source="api_error", raw_response={"error": str(e)})
+            results[cache_key] = err_result
+            predictor._cache[cache_key] = err_result
 
     return results
 

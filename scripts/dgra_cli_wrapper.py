@@ -112,6 +112,7 @@ def _run_gpa_direct(
     config_path: Optional[Path] = None,
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    spliceai_timeout: int = 45,
     multi_organ: Optional[List[str]] = None,
     database_version: Optional[str] = None,
     # v0.10.0: Parameters previously only available via CLI subprocess
@@ -142,6 +143,7 @@ def _run_gpa_direct(
         evidence_detail=evidence_detail,
         somatic_mode=somatic,
         spliceai_enabled=spliceai_enabled,
+        spliceai_timeout=spliceai_timeout,
         multi_organ_profiles=multi_organ,
         database_version=database_version,
         disease_description=disease_description,
@@ -254,6 +256,7 @@ def _run_gpa_vcf_direct(
     max_batch_retries: int = 0,
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    spliceai_timeout: int = 45,
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
@@ -301,6 +304,7 @@ def _run_gpa_vcf_direct(
         if spliceai_enabled:
             cmd.append("--spliceai")
             cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
+            cmd.extend(["--spliceai-timeout", str(spliceai_timeout)])
         if disease_description:
             cmd.extend(["--disease-description", disease_description])
         if annotator and annotator != "auto":
@@ -370,6 +374,7 @@ def run_gpa_from_file(
     # v0.8.0: SpliceAI
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    spliceai_timeout: int = 45,
     # v0.9.0: VCF annotation + disease-aware transcript selection
     disease_description: Optional[str] = None,
     annotator: str = "auto",
@@ -414,6 +419,7 @@ def run_gpa_from_file(
             max_batch_retries=max_batch_retries,
             spliceai_enabled=spliceai_enabled,
             spliceai_concurrency=spliceai_concurrency,
+            spliceai_timeout=spliceai_timeout,
             disease_description=disease_description,
             annotator=annotator,
             vep_cache=vep_cache,
@@ -463,6 +469,7 @@ def run_gpa_from_file(
             max_batch_retries=max_batch_retries,
             spliceai_enabled=spliceai_enabled,
             spliceai_concurrency=spliceai_concurrency,
+            spliceai_timeout=spliceai_timeout,
             disease_description=disease_description,
             annotator=annotator,
             vep_cache=vep_cache,
@@ -525,6 +532,7 @@ def run_gpa(
     # v0.8.0: SpliceAI splice-prediction integration (default OFF)
     spliceai_enabled: bool = False,
     spliceai_concurrency: int = 5,
+    spliceai_timeout: int = 45,
     # v0.9.0: VCF annotation + disease-aware transcript selection
     disease_description: Optional[str] = None,
     annotator: str = "auto",
@@ -566,6 +574,7 @@ def run_gpa(
             config_path=config_path,
             spliceai_enabled=spliceai_enabled,
             spliceai_concurrency=spliceai_concurrency,
+            spliceai_timeout=spliceai_timeout,
             multi_organ=multi_organ,
             database_version=database_version,
         )
@@ -588,6 +597,7 @@ def run_gpa(
             # v0.10.13: Pass SpliceAI parameters through batch runner
             spliceai_enabled=spliceai_enabled,
             spliceai_concurrency=spliceai_concurrency,
+            spliceai_timeout=spliceai_timeout,
         )
     
     if not variants:
@@ -634,6 +644,7 @@ def run_gpa(
         config_path=config_path,
         spliceai_enabled=spliceai_enabled,
         spliceai_concurrency=spliceai_concurrency,
+        spliceai_timeout=spliceai_timeout,
         multi_organ=multi_organ,
         database_version=database_version,
         disease_description=disease_description,
@@ -718,6 +729,8 @@ def main():
                              "(v0.8.0)")
     parser.add_argument("--spliceai-concurrency", type=int, default=5,
                         help="Max concurrent SpliceAI API requests (default: 5). (v0.8.0)")
+    parser.add_argument("--spliceai-timeout", type=int, default=45,
+                        help="SpliceAI query timeout in seconds (default: 45). (v0.11.3)")
     # v0.9.0: VCF annotation + disease-aware transcript selection
     parser.add_argument("--disease-description", default=None,
                         help="Clinical disease description for disease-aware transcript selection. "
@@ -791,6 +804,7 @@ def main():
             # v0.8.0: SpliceAI
             spliceai_enabled=args.spliceai,
             spliceai_concurrency=args.spliceai_concurrency,
+            spliceai_timeout=args.spliceai_timeout,
             # v0.9.0: VCF annotation + disease-aware transcript selection
             disease_description=args.disease_description,
             annotator=args.annotator,
@@ -828,6 +842,7 @@ def main():
             # v0.8.0: SpliceAI
             spliceai_enabled=args.spliceai,
             spliceai_concurrency=args.spliceai_concurrency,
+            spliceai_timeout=args.spliceai_timeout,
         )
     else:
         # Inline JSON variants
@@ -858,8 +873,9 @@ def main():
             # v0.8.0: SpliceAI
             spliceai_enabled=args.spliceai,
             spliceai_concurrency=args.spliceai_concurrency,
+            spliceai_timeout=args.spliceai_timeout,
         )
-    
+
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)
 
     if args.output_json:
