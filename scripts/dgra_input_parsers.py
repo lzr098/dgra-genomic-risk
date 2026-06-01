@@ -38,6 +38,8 @@ VEP_CSQ_FIELDS = [
     "gnomAD_EAS_AF", "gnomAD_FIN_AF", "gnomAD_NFE_AF", "gnomAD_OTH_AF",
     "gnomAD_SAS_AF", "MAX_AF", "MAX_AF_POPS", "CLIN_SIG", "SOMATIC",
     "PHENO", "PUBMED", "MOTIF_NAME", "MOTIF_SCORE_CHANGE", "TRANSCRIPTION_FACTORS",
+    # v0.11.5: BIOTYPE is critical for filtering non-protein-coding transcripts
+    "BIOTYPE",
 ]
 
 VEP_CSQ_MAP = {name: idx for idx, name in enumerate(VEP_CSQ_FIELDS)}
@@ -238,22 +240,35 @@ class VCFParser(InputParser):
         return VEP_CSQ_MAP  # fallback to canonical
 
     def _pick_csq(self, csq_entries: List[List[str]], csq_map: Dict[str, int]) -> List[str]:
-        """Pick one transcript per allele. Prefer CANONICAL=YES or MANE_SELECT."""
+        """Pick one transcript per allele. Prefer CANONICAL=YES + protein_coding."""
         if not csq_entries:
             return []
         if self.keep_all_transcripts:
             return csq_entries[0]
-        # Prefer CANONICAL=YES
+
+        def _is_protein_coding(entry: List[str]) -> bool:
+            biotype_idx = csq_map.get("BIOTYPE")
+            if biotype_idx is None or len(entry) <= biotype_idx:
+                return True  # If BIOTYPE missing, assume protein_coding (backward compat)
+            return entry[biotype_idx] == "protein_coding"
+
+        # v0.11.5: Prefer CANONICAL=YES AND protein_coding biotype
         for entry in csq_entries:
             can_idx = csq_map.get("CANONICAL")
             if can_idx is not None and len(entry) > can_idx and entry[can_idx] == "YES":
-                return entry
-        # Fallback: MANE_SELECT present
+                if _is_protein_coding(entry):
+                    return entry
+        # Fallback: MANE_SELECT AND protein_coding
         for entry in csq_entries:
             mane_idx = csq_map.get("MANE_SELECT")
             if mane_idx is not None and len(entry) > mane_idx and entry[mane_idx]:
+                if _is_protein_coding(entry):
+                    return entry
+        # Fallback: any protein_coding transcript
+        for entry in csq_entries:
+            if _is_protein_coding(entry):
                 return entry
-        # Fallback: first entry
+        # Final fallback: first entry (may be NMD/pseudogene — downstream selector will flag)
         return csq_entries[0]
 
     def _extract_gt(self, call) -> str:

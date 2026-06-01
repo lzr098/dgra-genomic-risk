@@ -808,6 +808,8 @@ class VCFAnnotator:
                     "exon": tc.get("exon", ""),
                     "intron": tc.get("intron", ""),
                     "protein_domains": tc.get("domains", []),
+                    # v0.11.5: biotype is critical for transcript selection filtering
+                    "biotype": tc.get("biotype", ""),
                 }
                 tx_list.append(tx)
 

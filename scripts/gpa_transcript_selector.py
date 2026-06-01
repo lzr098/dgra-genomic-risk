@@ -265,6 +265,27 @@ class TranscriptSelector:
     # Scoring
     # ------------------------------------------------------------------
 
+    # v0.11.5: Biotype scoring penalties for non-protein-coding transcripts
+    _BIOTYPE_PENALTIES = {
+        # Strong penalty: these should almost never be selected for clinical interpretation
+        "nonsense_mediated_decay": -20,
+        "retained_intron": -20,
+        "processed_pseudogene": -25,
+        "transcribed_pseudogene": -25,
+        "polymorphic_pseudogene": -25,
+        "pseudogene": -25,
+        # Moderate penalty: non-coding RNA types
+        "lncRNA": -15,
+        "misc_RNA": -15,
+        "snRNA": -15,
+        "snoRNA": -15,
+        "rRNA": -15,
+        "miRNA": -15,
+        "scaRNA": -15,
+        # Reward for reliable protein-coding
+        "protein_coding": +5,
+    }
+
     def _score_transcript(
         self,
         tx: Dict[str, Any],
@@ -272,14 +293,26 @@ class TranscriptSelector:
     ) -> Tuple[int, List[str]]:
         """
         Score a transcript based on rule-based criteria.
+        v0.11.5: Added biotype filtering to prevent NMD/pseudogene selection.
         Returns (score, list_of_reasons).
         """
         score = 0
         reasons = []
 
-        # 1. Canonical flag (+10)
+        # 0. Biotype check (v0.11.5) — applied FIRST, before other scoring
+        biotype = tx.get("biotype", "").lower()
+        biotype_penalty = self._BIOTYPE_PENALTIES.get(biotype, 0)
+        if biotype_penalty != 0:
+            score += biotype_penalty
+            if biotype_penalty > 0:
+                reasons.append(f"protein_coding biotype (+{biotype_penalty})")
+            else:
+                reasons.append(f"{biotype} biotype ({biotype_penalty})")
+
+        # 1. Canonical flag (+15) — raised from +10 to ensure canonical dominates
+        #    over HIGH impact from NMD transcripts
         if tx.get("canonical"):
-            score += 10
+            score += 15
             reasons.append("canonical")
 
         # 2. MANE Select (+10)
@@ -298,22 +331,23 @@ class TranscriptSelector:
             score += tissue_bonus
             reasons.append(f"tissue relevance (+{tissue_bonus})")
 
-        # 5. Impact severity (+3~10)
+        # 5. Impact severity (+2~5) — lowered from +3~10
+        #    HIGH impact on NMD transcript should NOT outrank canonical protein_coding
         impact = tx.get("impact", "").upper()
         if impact == "HIGH":
-            score += 10
+            score += 5
             reasons.append("HIGH impact")
         elif impact == "MODERATE":
-            score += 5
+            score += 3
             reasons.append("MODERATE impact")
         elif impact == "LOW":
-            score += 2
+            score += 1
             reasons.append("LOW impact")
 
-        # 6. Protein domain involvement (+3~8)
+        # 6. Protein domain involvement (+2~6) — lowered from +3~8
         domains = tx.get("protein_domains", [])
         if domains:
-            score += min(len(domains) * 3, 8)
+            score += min(len(domains) * 2, 6)
             reasons.append(f"{len(domains)} protein domains")
 
         return score, reasons
