@@ -270,6 +270,7 @@ async def query_myvariant_batch(
     semaphore: Optional[asyncio.Semaphore] = None,
     fields: Optional[List[str]] = None,
     batch_size: int = 100,
+    proxy: Optional[str] = None,
 ) -> Dict[str, MyVariantResult]:
     """Query MyVariant.info for multiple variants using batch endpoint.
     
@@ -314,6 +315,7 @@ async def query_myvariant_batch(
                     headers=headers,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=60),
+                    proxy=proxy,
                 ) as resp:
                     if resp.status != 200:
                         text = await resp.text()

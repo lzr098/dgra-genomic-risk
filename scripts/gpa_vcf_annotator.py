@@ -213,10 +213,11 @@ class VCFAnnotator:
             raise NotImplementedError(f"Annotator '{resolved}' not yet implemented in v0.9.0")
 
         # 5. Merge annotation back into variant dicts
+        # v0.12.0: Merge ALL fields from annotation (including CSQ-style fields)
+        # Old code only copied transcript_consequences + vep_summary, dropping GENE/IMPACT/etc.
         results = []
         for v, ann in zip(filtered_variants, annotated):
-            v["transcript_consequences"] = ann.get("transcript_consequences", [])
-            v["vep_summary"] = ann.get("vep_summary", {})
+            v.update(ann)
             results.append(v)
 
         logger.info(f"[VCFAnnotator] Annotation complete for {len(results)} variants")
@@ -274,7 +275,10 @@ class VCFAnnotator:
     # ------------------------------------------------------------------
 
     def _parse_vcf(self, vcf_path: Path) -> List[Dict[str, Any]]:
-        """Extract CHROM, POS, REF, ALT, QUAL, FILTER, DP, GT from VCF."""
+        """Extract CHROM, POS, REF, ALT, QUAL, FILTER, DP, GT from VCF.
+
+        v0.12.2: Added boundary handling for symbolic alleles and low-quality records.
+        """
         opener = self._vcf_opener(vcf_path)
         variants: List[Dict[str, Any]] = []
         with opener(vcf_path, "rt") as fh:
@@ -285,11 +289,27 @@ class VCFAnnotator:
                 if len(parts) < 8:
                     continue
                 chrom, pos, _id, ref, alt, qual, filt, info = parts[:8]
-                # Handle multiple ALTs
+
+                # v0.12.2: Skip records with missing or failed FILTER
+                if filt not in (".", "PASS", ""):
+                    continue
+
+                # v0.12.2: Skip symbolic/non-reference alleles and SV breakpoints
+                # <NON_REF>, *, and breakends (]chr:pos[) are not supported
                 alts = alt.split(",")
+                valid_alts = []
                 for a in alts:
                     if a == ".":
                         continue
+                    if a.startswith("<") or a == "*":
+                        continue
+                    if any(c in a for c in ("[", "]")):
+                        continue
+                    valid_alts.append(a)
+                if not valid_alts:
+                    continue
+
+                for a in valid_alts:
                     v = {
                         "chrom": self._normalize_chrom(chrom),
                         "pos": int(pos),
@@ -813,10 +833,70 @@ class VCFAnnotator:
                 }
                 tx_list.append(tx)
 
-            results.append({
+            # ── v0.12.0: Also write top-level CSQ-style fields for _parse_variants_phase1() ──
+            # Pick the best transcript for CSQ fields
+            best_tx = None
+            for tc in entry.get("transcript_consequences", []):
+                if tc.get("canonical") or tc.get("mane_select"):
+                    best_tx = tc
+                    break
+            if best_tx is None and tx_list:
+                best_tx = tx_list[0]
+
+            csq_fields = {}
+            if best_tx:
+                gene_sym = best_tx.get("gene_symbol", "")
+                csq_fields["GENE"] = gene_sym
+                csq_fields["IMPACT"] = best_tx.get("impact", "UNKNOWN")
+                ct = best_tx.get("consequence_terms", [])
+                csq_fields["Consequence"] = ",".join(ct) if ct else ""
+                csq_fields["HGVSc"] = best_tx.get("hgvsc", "")
+                csq_fields["HGVSp"] = best_tx.get("hgvsp", "")
+            else:
+                csq_fields["GENE"] = ""
+                csq_fields["IMPACT"] = "UNKNOWN"
+                csq_fields["Consequence"] = ""
+                csq_fields["HGVSc"] = ""
+                csq_fields["HGVSp"] = ""
+
+            # ClinVar + gnomAD from colocated_variants
+            clin_sig_parts = []
+            gnomad_afs = []
+            if "colocated_variants" in entry:
+                for cv in entry["colocated_variants"]:
+                    # ClinVar — clin_sig_allele format: "ALLELE:significance"
+                    # For indels, ALLELE can be very long; only keep significance part
+                    cs = cv.get("clin_sig_allele", "")
+                    if cs:
+                        # Extract significance after the last ":" (handles long ALT sequences)
+                        if ":" in cs:
+                            sig = cs.split(":", 1)[1].strip()
+                        else:
+                            sig = cs.strip()
+                        if sig and sig not in clin_sig_parts:
+                            clin_sig_parts.append(sig)
+                    # gnomAD AF
+                    # VEP frequencies structure: {allele: {pop: af}}
+                    freqs = cv.get("frequencies", {})
+                    if isinstance(freqs, dict):
+                        for allele_freqs in freqs.values():
+                            if isinstance(allele_freqs, dict):
+                                af = allele_freqs.get("gnomade_af", None)
+                                if af is not None:
+                                    try:
+                                        gnomad_afs.append(float(af))
+                                    except (ValueError, TypeError):
+                                        pass
+            csq_fields["CLIN_SIG"] = ",".join(clin_sig_parts) if clin_sig_parts else ""
+            csq_fields["gnomad_af"] = min(gnomad_afs) if gnomad_afs else None
+
+            # Merge CSQ fields into result dict
+            result = {
                 "transcript_consequences": tx_list,
                 "vep_summary": summary,
-            })
+            }
+            result.update(csq_fields)
+            results.append(result)
 
         # v0.10.0 P2-2: VEP may return fewer results than input batch (filtered rows)
         # Pad remaining slots with error-marked entries so caller gets exactly len(batch) items

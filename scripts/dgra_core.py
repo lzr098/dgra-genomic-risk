@@ -300,6 +300,9 @@ class GPAConfig:
     spliceai_enabled: bool = False
     spliceai_concurrency: int = 5
     spliceai_timeout: int = 45  # v0.11.3: configurable timeout (was hardcoded 30)
+    # v0.12.2: API skip switches (replaces monkey-patch in phase2_analysis.py)
+    skip_gnomad: bool = False
+    skip_clinvar: bool = False
     # v0.9.0: VCF annotation + disease-aware transcript selection
     disease_description: Optional[str] = None
     annotator: str = "auto"

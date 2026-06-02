@@ -75,12 +75,6 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     gene = variant.gene
     actions = []
 
-    # v0.11.4: HLA region short-read reliability warning
-    # The HLA region is highly polymorphic with many pseudogenes; short-read
-    # sequencing cannot reliably distinguish true variants from mapping artifacts.
-    if _is_hla_region(variant.chrom, variant.pos):
-        variant.qc_flags.append("HLA_REGION_SHORT_READ_UNRELIABLE")
-
     # v0.5 P1-9: Initialize evidence chain for structured traceability
     # If variant already has evidence (e.g., from previous analysis or testing), preserve it
     evidence_chain = list(variant.evidence_chain)
@@ -560,6 +554,28 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 f"Pathogenic (review: {variant.clinvar_review_status}, "
                 f"confidence: {clinvar_conf:.0%}) — keeping for review"
             )
+
+    # =====================================================================
+    # v0.12.2 FIX: HLA region short-read unreliability → force Tier 3
+    # The HLA region (chr6:29.7M-33.1M) has extreme polymorphism and
+    # pseudogene homology; short-read variant calls here are unreliable.
+    # We keep the qc_flag (added below) but also downgrade tier.
+    # =====================================================================
+    if _is_hla_region(variant.chrom, variant.pos):
+        variant.qc_flags.append("HLA_REGION_SHORT_READ_UNRELIABLE")
+        # Force Tier 3 regardless of other evidence — short-read data
+        # cannot support clinical action in this region.
+        _add_evidence("HLA_Region",
+            f"HLA region variant (chr6:{variant.pos}) — short-read unreliable, forced Tier 3",
+            weight=-1.0, confidence="high",
+            raw_data={"chrom": variant.chrom, "pos": variant.pos, "hla_region": True})
+        actions.append("HLA region variant: WGS short-read calling unreliable in this region")
+        actions.append("Validation required: HLA-HD/OptiType typing or long-read sequencing")
+        variant.evidence_chain = evidence_chain
+        upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
+        variant.upgrade_conditions = upgrade_conditions
+        variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+        return 3, f"HLA region variant (chr6:{variant.pos}) — forced Tier 3 due to short-read unreliability", actions
 
     # Priority 1: Tier 1 checks (germline disease risk logic)
     # 1a. Known high-risk special gene lists with pathogenic variant

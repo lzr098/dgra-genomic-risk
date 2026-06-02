@@ -781,7 +781,7 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                 v.tier_reason += f" | NOTE: {redundancy['reason']} - partial compensation may mitigate risk"
 
     # Step 8: Generate report (with tissue context)
-    report_md = generate_tier_report(variants, config, tissue_profile, multi_hits)
+    report_md = generate_tier_report(variants, config, tissue_profile, multi_hits, gtex_data=gtex_data)
 
     # v0.5 P1-12: Generate structured JSON report
     json_report = generate_json_report(variants, config, tissue_profile, multi_hits, report_md, qc_summary)

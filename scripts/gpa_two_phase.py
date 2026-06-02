@@ -151,10 +151,10 @@ def _parse_variants_phase1(variants_data: List[Dict]) -> List[Variant]:
         gene = vd.get("GENE", "") or vd.get("Gene", "")
 
         v = Variant(
-            chrom=vd.get("CHROM", ""),
-            pos=int(vd.get("POS", 0) or 0),
-            ref=vd.get("REF", ""),
-            alt=vd.get("ALT", ""),
+            chrom=vd.get("chrom", vd.get("CHROM", "")),
+            pos=int(vd.get("pos", vd.get("POS", 0)) or 0),
+            ref=vd.get("ref", vd.get("REF", "")),
+            alt=vd.get("alt", vd.get("ALT", "")),
             gene=gene,
             transcript=vd.get("Feature", ""),
             exon=vd.get("EXON", ""),
@@ -321,14 +321,15 @@ async def _enrich_candidate_genes(
 
     cache = DGRACache(global_config.cache_db_path)
     async with DGRAAPIClient(global_config, cache) as client:
-        ensembl_raw, uniprot_raw, gnomad_constraint_raw = await asyncio.gather(
+        # v0.12.1 FIX: gnomAD GraphQL is 429-rate-limited in batch mode;
+        # skip gnomad_constraint here — gnomAD AF is provided by MyVariant.info.
+        ensembl_raw, uniprot_raw = await asyncio.gather(
             client.batch_query_genes(candidate_genes, "ensembl"),
             client.batch_query_genes(candidate_genes, "uniprot"),
-            client.batch_query_genes(candidate_genes, "gnomad_constraint"),
         )
         ensembl_data = {g: ensembl_raw.get(g, {}) for g in candidate_genes}
         uniprot_data = {g: uniprot_raw.get(g, {}) for g in candidate_genes}
-        gnomad_constraint_data = {g: gnomad_constraint_raw.get(g, {}) for g in candidate_genes}
+        gnomad_constraint_data = {}  # skipped — gnomAD GraphQL is rate-limited
 
     return ensembl_data, uniprot_data, gnomad_constraint_data
 
@@ -624,54 +625,89 @@ async def _enrich_variant_frequencies(
 
     print(f"[GPA Phase 2] gnomAD: querying {len(tier12_candidates_no_af)} Tier 1/2 candidate variants for AF")
 
-    # Try MyVariant.info batch first — query Tier 1/2 candidates for gnomAD AF + ClinVar + CADD.
-    # v0.10.4: All candidate variants get ClinVar/CADD regardless of consequence.
-    # Frameshift/stop_gained may still have ClinVar conflict annotations or
-    # additional phenotypic evidence that affects tier weighting.
-    # v0.10.13: Restricted to Tier 1/2 only to reduce API calls.
-    try:
-        from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
-        mv_sem = asyncio.Semaphore(10)
-        timeout_obj = aiohttp.ClientTimeout(total=120)
-        mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in tier12_candidates_no_af]
-        # v0.10.4: Always fill ClinVar and CADD for all candidates
-        # v0.10.13: Only for Tier 1/2 candidates
-        async with aiohttp.ClientSession(timeout=timeout_obj, trust_env=False) as mv_session:
-            mv_results = await query_myvariant_batch(mv_variants, mv_session, semaphore=mv_sem, batch_size=1000)
-        mv_stats = apply_myvariant_results(tier12_candidates_no_af, mv_results)
-        print(f"[GPA Phase 2] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, "
-              f"{mv_stats['clinvar_filled']} ClinVar, "
-              f"{mv_stats['cadd_filled']} CADD filled")
-    except Exception as e:
-        print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
+    # v0.12.2 FIX (E2): unify aiohttp proxy behavior with DGRAAPIClient.
+    # MyVariant session must use the same proxy as DGRAAPIClient to avoid
+    # inconsistent network behavior (some APIs via proxy, others direct).
+    mv_proxy = None
+    if getattr(global_config, 'proxy', None) and global_config.proxy != "__DIRECT__":
+        mv_proxy = global_config.proxy
+    elif getattr(global_config, '_proxy_route_map', None) is not None:
+        try:
+            mv_proxy = global_config._proxy_route_map.get_proxy("myvariant")
+        except Exception:
+            pass
 
-    # Fallback: gnomAD GraphQL ONLY for Tier 1/2 candidates still without AF
-    still_no_af = [v for v in tier12_candidates_no_af if v.gnomad_af is None]
-    if not still_no_af:
-        return
+    # v0.12.2: Respect skip_gnomad config (replaces phase2_analysis.py monkey-patch)
+    if getattr(config, 'skip_gnomad', False):
+        print("[GPA Phase 2] skip_gnomad=True — skipping MyVariant/gnomAD frequency queries")
+    else:
+        # Try MyVariant.info batch first — query Tier 1/2 candidates for gnomAD AF + ClinVar + CADD.
+        try:
+            from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
+            mv_sem = asyncio.Semaphore(10)
+            timeout_obj = aiohttp.ClientTimeout(total=120)
+            mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in tier12_candidates_no_af]
+            # v0.12.2 FIX (E2): pass explicit proxy to MyVariant session
+            async with aiohttp.ClientSession(
+                timeout=timeout_obj, trust_env=False
+            ) as mv_session:
+                mv_results = await query_myvariant_batch(
+                    mv_variants, mv_session, semaphore=mv_sem, batch_size=1000,
+                    proxy=mv_proxy,
+                )
+            mv_stats = apply_myvariant_results(tier12_candidates_no_af, mv_results)
+            print(f"[GPA Phase 2] MyVariant.info: {mv_stats['gnomad_filled']} gnomAD, "
+                  f"{mv_stats['clinvar_filled']} ClinVar, "
+                  f"{mv_stats['cadd_filled']} CADD filled, "
+                  f"{mv_stats['not_found']} not_found, "
+                  f"{mv_stats['errors']} errors")
+            # v0.12.2 FIX (B3): diagnostic warning when MyVariant returns all empty
+            if mv_stats['gnomad_filled'] == 0 and mv_stats['errors'] > 0:
+                print(f"[GPA Phase 2] WARNING: MyVariant.info returned zero gnomAD AF for all "
+                      f"{len(tier12_candidates_no_af)} variants ({mv_stats['errors']} errors). "
+                      f"Check proxy/network connectivity or MyVariant.info availability.")
+        except Exception as e:
+            print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
 
-    print(f"[GPA Phase 2] gnomAD GraphQL: querying {len(still_no_af)} Tier 1/2 candidates without AF")
-    cache = DGRACache(global_config.cache_db_path)
-    async with DGRAAPIClient(global_config, cache) as client:
-        gnomad_sem = asyncio.Semaphore(2)
-        async def _query_one(v):
-            async with gnomad_sem:
-                try:
-                    return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
-                except Exception as e:
-                    return {"status": "API_FAILED", "error": str(e), "source": "failed"}
-        results = await asyncio.gather(*[_query_one(v) for v in still_no_af])
-        for v, result in zip(still_no_af, results):
-            if result and result.get("source") in ("gnomad", "cache", "failed"):
-                af = result.get("af")
-                if af is not None:
-                    v.gnomad_af = af
-                    v.gnomad_populations = result.get("af_populations", {})
-                    v.gnomad_status = "SUCCESS"
+        # v0.12.2 FIX (B1): restore gnomAD REST fallback when MyVariant fails.
+        # gnomAD GraphQL batch is 429-rate-limited, but single-variant REST queries
+        # via DGRAAPIClient.query_gnomad_variant() are more reliable.
+        still_no_af = [v for v in tier12_candidates_no_af if v.gnomad_af is None]
+        if still_no_af:
+            print(f"[GPA Phase 2] gnomAD REST fallback: querying {len(still_no_af)} Tier 1/2 candidates without AF")
+            cache = DGRACache(global_config.cache_db_path)
+            async with DGRAAPIClient(global_config, cache) as client:
+                gnomad_sem = asyncio.Semaphore(2)
+                async def _query_one(v):
+                    async with gnomad_sem:
+                        try:
+                            return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
+                        except Exception as e:
+                            return {"status": "API_FAILED", "error": str(e), "source": "failed"}
+                results = await asyncio.gather(*[_query_one(v) for v in still_no_af])
+                n_filled = 0
+                for v, result in zip(still_no_af, results):
+                    if result and result.get("source") in ("gnomad", "cache", "failed"):
+                        af = result.get("af")
+                        if af is not None:
+                            v.gnomad_af = af
+                            v.gnomad_populations = result.get("af_populations", {})
+                            v.gnomad_status = "SUCCESS"
+                            n_filled += 1
+                print(f"[GPA Phase 2] gnomAD REST fallback: {n_filled}/{len(still_no_af)} filled")
 
-        # v0.10.6 FIX: NCBI ClinVar direct query for variants still UNKNOWN after MyVariant.info.
-        # MyVariant.info ClinVar coverage is incomplete; NCBI ESummary provides accurate data.
-        # v0.10.13: Only query Tier 1/2 variants for ClinVar.
+        # Final warning if AF is still missing for many candidates
+        still_no_af_final = [v for v in tier12_candidates_no_af if v.gnomad_af is None]
+        if still_no_af_final:
+            print(f"[GPA Phase 2] WARNING: {len(still_no_af_final)}/{len(tier12_candidates_no_af)} Tier 1/2 variants "
+                  f"still have no gnomAD AF data. Frequency-based filtering (EAS AF>1%) will not apply. "
+                  f"Candidate set may be inflated with common polymorphisms.")
+
+    # v0.10.6 FIX: NCBI ClinVar direct query for variants still UNKNOWN after MyVariant.info.
+    # v0.12.2: Respect skip_clinvar config (replaces phase2_analysis.py monkey-patch)
+    if getattr(config, 'skip_clinvar', False):
+        print("[GPA Phase 2] skip_clinvar=True — skipping NCBI ClinVar queries")
+    else:
         clinvar_unknown = [variants[i] for i in candidate_indices
                           if variants[i].clinvar in (_UNKNOWN, "UNKNOWN", "") and getattr(variants[i], 'tier', 3) in (1, 2)]
         if clinvar_unknown:
@@ -679,25 +715,33 @@ async def _enrich_variant_frequencies(
             cv_candidates = [v for v in clinvar_unknown if _variant_needs_clinvar(v)]
             if cv_candidates:
                 n_cv = len(cv_candidates)
-                print(f"[GPA Phase 2] ClinVar (NCBI): querying {n_cv} variants (1 req/s)")
-                cv_sem = asyncio.Semaphore(1)  # NCBI: 1 req/s
-                async def _query_one_clinvar(v):
-                    async with cv_sem:
+                print(f"[GPA Phase 2] ClinVar (NCBI): querying {n_cv} variants (serial, 3 req/s)")
+                cache = DGRACache(global_config.cache_db_path)
+                async with DGRAAPIClient(global_config, cache) as client:
+                    # v0.12.2 FIX: NCBI E-utilities true serial query.
+                    # asyncio.gather + Semaphore(1) does NOT serialize because
+                    # coroutines are created before acquire; HTTP connections
+                    # may be established concurrently. Use for-loop + sleep.
+                    cv_results: List[Dict[str, Any]] = []
+                    for i, v in enumerate(cv_candidates):
                         try:
-                            return await client.query_ncbi_clinvar(
+                            result = await client.query_ncbi_clinvar(
                                 gene=v.gene, chrom=v.chrom, pos=v.pos
                             )
+                            cv_results.append(result)
                         except Exception as e:
-                            return {"clinical_significance": None, "error": str(e), "source": "failed"}
-                cv_results = await asyncio.gather(*[_query_one_clinvar(v) for v in cv_candidates])
-                n_found = 0
-                for v, cv_result in zip(cv_candidates, cv_results):
-                    sig = cv_result.get("clinical_significance")
-                    if sig:
-                        v.clinvar = sig
-                        v.clinvar_review_status = cv_result.get("review_status")
-                        n_found += 1
-                print(f"[GPA Phase 2] ClinVar (NCBI): {n_found}/{n_cv} filled")
+                            cv_results.append({"clinical_significance": None, "error": str(e), "source": "failed"})
+                        # 0.34s delay = ~3 req/s (NCBI safe limit without API key)
+                        if i < n_cv - 1:
+                            await asyncio.sleep(0.34)
+                    n_found = 0
+                    for v, cv_result in zip(cv_candidates, cv_results):
+                        sig = cv_result.get("clinical_significance")
+                        if sig:
+                            v.clinvar = sig
+                            v.clinvar_review_status = cv_result.get("review_status")
+                            n_found += 1
+                    print(f"[GPA Phase 2] ClinVar (NCBI): {n_found}/{n_cv} filled")
 
 
 async def _enrich_spliceai(
@@ -1014,9 +1058,9 @@ async def _run_two_phase_pipeline_impl(
     # v0.10.13: Enable SpliceAI flag so that classify_variant_tier uses the results.
     # The two-phase pipeline auto-queries SpliceAI for all Tier 1/2 candidates,
     # so we set spliceai_enabled=True to ensure the classifier evaluates upgrades/downgrades.
-    if all_candidate_indices:
-        config.spliceai_enabled = True
-    await _enrich_spliceai(variants, all_candidate_indices, config)
+    # v0.12.2 FIX: respect config.spliceai_enabled — don't force override
+    if all_candidate_indices and config.spliceai_enabled:
+        await _enrich_spliceai(variants, all_candidate_indices, config)
 
     # Phase 2.4: Phenotype LLM matching
     await _enrich_phenotype(variants, all_candidate_indices, user_phenotypes)
@@ -1093,7 +1137,8 @@ async def _run_two_phase_pipeline_impl(
     return _build_output(
         variants, all_candidate_indices, tissue_profile, config, profile_name,
         f"Two-phase: Phase 1 filtered {n_total}→{n_candidates} candidates, "
-        f"Phase 2 enriched {len(candidate_gene_set)} genes"
+        f"Phase 2 enriched {len(candidate_gene_set)} genes",
+        gtex_data=gtex_data,
     )
 
 
@@ -1104,6 +1149,7 @@ def _build_output(
     config: GPAConfig,
     profile_name: str,
     method_note: str,
+    gtex_data: Optional[Dict[str, Dict]] = None,
 ) -> Dict[str, Any]:
     """Build standardized output dict for report generation."""
     from gpa_report import generate_tier_report, generate_json_report
@@ -1129,7 +1175,7 @@ def _build_output(
             v.tier_reason = f"[PRELIMINARY] {v.tier_reason}"
 
     report_md = generate_tier_report(
-        variants, config, tissue_profile, multi_hits
+        variants, config, tissue_profile, multi_hits, gtex_data=gtex_data
     )
 
     json_report = generate_json_report(

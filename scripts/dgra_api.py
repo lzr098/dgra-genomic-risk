@@ -182,7 +182,14 @@ class DGRAAPIClient:
         url = f"{cfg.base_url}/{endpoint.lstrip('/')}"
         
         # Phase 1: Check cache (skip if offline mode - we already checked before calling)
+        # v0.12.2 FIX: include json_body in cache key for POST/GraphQL requests.
+        # Without this, all POSTs to the same endpoint share one cache key,
+        # causing cache collisions (e.g. all gnomAD GraphQL queries overwrite each other).
         cache_key_params = {"url": url, **(params or {})}
+        if json_body is not None:
+            # Use a stable, compact representation of the JSON body
+            body_key = json.dumps(json_body, sort_keys=True, separators=(',', ':'))
+            cache_key_params["_body"] = body_key
         cached = self.cache.get(api_name, **cache_key_params)
         
         if cached:

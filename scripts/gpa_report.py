@@ -681,6 +681,121 @@ def _generate_tier12_transcript_validation_section(variants: List[Variant]) -> O
 
 
 # =============================================================================
+# SpliceAI Assessment Section (v0.12.2)
+# =============================================================================
+
+def _generate_spliceai_section(variants: List[Variant]) -> Optional[str]:
+    """
+    v0.12.2: Generate SpliceAI prediction section for Tier 1/2 variants.
+
+    Shows SpliceAI delta scores and predicted impact for variants where
+    splicing evidence was queried. Highlights strong predictions (delta>=0.5)
+    and variants with delta=0 that may indicate VEP overcall.
+    """
+    # Collect Tier 1/2 variants with SpliceAI results
+    sa_variants = []
+    for v in variants:
+        if v.tier in (1, 2) and getattr(v, 'spliceai_result', None):
+            sa = v.spliceai_result
+            if isinstance(sa, dict) and sa.get('source') not in ('not_in_db', None):
+                sa_variants.append((v, sa))
+
+    if not sa_variants:
+        return None
+
+    lines = []
+    lines.append("## 🧬 SpliceAI 剪接预测\n")
+    lines.append(f"*对 {len(sa_variants)} 个 Tier 1/2 变异进行 SpliceAI 剪接影响评估*\n\n")
+
+    lines.append("| 基因 | 位点 | 变异 | Tier | Delta | 影响 | 来源 | 说明 |\n")
+    lines.append("|------|------|------|------|-------|------|------|------|\n")
+
+    for v, sa in sa_variants:
+        pos = f"{v.chrom}:{v.pos}"
+        var_name = v.hgvsp or v.hgvsc or "N/A"
+        delta = sa.get('delta_score')
+        delta_str = f"{delta:.2f}" if delta is not None else "N/A"
+        impact = sa.get('predicted_impact', 'unknown')
+        source = sa.get('source', 'unknown')
+
+        if delta is not None and delta >= 0.5:
+            icon = "🔴"
+            note = "强剪接破坏"
+        elif delta is not None and delta >= 0.2:
+            icon = "🟡"
+            note = "中度剪接影响"
+        elif delta == 0.0:
+            icon = "🟢"
+            note = "无剪接变化 (VEP 可能过判)"
+        else:
+            icon = "⚪"
+            note = "无显著影响"
+
+        lines.append(
+            f"| {v.gene} | {pos} | {var_name} | Tier {v.tier} | "
+            f"{delta_str} | {icon} {impact} | {source} | {note} |\n"
+        )
+
+    lines.append("\n**说明**: SpliceAI delta >= 0.5 表示强剪接破坏，建议 RNA-seq 验证; "
+                 "delta = 0 表示无剪接变化，VEP HIGH 剪接位点可能为过判。\n")
+    return "".join(lines)
+
+
+# =============================================================================
+# GTEx Multi-Tissue Expression Section (v0.12.2)
+# =============================================================================
+
+def _generate_gtex_section(
+    variants: List[Variant],
+    gtex_data: Optional[Dict[str, Dict]] = None,
+) -> Optional[str]:
+    """
+    v0.12.2: Generate GTEx multi-tissue expression section.
+
+    Shows expression levels across all 54 GTEx tissues for candidate genes.
+    Highlights phenotype-relevant tissues.
+    """
+    if not gtex_data:
+        return None
+
+    # Only show genes that have Tier 1/2 variants
+    tier12_genes = {v.gene for v in variants if v.tier in (1, 2)}
+    gtex_genes = {g for g in tier12_genes if g in gtex_data}
+
+    if not gtex_genes:
+        return None
+
+    lines = []
+    lines.append("## 🧬 GTEx 组织表达谱\n")
+    lines.append(f"*对 {len(gtex_genes)} 个 Tier 1/2 基因进行多组织表达分析*\n\n")
+
+    for gene in sorted(gtex_genes):
+        gd = gtex_data[gene]
+        lines.append(f"### {gene}\n")
+
+        max_tpm = gd.get('max_tpm', 0)
+        expressing = gd.get('expressing_tissues', 0)
+        lines.append(f"- **最高表达**: {max_tpm:.2f} TPM ({expressing} 个组织表达)\n")
+
+        # Phenotype-relevant tissues
+        pheno_max = gd.get('phenotype_max_tpm')
+        pheno_tissues = gd.get('phenotype_tissues', [])
+        if pheno_max is not None and pheno_tissues:
+            lines.append(f"- **表型相关组织最高表达**: {pheno_max:.2f} TPM\n")
+            lines.append(f"- **表型相关组织**: {', '.join(pheno_tissues[:5])}{'...' if len(pheno_tissues) > 5 else ''}\n")
+
+        # Top expressing tissues
+        all_tissues = gd.get('all_tissues', [])
+        if all_tissues:
+            lines.append("- **Top 5 表达组织**:\n")
+            for t in all_tissues[:5]:
+                lines.append(f"  - {t['tissue']}: {t['tpm']:.2f} TPM\n")
+        lines.append("\n")
+
+    return "".join(lines)
+
+
+# =============================================================================
 # Phenotype Association Assessment Section (v0.7 Phase 4)
 # =============================================================================
 
@@ -832,7 +947,8 @@ def _generate_phenotype_assessment_section(variants: List[Variant]) -> Optional[
 # =============================================================================
 
 def generate_tier_report(variants: List[Variant], config: GPAConfig,
-                        tissue_profile: Dict, multi_hits: List[Dict]) -> str:
+                        tissue_profile: Dict, multi_hits: List[Dict],
+                        gtex_data: Optional[Dict[str, Dict]] = None) -> str:
     """
     Generate Markdown report with three-tier structure and dynamic tissue context.
     """
@@ -1014,6 +1130,18 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
     tx_validation = _generate_tier12_transcript_validation_section(variants)
     if tx_validation:
         report.append(tx_validation)
+        report.append("\n")
+
+    # v0.12.2: SpliceAI assessment section
+    spliceai_section = _generate_spliceai_section(variants)
+    if spliceai_section:
+        report.append(spliceai_section)
+        report.append("\n")
+
+    # v0.12.2: GTEx multi-tissue expression section
+    gtex_section = _generate_gtex_section(variants, gtex_data)
+    if gtex_section:
+        report.append(gtex_section)
         report.append("\n")
 
     # v0.10.3: Tier 1 + Tier 2 merged into a gene-centric view
