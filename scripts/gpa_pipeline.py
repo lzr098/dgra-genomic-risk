@@ -397,6 +397,70 @@ async def run_dgra_pipeline(variants_data: List[Dict],
                         print(f"[GPA] MyVariant.info fallback failed (non-critical): {type(e).__name__}: {e}")
                 
                 print(f"[GPA] gnomAD results: {n_success} success, {n_not_captured} not in dataset, {n_query_error} query errors, {n_failed} API failures | {n_myvariant_fallback} recovered via MyVariant fallback")
+
+                # v0.12.3: Retry mechanism for API_FAILED variants
+                # Network timeouts or transient errors may cause false API_FAILED.
+                # We retry once with a longer timeout to reduce false negatives.
+                _retry_variants = [v for v in variants_without_af if v.gnomad_status == "API_FAILED"]
+                if _retry_variants:
+                    print(f"[GPA] gnomAD retry: re-querying {_retry_variants} variants with API_FAILED status (longer timeout)")
+                    gnomad_retry_sem = asyncio.Semaphore(1)  # Even more conservative
+                    async def _retry_one_gnomad(v):
+                        async with gnomad_retry_sem:
+                            try:
+                                # Longer timeout for retry (60s vs 30s)
+                                return await asyncio.wait_for(
+                                    client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt),
+                                    timeout=60
+                                )
+                            except asyncio.TimeoutError as e:
+                                print(f"[GPA] gnomAD retry TIMEOUT for {v.gene} {v.chrom}:{v.pos}: {e}")
+                                return {"status": "API_FAILED", "error": f"retry_timeout: {e}", "source": "failed"}
+                            except Exception as e:
+                                print(f"[GPA] gnomAD retry FAILED for {v.gene} {v.chrom}:{v.pos}: {e}")
+                                return {"status": "API_FAILED", "error": f"retry_failed: {e}", "source": "failed"}
+                    retry_results = await asyncio.gather(*[_retry_one_gnomad(v) for v in _retry_variants])
+                    n_retry_success = 0
+                    n_retry_failed = 0
+                    for v, result in zip(_retry_variants, retry_results):
+                        if result and result.get("source") in ("gnomad", "cache", "failed"):
+                            af = result.get("af")
+                            if af is not None:
+                                v.gnomad_af = af
+                                v.gnomad_populations = result.get("af_populations", {})
+                                v.gnomad_status = "SUCCESS"
+                                v.gnomad_af_warning = False
+                                n_retry_success += 1
+                                print(f"[GPA] gnomAD retry SUCCESS: {v.gene} {v.chrom}:{v.pos} AF={v.gnomad_af}")
+                            else:
+                                v.gnomad_status = result.get("status", "NOT_CAPTURED")
+                                n_retry_failed += 1
+                        else:
+                            v.gnomad_status = "API_FAILED"
+                            v.gnomad_error_msg = result.get("error", "retry_failed")
+                            n_retry_failed += 1
+                    print(f"[GPA] gnomAD retry results: {n_retry_success} success, {n_retry_failed} still failed")
+
+                    # v0.12.3: Alert user if any Tier 1/2 candidates still have API_FAILED after retry
+                    # A variant is a Tier 1/2 candidate if: HIGH impact, ClinVar pathogenic,
+                    # or in a known disease gene.
+                    def _is_tier_candidate(v):
+                        impact = str(v.impact or "").upper()
+                        clinvar = str(v.clinvar or "").lower()
+                        is_high = impact == "HIGH" or impact == "UNKNOWN"
+                        is_pathogenic = "pathogenic" in clinvar and "conflicting" not in clinvar
+                        return is_high or is_pathogenic
+                    _still_failed_tier_candidates = [
+                        v for v in _retry_variants
+                        if v.gnomad_status == "API_FAILED" and _is_tier_candidate(v)
+                    ]
+                    if _still_failed_tier_candidates:
+                        print(f"\n{'='*60}")
+                        print("⚠️  USER ALERT: Tier 1/2 candidate variants with gnomAD query failure")
+                        print(f"   {_still_failed_tier_candidates} variants could not be verified in gnomAD")
+                        print("   These variants have been conservatively downgraded to Tier 2")
+                        print("   MANUAL ACTION REQUIRED: Please verify gnomAD/ClinVar status externally")
+                        print(f"{'='*60}\n")
             
             # v0.10.4: Direct NCBI ClinVar query — replaces MyVariant.info's unreliable ClinVar aggregation.
             # MyVariant.info ClinVar coverage is incomplete (verified: returns HTTP 200 but missing clinvar field

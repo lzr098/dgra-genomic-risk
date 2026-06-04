@@ -35,6 +35,57 @@ def _sa_get(sa, key, default=None):
     return getattr(sa, key, default)
 
 
+# v0.12.3: Reference genome polymorphism artifact detection
+# GRCh38 sometimes selects a rare/ancestral allele as REF, causing
+# near-fixation variants to appear as "homozygous deletions" (e.g. SLC37A4).
+# These are NOT pathogenic — they are reference genome artifacts.
+def _is_reference_polymorphism_artifact(variant: Variant, gnomad_af: Optional[float]) -> bool:
+    """
+    Detect reference genome polymorphism artifacts.
+
+    Criteria (ALL must be met):
+    1. gnomAD AF > 0.99 (near-fixation in human population)
+    2. Variant is a deletion (DEL) or insertion (INS) — indels are most affected
+    3. Genotype is homozygous (1/1 or 1|1) — consistent with fixation
+    4. ClinVar is benign, likely_benign, or not pathogenic
+
+    Returns True if this variant is a reference genome artifact.
+    """
+    if gnomad_af is None:
+        return False
+    try:
+        af = float(gnomad_af)
+    except (ValueError, TypeError):
+        return False
+
+    if af <= 0.99:
+        return False
+
+    # Must be indel (deletions are the most common artifacts)
+    consequence_lower = str(variant.consequence or "").lower()
+    is_indel = (
+        "deletion" in consequence_lower
+        or "insertion" in consequence_lower
+        or "del" in consequence_lower
+        or "ins" in consequence_lower
+        or "frameshift" in consequence_lower
+        or "inframe" in consequence_lower
+    )
+    if not is_indel:
+        return False
+
+    # Must be homozygous (consistent with fixation)
+    if variant.gt not in ("1/1", "1|1"):
+        return False
+
+    # ClinVar must not be pathogenic
+    clinvar_lower = str(variant.clinvar or "").lower()
+    if "pathogenic" in clinvar_lower and "conflicting" not in clinvar_lower:
+        return False
+
+    return True
+
+
 # v0.7 Phase 3: Rare disease gene list (from gene_phenotype_map.json)
 _RARE_DISEASE_GENES: Optional[set] = None
 
@@ -577,6 +628,34 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
         variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
         return 3, f"HLA region variant (chr6:{variant.pos}) — forced Tier 3 due to short-read unreliability", actions
 
+    # =====================================================================
+    # v0.12.3 FIX: Reference genome polymorphism artifact → force Tier 3
+    # GRCh38 occasionally selects a rare/ancestral allele as REF, causing
+    # near-fixation variants to appear as "homozygous deletions" (e.g.
+    # SLC37A4 chr11:119027725 AC>A, gnomAD AF=99.9993%).
+    # These are NOT pathogenic — they are reference genome artifacts.
+    # =====================================================================
+    if _is_reference_polymorphism_artifact(variant, gnomad_af):
+        reason = (
+            f"Reference genome polymorphism artifact: {gene} chr{variant.chrom}:{variant.pos} "
+            f"{variant.ref}>{variant.alt} — gnomAD AF={gnomad_af:.4%} (>99%), "
+            f"near-fixation in human population. GRCh38 REF allele is rare/ancestral."
+        )
+        _add_evidence("ReferenceGenome",
+            reason,
+            weight=-1.0, confidence="high",
+            raw_data={"gnomad_af": gnomad_af, "gt": variant.gt,
+                     "consequence": variant.consequence, "ref": variant.ref, "alt": variant.alt})
+        actions.append("⚠️ REFERENCE GENOME ARTIFACT — This variant is NOT pathogenic")
+        actions.append(f"gnomAD AF={gnomad_af:.4%} indicates the ALT allele is the normal human sequence")
+        actions.append("GRCh38 REF contains an extra base that is absent in 99.99% of humans")
+        variant.evidence_chain = evidence_chain
+        upgrade_conditions = _generate_upgrade_conditions(variant, 3, tissue_assessment, gnomad_info)
+        variant.upgrade_conditions = upgrade_conditions
+        variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
+        variant.qc_flags.append("REFERENCE_GENOME_POLYMORPHISM")
+        return 3, f"Reference genome artifact — {gene} near-fixation variant (AF={gnomad_af:.4%})", actions
+
     # Priority 1: Tier 1 checks (germline disease risk logic)
     # 1a. Known high-risk special gene lists with pathogenic variant
     for list_name, gene_list in special_lists.items():
@@ -615,14 +694,26 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
                 return 2, f"Priority 1b candidate (homozygous HIGH in primary tissue gene {gene}), but gnomAD query FAILED ({variant.gnomad_error_msg}). Downgraded to Tier 2 pending frequency verification.", actions
             elif variant.gnomad_status == "NOT_CAPTURED":
-                _add_evidence("Zygosity", f"Homozygous LOF in primary tissue gene {gene} → Tier 1 (gnomAD NOT_CAPTURED, confidence=MEDIUM)", weight=1.0, confidence="medium", raw_data={"gt": variant.gt, "impact": variant.impact, "relevance": "primary", "gnomad_status": "NOT_CAPTURED"})
+                # v0.12.3 FIX: NOT_CAPTURED no longer auto-Tier 1.
+                # gnomAD "not captured" can mean: (a) truly rare novel variant,
+                # (b) reference genome artifact (AF>99%), or (c) indel not in gnomAD.
+                # Without confirmed rarity, we conservatively place in Tier 2
+                # and require manual verification before clinical action.
+                _add_evidence("Zygosity",
+                    f"Homozygous LOF in primary tissue gene {gene} → Tier 2 (gnomAD NOT_CAPTURED, cannot confirm rarity)",
+                    weight=0.5, confidence="low",
+                    raw_data={"gt": variant.gt, "impact": variant.impact, "relevance": "primary", "gnomad_status": "NOT_CAPTURED"})
+                actions.append("⚠️ gnomAD NOT_CAPTURED — frequency unverified. Conservatively placed in Tier 2.")
                 actions.append("Confirm homozygosity via secondary method")
                 actions.append("Assess if phenotype is consistent with expected tissue function")
+                actions.append("MANUAL ACTION REQUIRED: Verify gnomAD/ClinVar status before clinical decision")
+                variant.gnomad_af_warning = True
                 variant.evidence_chain = evidence_chain
-                upgrade_conditions = []  # Tier 1: no upgrade
+                upgrade_conditions = _generate_upgrade_conditions(variant, 2, tissue_assessment, gnomad_info)
+                upgrade_conditions.append("若gnomAD查询确认AF<1%且非参考基因组伪影,可升级为Tier 1")
                 variant.upgrade_conditions = upgrade_conditions
                 variant.tier_confidence = _calculate_tier_confidence(evidence_chain)
-                return 1, f"Homozygous truncating variant in primary tissue gene {gene} (gnomAD not captured — may be rare/indel)", actions
+                return 2, f"Homozygous truncating variant in primary tissue gene {gene} (gnomAD NOT_CAPTURED — rarity unverified, downgraded to Tier 2)", actions
             # === v0.9.1: known common polymorphism guard ===
             elif variant.gnomad_af is not None and variant.gnomad_af > 0.01:
                 _add_evidence("gnomAD", f"AF={variant.gnomad_af:.3f} > 1% — common polymorphism, not Tier 1", weight=-1.0, confidence="high", raw_data={"gnomad_af": variant.gnomad_af})
