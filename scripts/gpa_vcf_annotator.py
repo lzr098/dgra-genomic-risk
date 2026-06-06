@@ -393,9 +393,9 @@ class VCFAnnotator:
         """Resolve auto → concrete annotator.
 
         Priority in auto mode:
-        1. System vep command (vep_local) — fastest if installed
-        2. Docker VEP (vep_docker) — uses shared cache, no rate limits
-        3. VEP REST API (vep_api) — zero config, network dependent
+        1. Docker VEP (vep_docker) — shared cache, offline, no rate limits
+        2. VEP REST API (vep_api) — zero config, may be rate-limited
+        3. System vep command (vep_local) — fallback only
 
         v0.9.5: Large datasets (>5000 variants) always use VEP API regardless
         of local VEP availability. Local VEP subprocess is too slow and
@@ -410,15 +410,12 @@ class VCFAnnotator:
                 f"forcing VEP API (local VEP too slow for large datasets)"
             )
             return "vep_api"
-        # Check if system VEP is available (fastest)
-        if self._vep_local_available():
-            logger.info("[VCFAnnotator] Auto-detected system VEP → using vep_local")
-            return "vep_local"
-        # Check if Docker VEP is available
+        # 1. Docker VEP — priority (shared cache, offline, stable)
         if self._vep_docker_available():
             logger.info("[VCFAnnotator] Auto-detected Docker VEP → using vep_docker")
             return "vep_docker"
-        logger.info("[VCFAnnotator] No local VEP available → using vep_api (REST)")
+        # 2. REST API — zero config, may be rate-limited
+        logger.info("[VCFAnnotator] Docker VEP unavailable → using vep_api (REST)")
         return "vep_api"
 
     @staticmethod
