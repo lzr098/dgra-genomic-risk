@@ -77,12 +77,12 @@ class VCFAnnotator:
     ):
         """
         Args:
-            annotator: "auto", "vep_api", "vep_local", "annovar", "snpeff"
+            annotator: "auto", "vep_api", "vep_local", "vep_docker", "annovar", "snpeff"
             genome: "auto", "GRCh37", "GRCh38"
             batch_size: variants per batch (VEP API chunk size)
             max_concurrency: max concurrent API requests
             timeout: request timeout in seconds
-            vep_cache: path to local VEP cache (for vep_local)
+            vep_cache: path to local VEP cache (for vep_local and vep_docker)
             proxy: None = use system proxy, "__DIRECT__" = disable proxy
             proxy_route_map: gpa_proxy_routes.ProxyRouteMap — per-API proxy routing
             vep_params: extra VEP API parameters merged with defaults,
@@ -103,6 +103,7 @@ class VCFAnnotator:
         self.max_concurrency = max_concurrency
         self.timeout = timeout
         self.vep_cache = vep_cache
+        self.vep_docker_cache = vep_cache or os.path.expanduser("~/.workbuddy/tools/vep/cache")
         self.proxy = proxy
         self.proxy_route_map = proxy_route_map
         self.vep_params = vep_params or {}
@@ -207,6 +208,10 @@ class VCFAnnotator:
             )
         elif resolved == "vep_local":
             annotated = await self._annotate_vep_local(
+                filtered_variants, genome_build, progress_callback
+            )
+        elif resolved == "vep_docker":
+            annotated = await self._annotate_vep_docker(
                 filtered_variants, genome_build, progress_callback
             )
         else:
@@ -387,6 +392,11 @@ class VCFAnnotator:
     def _resolve_annotator(self, n_variants: int = 0) -> str:
         """Resolve auto → concrete annotator.
 
+        Priority in auto mode:
+        1. System vep command (vep_local) — fastest if installed
+        2. Docker VEP (vep_docker) — uses shared cache, no rate limits
+        3. VEP REST API (vep_api) — zero config, network dependent
+
         v0.9.5: Large datasets (>5000 variants) always use VEP API regardless
         of local VEP availability. Local VEP subprocess is too slow and
         memory-intensive for large VCFs.
@@ -400,9 +410,15 @@ class VCFAnnotator:
                 f"forcing VEP API (local VEP too slow for large datasets)"
             )
             return "vep_api"
-        # Check if local VEP is available
+        # Check if system VEP is available (fastest)
         if self._vep_local_available():
+            logger.info("[VCFAnnotator] Auto-detected system VEP → using vep_local")
             return "vep_local"
+        # Check if Docker VEP is available
+        if self._vep_docker_available():
+            logger.info("[VCFAnnotator] Auto-detected Docker VEP → using vep_docker")
+            return "vep_docker"
+        logger.info("[VCFAnnotator] No local VEP available → using vep_api (REST)")
         return "vep_api"
 
     @staticmethod
@@ -418,6 +434,44 @@ class VCFAnnotator:
             return True
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
+
+    @staticmethod
+    def _vep_docker_available(cache_dir: str = "~/.workbuddy/tools/vep/cache") -> bool:
+        """Check if Docker VEP is available (docker + image + cache)."""
+        # 1. Docker daemon
+        try:
+            result = subprocess.run(
+                ["docker", "info"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        # 2. VEP image
+        try:
+            result = subprocess.run(
+                ["docker", "image", "inspect", "ensemblorg/ensembl-vep:latest"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        # 3. Cache directory with valid data
+        expanded = os.path.expanduser(cache_dir)
+        species_dir = os.path.join(expanded, "homo_sapiens")
+        if not os.path.isdir(species_dir):
+            return False
+        for root, _, files in os.walk(species_dir):
+            for f in files:
+                if f.endswith(".gz"):
+                    return True
+        return False
 
     # ------------------------------------------------------------------
     # Shard-based incremental annotation (P1 fix: architecture + resume)
@@ -986,6 +1040,82 @@ class VCFAnnotator:
         # Parse VEP output VCF
         # (Simplified: in practice would parse CSQ field from output VCF)
         # For v0.9.0, fall back to parsing the VEP output
+        return self._parse_vep_local_output(out_path, variants)
+
+    async def _annotate_vep_docker(
+        self,
+        variants: List[Dict[str, Any]],
+        genome: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Annotate using Docker VEP (ensemblorg/ensembl-vep)."""
+        # Write variants to temp VCF
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vcf", delete=False
+        ) as tmp_in:
+            tmp_in.write("##fileformat=VCFv4.2\n")
+            tmp_in.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
+            for v in variants:
+                tmp_in.write(
+                    f"{v['chrom']}\t{v['pos']}\t.\t{v['ref']}\t{v['alt']}"
+                    f"\t{v.get('qual', '.')}\t.\t.\n"
+                )
+            tmp_in_path = tmp_in.name
+
+        out_path = tmp_in_path.replace(".vcf", "_vep.vcf")
+        cache_dir = os.path.expanduser(self.vep_docker_cache)
+        container_cache = "/data/vep_cache"
+        assembly = "GRCh38" if genome == "GRCh38" else "GRCh37"
+
+        cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{cache_dir}:{container_cache}:ro",
+            "-v", f"{os.path.dirname(tmp_in_path)}:/data/input:ro",
+            "-v", f"{os.path.dirname(out_path)}:/data/output",
+            "ensemblorg/ensembl-vep:latest",
+            "vep",
+            "--input_file", f"/data/input/{os.path.basename(tmp_in_path)}",
+            "--output_file", f"/data/output/{os.path.basename(out_path)}",
+            "--vcf",
+            "--assembly", assembly,
+            "--canonical",
+            "--mane",
+            "--domains",
+            "--protein",
+            "--hgvs",
+            "--numbers",
+            "--cache",
+            "--dir_cache", container_cache,
+            "--cache_version", "115",
+            "--offline",
+        ]
+
+        logger.info(f"[VCFAnnotator] Running Docker VEP: {' '.join(cmd[:10])} ...")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error(f"Docker VEP failed: {stderr.decode()[:500]}")
+                return [
+                    {
+                        "transcript_consequences": [],
+                        "vep_summary": {"error": f"Docker VEP exit {proc.returncode}"},
+                    }
+                ] * len(variants)
+        except Exception as e:
+            logger.error(f"Docker VEP execution error: {e}")
+            return [
+                {
+                    "transcript_consequences": [],
+                    "vep_summary": {"error": str(e)},
+                }
+            ] * len(variants)
+
+        # Parse VEP output VCF (same format as local VEP)
         return self._parse_vep_local_output(out_path, variants)
 
     def _parse_vep_local_output(
