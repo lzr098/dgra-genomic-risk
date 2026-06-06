@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 NCBI ClinVar Direct Query Module for GPA
-v0.10.4 - 2026-05-29
+v0.10.5 - 2026-06-06
 
 Replaces MyVariant.info's unreliable ClinVar aggregation with direct
 NCBI E-utilities queries. Queries ClinVar by gene + position and parses
 clinical significance from XML responses.
+
+新增：本地 ClinVar VCF 查询作为优先路径（离线可用，零延迟）。
+本地 VCF 路径: /Users/zhaorongli/WorkBuddy/2026-05-24-17-27-51/tools/clinvar.vcf.gz
 
 Rate limit: NCBI recommends ≤3 requests/second. We use 1 request/second
 to be conservative and avoid IP blocking.
@@ -21,6 +24,37 @@ import json
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
+import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Local ClinVar VCF integration
+# ---------------------------------------------------------------------------
+_LOCAL_CLINVAR_MODULE = Path("/Users/zhaorongli/.workbuddy/scripts/clinvar_vcf_local.py")
+
+
+def _try_local_clinvar_query(chrom: str, pos: int, ref: str, alt: str) -> Optional[Dict[str, Any]]:
+    """Try querying the local ClinVar VCF before falling back to NCBI API.
+    
+    Returns parsed dict if found, None if not found or VCF unavailable.
+    """
+    if not _LOCAL_CLINVAR_MODULE.exists():
+        return None
+    
+    try:
+        # Import via exec to avoid hard dependency
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("clinvar_vcf_local", _LOCAL_CLINVAR_MODULE)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        
+        result = mod.query_variant(chrom, pos, ref, alt)
+        return result
+    except Exception:
+        # Any error -> fallback to API
+        return None
 
 
 @dataclass
@@ -42,6 +76,26 @@ class ClinVarResult:
     
     status: str = "unknown"            # success | not_found | error | skipped
     error: Optional[str] = None
+
+
+def _local_result_to_clinvar_result(
+    local: Dict[str, Any],
+    variant_id: str,
+    gene: str,
+) -> "ClinVarResult":
+    """Convert local VCF query result to ClinVarResult dataclass."""
+    return ClinVarResult(
+        variant_id=variant_id,
+        gene=gene,
+        clinvar_accession=local.get("ID"),
+        clinvar_significance=local.get("CLNSIG"),
+        clinvar_review_status=local.get("CLNREVSTAT"),
+        clinvar_variant_name=local.get("CLNHGVS"),
+        clinvar_variant_type=local.get("MC"),
+        position_match=True,
+        match_quality="exact",
+        status="success",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -300,14 +354,15 @@ async def query_clinvar_variant(
     consequence: str,
     session: aiohttp.ClientSession,
 ) -> ClinVarResult:
-    """Query ClinVar for a single variant using NCBI E-utilities.
+    """Query ClinVar for a single variant using local VCF first, then NCBI E-utilities.
     
     Flow:
-        1. ESearch: find ClinVar IDs by gene + position
-        2. EFetch: get details for each ID
-        3. Parse XML: extract clinical significance
-        4. Check position match
-        5. Return best-matching record
+        1. Try local ClinVar VCF query (offline, zero latency)
+        2. If not found locally -> ESearch: find ClinVar IDs by gene + position
+        3. EFetch: get details for each ID
+        4. Parse XML: extract clinical significance
+        5. Check position match
+        6. Return best-matching record
     
     Args:
         chrom: Chromosome (with or without 'chr' prefix)
@@ -332,7 +387,12 @@ async def query_clinvar_variant(
             error=f"Consequence '{consequence}' not relevant for ClinVar lookup",
         )
     
-    # Step 1: ESearch
+    # Step 0.5: Try local ClinVar VCF query first (offline, fast)
+    local_result = _try_local_clinvar_query(chrom, pos, ref, alt)
+    if local_result:
+        return _local_result_to_clinvar_result(local_result, variant_id, gene)
+    
+    # Step 1: ESearch (NCBI API fallback)
     clinvar_ids, error = await _ncbi_esearch_clinvar(gene, chrom, pos, session)
     if error:
         return ClinVarResult(
