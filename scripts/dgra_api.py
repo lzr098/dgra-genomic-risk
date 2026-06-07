@@ -33,6 +33,76 @@ class DGRAAPIError(Exception):
         super().__init__(f"[{api_name}] {message}")
 
 
+class AdaptiveRateLimiter:
+    """
+    v0.13.0: Self-tuning rate limiter for APIs with aggressive 429 throttling.
+
+    Strategy:
+    - Start conservative (2 req/s)
+    - On 429: halve rate, increase backoff (min 0.1 req/s)
+    - On success streak (5+): increase rate by 20% (max 5 req/s)
+    - Provide per-request pre-flight delay
+
+    This replaces fixed Semaphore + sleep with dynamic load shedding.
+    """
+    def __init__(
+        self,
+        initial_rate: float = 2.0,
+        min_rate: float = 0.1,
+        max_rate: float = 5.0,
+        success_threshold: int = 5,
+        rate_boost: float = 1.2,
+        rate_cut: float = 0.5,
+    ):
+        self.rate = initial_rate
+        self.min_rate = min_rate
+        self.max_rate = max_rate
+        self.success_threshold = success_threshold
+        self.rate_boost = rate_boost
+        self.rate_cut = rate_cut
+        self._success_streak = 0
+        self._429_count = 0
+        self._last_request_time = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> float:
+        """Wait appropriate delay then return current rate."""
+        async with self._lock:
+            now = time.time()
+            min_interval = 1.0 / self.rate
+            elapsed = now - self._last_request_time
+            if elapsed < min_interval:
+                wait = min_interval - elapsed
+                await asyncio.sleep(wait)
+            self._last_request_time = time.time()
+            return self.rate
+
+    def report_success(self):
+        self._success_streak += 1
+        if self._success_streak >= self.success_threshold:
+            self.rate = min(self.max_rate, self.rate * self.rate_boost)
+            self._success_streak = 0
+
+    def report_429(self):
+        self._429_count += 1
+        self._success_streak = 0
+        self.rate = max(self.min_rate, self.rate * self.rate_cut)
+
+    def report_error(self, is_429: bool = False):
+        if is_429:
+            self.report_429()
+        else:
+            self._success_streak = max(0, self._success_streak - 1)
+
+    @property
+    def stats(self) -> dict:
+        return {
+            "current_rate": round(self.rate, 2),
+            "success_streak": self._success_streak,
+            "429_count": self._429_count,
+        }
+
+
 class DGRAAPIClient:
     """
     Unified async API client for all DGRA external data sources.

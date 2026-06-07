@@ -253,7 +253,7 @@ _API_CHECKS: Dict[str, Tuple[str, int, Optional[Callable[[Any], bool]]]] = {
     # name → (probe_url, timeout_sec, response_validator)
     "ensembl": (
         "https://rest.ensembl.org/info/ping?content-type=application/json",
-        5,
+        30,
         lambda d: isinstance(d, dict) and "ping" in d,
     ),
     "uniprot": (

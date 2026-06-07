@@ -789,7 +789,17 @@ def _generate_gtex_section(
         if all_tissues:
             lines.append("- **Top 5 表达组织**:\n")
             for t in all_tissues[:5]:
-                lines.append(f"  - {t['tissue']}: {t['tpm']:.2f} TPM\n")
+                # Handle different data formats: dict, tuple/list, or string
+                if isinstance(t, dict):
+                    tissue_name = t.get('tissue', str(t))
+                    tpm_val = t.get('tpm', 0)
+                elif isinstance(t, (list, tuple)) and len(t) >= 2:
+                    tissue_name = str(t[0])
+                    tpm_val = float(t[1]) if t[1] else 0
+                else:
+                    tissue_name = str(t)
+                    tpm_val = 0
+                lines.append(f"  - {tissue_name}: {tpm_val:.2f} TPM\n")
         lines.append("\n")
 
     return "".join(lines)

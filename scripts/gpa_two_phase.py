@@ -27,7 +27,7 @@ from dgra_core import (
     _save_offline_archive, _load_offline_archive,
 )
 from dgra_cache import DGRACache
-from dgra_api import DGRAAPIClient
+from dgra_api import DGRAAPIClient, AdaptiveRateLimiter
 
 
 # ─── Phase 1: Fast Local Triage ────────────────────────────────────────────
@@ -642,17 +642,20 @@ async def _enrich_variant_frequencies(
         print("[GPA Phase 2] skip_gnomad=True — skipping MyVariant/gnomAD frequency queries")
     else:
         # Try MyVariant.info batch first — query Tier 1/2 candidates for gnomAD AF + ClinVar + CADD.
+        # v0.13.0 FIX: batch_size 1000 -> 100, semaphore 10 -> 5, add inter-batch delay.
         try:
             from dgra_myvariant import query_myvariant_batch, apply_myvariant_results
-            mv_sem = asyncio.Semaphore(10)
+            mv_sem = asyncio.Semaphore(5)
             timeout_obj = aiohttp.ClientTimeout(total=120)
             mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in tier12_candidates_no_af]
+            n_mv = len(mv_variants)
+            print(f"[GPA Phase 2] MyVariant.info: {n_mv} variants, batch=100, sem=5")
             # v0.12.2 FIX (E2): pass explicit proxy to MyVariant session
             async with aiohttp.ClientSession(
                 timeout=timeout_obj, trust_env=False
             ) as mv_session:
                 mv_results = await query_myvariant_batch(
-                    mv_variants, mv_session, semaphore=mv_sem, batch_size=1000,
+                    mv_variants, mv_session, semaphore=mv_sem, batch_size=100,
                     proxy=mv_proxy,
                 )
             mv_stats = apply_myvariant_results(tier12_candidates_no_af, mv_results)
@@ -670,20 +673,37 @@ async def _enrich_variant_frequencies(
             print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
 
         # v0.12.2 FIX (B1): restore gnomAD REST fallback when MyVariant fails.
-        # gnomAD GraphQL batch is 429-rate-limited, but single-variant REST queries
-        # via DGRAAPIClient.query_gnomad_variant() are more reliable.
+        # v0.13.0: Replace fixed Semaphore(2) with AdaptiveRateLimiter for gnomAD GraphQL.
         still_no_af = [v for v in tier12_candidates_no_af if v.gnomad_af is None]
         if still_no_af:
             print(f"[GPA Phase 2] gnomAD REST fallback: querying {len(still_no_af)} Tier 1/2 candidates without AF")
             cache = DGRACache(global_config.cache_db_path)
             async with DGRAAPIClient(global_config, cache) as client:
-                gnomad_sem = asyncio.Semaphore(2)
+                # v0.13.0: Adaptive rate limiter — starts at 2 req/s,
+                # halves on 429, boosts +20% after 5 consecutive successes.
+                gnomad_limiter = AdaptiveRateLimiter(
+                    initial_rate=2.0, min_rate=0.2, max_rate=4.0,
+                    success_threshold=5, rate_boost=1.2, rate_cut=0.5,
+                )
+
                 async def _query_one(v):
-                    async with gnomad_sem:
-                        try:
-                            return await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
-                        except Exception as e:
-                            return {"status": "API_FAILED", "error": str(e), "source": "failed"}
+                    await gnomad_limiter.acquire()
+                    try:
+                        result = await client.query_gnomad_variant(v.chrom, v.pos, v.ref, v.alt)
+                        # Check if result indicates 429/rate-limit at GraphQL level
+                        if result.get("status") == "QUERY_ERROR" and "rate" in str(result.get("note", "")).lower():
+                            gnomad_limiter.report_429()
+                        else:
+                            gnomad_limiter.report_success()
+                        return result
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if "429" in err_str or "rate" in err_str:
+                            gnomad_limiter.report_429()
+                        else:
+                            gnomad_limiter.report_error(is_429=False)
+                        return {"status": "API_FAILED", "error": str(e), "source": "failed"}
+
                 results = await asyncio.gather(*[_query_one(v) for v in still_no_af])
                 n_filled = 0
                 for v, result in zip(still_no_af, results):
@@ -694,7 +714,9 @@ async def _enrich_variant_frequencies(
                             v.gnomad_populations = result.get("af_populations", {})
                             v.gnomad_status = "SUCCESS"
                             n_filled += 1
-                print(f"[GPA Phase 2] gnomAD REST fallback: {n_filled}/{len(still_no_af)} filled")
+                stats = gnomad_limiter.stats
+                print(f"[GPA Phase 2] gnomAD REST fallback: {n_filled}/{len(still_no_af)} filled, "
+                      f"rate={stats['current_rate']} req/s, 429s={stats['429_count']}")
 
         # Final warning if AF is still missing for many candidates
         still_no_af_final = [v for v in tier12_candidates_no_af if v.gnomad_af is None]

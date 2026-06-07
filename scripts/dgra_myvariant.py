@@ -297,8 +297,13 @@ async def query_myvariant_batch(
     
     # MyVariant batch endpoint supports up to 1000 variants per POST
     # We chunk into batches
+    # v0.13.0: Add 0.3s inter-batch delay to avoid overwhelming the server.
     for i in range(0, len(variant_ids), batch_size):
         batch_ids = variant_ids[i:i + batch_size]
+        
+        # Inter-batch delay (skip on first batch)
+        if i > 0:
+            await asyncio.sleep(0.3)
         
         async with sem:
             url = "https://myvariant.info/v1/variant"
