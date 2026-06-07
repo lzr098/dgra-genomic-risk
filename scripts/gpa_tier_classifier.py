@@ -110,7 +110,21 @@ def _load_rare_disease_genes() -> set:
 
 
 def _is_rare_disease_gene(gene: str) -> bool:
-    """Check if gene is in the rare disease gene list."""
+    """Check if gene is in the rare disease gene list.
+
+    Priority:
+    1. OMIM local database (is_mendelian_gene) — most current
+    2. Static gene_phenotype_map.json fallback
+    """
+    # Try OMIM first (v0.10.6)
+    try:
+        from dgra_omim import is_rare_disease_gene as omim_check
+        if omim_check(gene):
+            return True
+    except Exception:
+        pass
+
+    # Fallback to static file
     return gene in _load_rare_disease_genes()
 
 
