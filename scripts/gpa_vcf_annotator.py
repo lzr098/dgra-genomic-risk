@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """
-GPA VCF Annotator Module (v0.10.0)
+GPA VCF Annotator Module (v0.10.3)
 
 Handles raw (unannotated) VCF input by:
 1. Detecting whether a VCF is already annotated (CSQ/INFO fields)
 2. Detecting genome build from VCF header
 3. Lightweight pre-filtering (QUAL<20 or DP<10)
-4. Annotating via Ensembl VEP REST API (default) or local VEP (auto-detected)
+4. Annotating via Docker VEP (preferred), local VEP, or REST API (fallback)
 5. Returning all transcript consequences per variant
 
-Default: VEP REST API (zero config).
-Auto-fallback to local VEP if `vep` command is available.
+Auto-detection priority:
+  1. Docker VEP (offline cache or database mode) — handles any dataset size
+  2. System `vep` command — for small datasets only
+  3. VEP REST API — zero-config fallback, rate-limited
+
+v0.10.3: Fixed incorrect 5000-variant threshold that forced VEP API for large
+  datasets, bypassing Docker VEP. Docker VEP now correctly prioritized.
+v0.10.3: Docker VEP supports --database mode when no local cache exists,
+  auto-mounting user's GRCh38 FASTA if available.
 """
 
 import asyncio
@@ -393,29 +400,46 @@ class VCFAnnotator:
         """Resolve auto → concrete annotator.
 
         Priority in auto mode:
-        1. Docker VEP (vep_docker) — shared cache, offline, no rate limits
-        2. VEP REST API (vep_api) — zero config, may be rate-limited
-        3. System vep command (vep_local) — fallback only
+        1. Docker VEP (vep_docker) — offline cache or database mode, no rate limits,
+           handles any dataset size efficiently.
+        2. System vep command (vep_local) — for small datasets only (<5000 variants).
+        3. VEP REST API (vep_api) — zero-config fallback, may be rate-limited.
 
-        v0.9.5: Large datasets (>5000 variants) always use VEP API regardless
-        of local VEP availability. Local VEP subprocess is too slow and
-        memory-intensive for large VCFs.
+        v0.10.3 FIX: Removed the erroneous 5000-variant threshold that forced VEP API
+        for large datasets, completely bypassing Docker VEP. Docker VEP with local
+        cache annotates ~100-500 variants/sec — 50k variants take minutes, not hours.
+        Even database mode (no cache) is faster than REST API for large batches due
+        to no rate-limiting and single-roundtrip batch processing.
+
+        Local `vep` command still capped at 5000 variants because it runs inline
+        and blocks the event loop; Docker VEP has no such limitation.
         """
         if self.annotator != "auto":
             return self.annotator
-        LOCAL_VEP_MAX_VARIANTS = 5000
-        if n_variants > LOCAL_VEP_MAX_VARIANTS:
+
+        # 1. Docker VEP — ALWAYS check first, regardless of variant count
+        docker_available, docker_mode = self._vep_docker_available()
+        if docker_available:
             logger.info(
-                f"[VCFAnnotator] {n_variants} variants > {LOCAL_VEP_MAX_VARIANTS} threshold — "
-                f"forcing VEP API (local VEP too slow for large datasets)"
+                f"[VCFAnnotator] Auto-detected Docker VEP ({docker_mode} mode) → "
+                f"using vep_docker ({n_variants} variants)"
             )
-            return "vep_api"
-        # 1. Docker VEP — priority (shared cache, offline, stable)
-        if self._vep_docker_available():
-            logger.info("[VCFAnnotator] Auto-detected Docker VEP → using vep_docker")
             return "vep_docker"
-        # 2. REST API — zero config, may be rate-limited
-        logger.info("[VCFAnnotator] Docker VEP unavailable → using vep_api (REST)")
+
+        # 2. System vep command — only for small datasets (blocks event loop)
+        LOCAL_VEP_MAX_VARIANTS = 5000
+        if n_variants <= LOCAL_VEP_MAX_VARIANTS and self._vep_local_available():
+            logger.info(
+                f"[VCFAnnotator] Auto-detected local VEP → using vep_local "
+                f"({n_variants} variants <= {LOCAL_VEP_MAX_VARIANTS} threshold)"
+            )
+            return "vep_local"
+
+        # 3. REST API — last resort
+        logger.info(
+            f"[VCFAnnotator] No local annotators available → using vep_api (REST) "
+            f"for {n_variants} variants"
+        )
         return "vep_api"
 
     @staticmethod
@@ -433,8 +457,20 @@ class VCFAnnotator:
             return False
 
     @staticmethod
-    def _vep_docker_available(cache_dir: str = "~/.workbuddy/tools/vep/cache") -> bool:
-        """Check if Docker VEP is available (docker + image + cache)."""
+    def _vep_docker_available(cache_dir: str = "~/.workbuddy/tools/vep/cache") -> Tuple[bool, str]:
+        """Check if Docker VEP is available and determine best run mode.
+
+        Returns:
+            Tuple of (available: bool, mode: str) where mode is:
+            - "offline"  : local cache exists → --cache --offline (fastest)
+            - "database" : no cache but Docker + image available → --database
+                           (connects to Ensembl DB; slower but no rate limits)
+            - ""         : not available
+
+        v0.10.3: Now returns mode string instead of bool, allowing callers to
+        choose between --cache/offline and --database modes. Also detects user's
+        local GRCh38 FASTA for use with --database --fasta.
+        """
         # 1. Docker daemon
         try:
             result = subprocess.run(
@@ -444,9 +480,10 @@ class VCFAnnotator:
                 timeout=10,
             )
             if result.returncode != 0:
-                return False
+                return False, ""
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+            return False, ""
+
         # 2. VEP image
         try:
             result = subprocess.run(
@@ -456,19 +493,21 @@ class VCFAnnotator:
                 timeout=10,
             )
             if result.returncode != 0:
-                return False
+                return False, ""
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
-        # 3. Cache directory with valid data
+            return False, ""
+
+        # 3. Check for local cache (offline mode — preferred)
         expanded = os.path.expanduser(cache_dir)
         species_dir = os.path.join(expanded, "homo_sapiens")
-        if not os.path.isdir(species_dir):
-            return False
-        for root, _, files in os.walk(species_dir):
-            for f in files:
-                if f.endswith(".gz"):
-                    return True
-        return False
+        if os.path.isdir(species_dir):
+            for root, _, files in os.walk(species_dir):
+                for f in files:
+                    if f.endswith(".gz"):
+                        return True, "offline"
+
+        # 4. No cache — still usable in database mode (no rate limits vs REST API)
+        return True, "database"
 
     # ------------------------------------------------------------------
     # Shard-based incremental annotation (P1 fix: architecture + resume)
@@ -1045,7 +1084,11 @@ class VCFAnnotator:
         genome: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> List[Dict[str, Any]]:
-        """Annotate using Docker VEP (ensemblorg/ensembl-vep)."""
+        """Annotate using Docker VEP (ensemblorg/ensembl-vep).
+
+        v0.10.3: Supports both --cache/--offline (fastest, requires local cache)
+        and --database modes (no cache required, auto-mounts user's FASTA).
+        """
         # Write variants to temp VCF
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vcf", delete=False
@@ -1060,34 +1103,74 @@ class VCFAnnotator:
             tmp_in_path = tmp_in.name
 
         out_path = tmp_in_path.replace(".vcf", "_vep.vcf")
-        cache_dir = os.path.expanduser(self.vep_docker_cache)
-        container_cache = "/data/vep_cache"
         assembly = "GRCh38" if genome == "GRCh38" else "GRCh37"
 
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{cache_dir}:{container_cache}:ro",
-            "-v", f"{os.path.dirname(tmp_in_path)}:/data/input:ro",
-            "-v", f"{os.path.dirname(out_path)}:/data/output",
-            "ensemblorg/ensembl-vep:latest",
-            "vep",
-            "--input_file", f"/data/input/{os.path.basename(tmp_in_path)}",
-            "--output_file", f"/data/output/{os.path.basename(out_path)}",
-            "--vcf",
-            "--assembly", assembly,
-            "--canonical",
-            "--mane",
-            "--domains",
-            "--protein",
-            "--hgvs",
-            "--numbers",
-            "--cache",
-            "--dir_cache", container_cache,
-            "--cache_version", "115",
-            "--offline",
-        ]
+        # Determine run mode and build volumes + args
+        _, docker_mode = self._vep_docker_available()
+        volumes: List[str] = []
+        vep_args: List[str] = []
 
-        logger.info(f"[VCFAnnotator] Running Docker VEP: {' '.join(cmd[:10])} ...")
+        if docker_mode == "offline":
+            cache_dir = os.path.expanduser(self.vep_docker_cache)
+            container_cache = "/data/vep_cache"
+            volumes = [
+                "-v", f"{cache_dir}:{container_cache}:ro",
+            ]
+            vep_args = [
+                "--cache",
+                "--dir_cache", container_cache,
+                "--cache_version", "115",
+                "--offline",
+            ]
+        else:
+            # database mode — connect to Ensembl DB; no local cache needed
+            vep_args = ["--database"]
+            # Auto-detect and mount user's local GRCh38 FASTA
+            fasta_candidates = [
+                os.path.expanduser(
+                    "~/.workbuddy/data/genome/"
+                    "Homo_sapiens.GRCh38.dna.primary_assembly.fa"
+                ),
+                os.path.expanduser("~/.workbuddy/data/genome/GRCh38.fa"),
+                os.path.expanduser("~/data/genome/Homo_sapiens.GRCh38.dna.primary_assembly.fa"),
+            ]
+            for fp in fasta_candidates:
+                if os.path.isfile(fp):
+                    fasta_dir = os.path.dirname(fp)
+                    fasta_name = os.path.basename(fp)
+                    volumes.extend(["-v", f"{fasta_dir}:/data/fasta:ro"])
+                    vep_args.extend(["--fasta", f"/data/fasta/{fasta_name}"])
+                    logger.info(
+                        f"[VCFAnnotator] Auto-mounted FASTA for database mode: {fp}"
+                    )
+                    break
+
+        cmd = (
+            ["docker", "run", "--rm"]
+            + volumes
+            + [
+                "-v", f"{os.path.dirname(tmp_in_path)}:/data/input:ro",
+                "-v", f"{os.path.dirname(out_path)}:/data/output",
+                "ensemblorg/ensembl-vep:latest",
+                "vep",
+                "--input_file", f"/data/input/{os.path.basename(tmp_in_path)}",
+                "--output_file", f"/data/output/{os.path.basename(out_path)}",
+                "--vcf",
+                "--assembly", assembly,
+                "--canonical",
+                "--mane",
+                "--domains",
+                "--protein",
+                "--hgvs",
+                "--numbers",
+            ]
+            + vep_args
+        )
+
+        logger.info(
+            f"[VCFAnnotator] Running Docker VEP ({docker_mode}): "
+            f"{' '.join(cmd[:6])} ... ({len(variants)} variants)"
+        )
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -1096,11 +1179,12 @@ class VCFAnnotator:
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
-                logger.error(f"Docker VEP failed: {stderr.decode()[:500]}")
+                err = stderr.decode()[:800]
+                logger.error(f"Docker VEP failed: {err}")
                 return [
                     {
                         "transcript_consequences": [],
-                        "vep_summary": {"error": f"Docker VEP exit {proc.returncode}"},
+                        "vep_summary": {"error": f"Docker VEP exit {proc.returncode}: {err}"},
                     }
                 ] * len(variants)
         except Exception as e:
