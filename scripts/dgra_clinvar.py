@@ -8,7 +8,7 @@ NCBI E-utilities queries. Queries ClinVar by gene + position and parses
 clinical significance from XML responses.
 
 新增：本地 ClinVar VCF 查询作为优先路径（离线可用，零延迟）。
-本地 VCF 路径: /Users/zhaorongli/WorkBuddy/2026-05-24-17-27-51/tools/clinvar.vcf.gz
+本地 VCF 路径: /Users/zhaorongli/.workbuddy/data/clinvar/clinvar.vcf.gz
 
 Rate limit: NCBI recommends ≤3 requests/second. We use 1 request/second
 to be conservative and avoid IP blocking.
