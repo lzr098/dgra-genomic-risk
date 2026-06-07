@@ -27,6 +27,13 @@ from dgra_core import (
     evaluate_missense_tier,
 )
 
+# v0.10.6: Local GRCh38 FASTA REF verification
+try:
+    from dgra_fasta import annotate_variant_ref_check
+except ImportError:
+    def annotate_variant_ref_check(variant):
+        pass
+
 
 # Helper: uniform accessor for spliceai_result (supports both dict and dataclass)
 def _sa_get(sa, key, default=None):
@@ -139,6 +146,9 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     """
     gene = variant.gene
     actions = []
+
+    # v0.10.6: Verify REF allele against local GRCh38 FASTA
+    annotate_variant_ref_check(variant)
 
     # v0.5 P1-9: Initialize evidence chain for structured traceability
     # If variant already has evidence (e.g., from previous analysis or testing), preserve it
