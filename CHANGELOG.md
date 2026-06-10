@@ -1,5 +1,32 @@
 # GPA 更新日志（原 DGRA - Dynamic Genomic Risk Assessment）
 
+## [v0.10.15] - 2026-06-10
+
+### VCF Direct API + 9 Tissue Profiles + Report Detail Levels
+
+**P0 修复**：
+
+| 问题 | 修复 | 文件 |
+|------|------|------|
+| VCF 路径走 subprocess，参数传递不一致 | 提取 `_load_variants_from_file()`，VCF 直接走 Python API | `dgra_cli_wrapper.py` |
+| `_run_gpa_direct()` 缺少 `report_detail_level` / `two_phase` | 扩展参数签名，GPAConfig 传入 | `dgra_cli_wrapper.py` |
+| tissue validation hardcoded（仅 6 个） | 动态读取 `tissue_context.json`（9 profiles） | `dgra_cli_wrapper.py`, `dgra_core.py` |
+| indel artifact 检测用 substring matching | 改为 exact SO term set 匹配 | `gpa_tier_classifier.py` |
+| non-coding transcript（NR_/XM_/XR_）误报 Tier 1 | proactive degrade 到 Tier 2/3 | `gpa_tier_classifier.py` |
+| gnomAD API 频繁 429/超时 | local archive fallback | `dgra_api.py`, `dgra_gnomad_local.py` |
+| SQLite cache 损坏导致崩溃 | integrity check + memory fallback | `dgra_cache.py` |
+| 报告无法选择详细程度 | `report_detail_level`: minimal / standard / full | `gpa_report.py`, `dgra_core.py` |
+
+**新增文件**：
+- `scripts/dgra_gnomad_local.py` — gnomAD 本地归档查询
+- `scripts/build_gnomad_local.py` — gnomAD 本地归档构建
+- `pyproject.toml` — Python 项目配置
+- `tests/e2e/` — E2E 测试目录（从 scripts/ 移入）
+
+**测试状态**：QA regression 6/6 PASS。
+
+---
+
 ## [v0.10.0] - 2026-05-25
 
 ### God Module 拆分重构
