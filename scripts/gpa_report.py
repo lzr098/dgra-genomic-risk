@@ -1317,52 +1317,82 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
 
     # Tier 3
     if tier3:
-        report.append("---\n\n## 🟢 Tier 3: No Concern\n")
-        report.append(f"*Variants with no {profile_name} relevance*\n\n")
+        report_detail = getattr(config, 'report_detail_level', 'full')
 
-        # Group by gene
-        gene_groups_t3 = {}
-        for v in tier3:
-            gene_groups_t3.setdefault(v.gene, []).append(v)
+        if report_detail == "minimal":
+            # v0.10.15: Minimal mode — only statistics for Tier 3
+            report.append("---\n\n## 🟢 Tier 3: Statistical Summary\n")
+            report.append(f"*Total Tier 3 variants: {len(tier3)} (in {len(set(v.gene for v in tier3))} genes)*\n\n")
 
-        for gene, var_list in gene_groups_t3.items():
-            if len(var_list) <= 3:
-                # Short list: inline table
-                report.append(f"**{gene}** ({len(var_list)} variants):\n")
-                report.append("| 位置 | 变异 | 功能域 | 置信度 | 原因 |\n")
-                report.append("|------|------|--------|--------|------|\n")
-                for v in var_list:
-                    pos = f"{v.chrom}:{v.pos}"
-                    var_name = v.hgvsp or v.hgvsc or "N/A"
-                    di = v.domain_info
-                    domain = f"{di.get('domain', 'N/A')}" if di else "N/A"
-                    # v0.5 P1-10: Confidence
-                    conf = v.tier_confidence or "UNKNOWN"
-                    conf_icon = "⚠️" if conf == "LOW" else ""
-                    reason = v.tier_reason[:50] + "..." if len(v.tier_reason) > 50 else v.tier_reason
-                    reason = reason.replace("|", "/")
-                    # v0.5.2: VEP reannotation note in table
-                    vep_note = _format_vep_reannotation_note(v)
-                    if vep_note:
-                        reason = f"⚠️ VEP reannotated | {reason}"
-                    report.append(f"| {pos} | {var_name} | {domain} | {conf_icon} {conf} | {reason} |\n")
-                report.append(f"\n")
-                # v0.5.2: VEP reannotation detail for Tier 3 short-list
-                for v in var_list:
-                    vep_note = _format_vep_reannotation_note(v)
-                    if vep_note:
-                        report.append(f"   *{v.hgvsp or v.hgvsc}*: {vep_note}\n")
-                report.append(f"\n")
-            else:
-                # Many variants: just count
-                report.append(f"**{gene}**: {len(var_list)} variants - 详见原始数据\n\n")
+            from collections import Counter
+            impact_counts = Counter(v.impact for v in tier3)
+            report.append("| Impact | Count |\n")
+            report.append("|--------|-------|\n")
+            for impact, count in sorted(impact_counts.items(), key=lambda x: -x[1]):
+                report.append(f"| {impact} | {count} |\n")
+            report.append("\n")
 
-            # v0.5 P1-11: Show upgrade conditions for Tier 3 short-list genes
-            if len(var_list) <= 3:
-                for v in var_list:
-                    if v.upgrade_conditions:
-                        report.append(f"   *{v.hgvsp or v.hgvsc} 升级条件*: {' / '.join(v.upgrade_conditions[:2])}\n")
-                report.append(f"\n")
+            # Top 10 genes by variant count
+            gene_counts = Counter(v.gene for v in tier3)
+            report.append("**Top 10 genes by variant count:**\n")
+            report.append("| Gene | Variants |\n")
+            report.append("|------|----------|\n")
+            for gene, count in gene_counts.most_common(10):
+                report.append(f"| {gene} | {count} |\n")
+            report.append("\n")
+
+            report.append(
+                "*Tier 3 variants are not shown in detail. "
+                "Use `report_detail_level='standard'` or `'full'` for complete listings.*\n"
+            )
+        else:
+            # Standard / full mode — full Tier 3 details
+            report.append("---\n\n## 🟢 Tier 3: No Concern\n")
+            report.append(f"*Variants with no {profile_name} relevance*\n\n")
+
+            # Group by gene
+            gene_groups_t3 = {}
+            for v in tier3:
+                gene_groups_t3.setdefault(v.gene, []).append(v)
+
+            for gene, var_list in gene_groups_t3.items():
+                if len(var_list) <= 3:
+                    # Short list: inline table
+                    report.append(f"**{gene}** ({len(var_list)} variants):\n")
+                    report.append("| 位置 | 变异 | 功能域 | 置信度 | 原因 |\n")
+                    report.append("|------|------|--------|--------|------|\n")
+                    for v in var_list:
+                        pos = f"{v.chrom}:{v.pos}"
+                        var_name = v.hgvsp or v.hgvsc or "N/A"
+                        di = v.domain_info
+                        domain = f"{di.get('domain', 'N/A')}" if di else "N/A"
+                        # v0.5 P1-10: Confidence
+                        conf = v.tier_confidence or "UNKNOWN"
+                        conf_icon = "⚠️" if conf == "LOW" else ""
+                        reason = v.tier_reason[:50] + "..." if len(v.tier_reason) > 50 else v.tier_reason
+                        reason = reason.replace("|", "/")
+                        # v0.5.2: VEP reannotation note in table
+                        vep_note = _format_vep_reannotation_note(v)
+                        if vep_note:
+                            reason = f"⚠️ VEP reannotated | {reason}"
+                        report.append(f"| {pos} | {var_name} | {domain} | {conf_icon} {conf} | {reason} |\n")
+                    report.append(f"\n")
+                    # v0.5.2: VEP reannotation detail for Tier 3 short-list
+                    for v in var_list:
+                        vep_note = _format_vep_reannotation_note(v)
+                        if vep_note:
+                            report.append(f"   *{v.hgvsp or v.hgvsc}*: {vep_note}\n")
+                    report.append(f"\n")
+                else:
+                    # Many variants: just count
+                    report.append(f"**{gene}**: {len(var_list)} variants - 详见原始数据\n\n")
+
+                # v0.5 P1-11: Show upgrade conditions for Tier 3 short-list genes
+                if len(var_list) <= 3:
+                    for v in var_list:
+                        if v.upgrade_conditions:
+                            report.append(f"   *{v.hgvsp or v.hgvsc} 升级条件*: {' / '.join(v.upgrade_conditions[:2])}\n")
+                    report.append(f"\n")
 
     # Methodology
     report.append("---\n\n## 方法学附录\n")
@@ -1430,8 +1460,16 @@ def generate_json_report(variants: List[Variant], config: GPAConfig,
     }
 
     # Variants array - structured per variant
+    # v0.10.15: Respect report_detail_level for JSON output
+    report_detail = getattr(config, 'report_detail_level', 'full')
+    if report_detail == "minimal":
+        # Minimal mode: only include Tier 1/2 variants in detail
+        variants_to_export = [v for v in variants if v.tier in (1, 2)]
+    else:
+        variants_to_export = variants
+
     variants_json = []
-    for v in variants:
+    for v in variants_to_export:
         # Build evidence chain JSON
         evidence_chain = []
         for ev in v.evidence_chain:

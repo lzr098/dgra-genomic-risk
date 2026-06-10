@@ -120,6 +120,8 @@ def _run_gpa_direct(
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
     force_sync: bool = False,
+    report_detail_level: str = "minimal",
+    two_phase: bool = False,
 ) -> Dict[str, Any]:
     """Run GPA via direct Python API call - 5-10x faster than batch CLI.
 
@@ -127,6 +129,16 @@ def _run_gpa_direct(
     Used for large datasets that would exceed OpenClaw exec timeout.
     """
     import asyncio
+
+    # v0.10.15: Detect if called from within a running event loop
+    try:
+        asyncio.get_running_loop()
+        return {
+            "success": False,
+            "error": "_run_gpa_direct cannot be called from within a running event loop. Use run_dgra_pipeline() directly instead.",
+        }
+    except RuntimeError:
+        pass  # No running loop, safe to use asyncio.run()
 
     # Ensure dgra_core is importable
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -150,6 +162,8 @@ def _run_gpa_direct(
         annotator=annotator,
         vep_cache=vep_cache,
         force_sync=force_sync,
+        report_detail_level=report_detail_level,
+        two_phase=two_phase,
     )
 
     try:
@@ -237,6 +251,49 @@ def _count_vcf_variants(vcf_path: Path) -> int:
     return count
 
 
+# v0.10.15: VCF annotation logic extracted from dgra_core.py main()
+# to enable direct Python API path for VCF inputs (no subprocess).
+async def _load_variants_from_file(
+    input_path: Path,
+    annotator: str = "auto",
+    vep_cache: Optional[str] = None,
+    disease_description: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Load variants from VCF file (raw or annotated).
+
+    v0.10.15: Extracted from dgra_core.py main() to enable direct API path.
+    """
+    from gpa_input import InputType, detect_input_type, variants_from_vep_annotation, parse_annotated_vcf
+    from gpa_vcf_annotator import VCFAnnotator
+    from gpa_transcript_selector import TranscriptSelector
+
+    input_type = detect_input_type(str(input_path))
+
+    if input_type == InputType.RAW_VCF:
+        vcf_annotator = VCFAnnotator(
+            annotator=annotator,
+            genome="auto",
+            max_concurrency=5,
+            timeout=30,
+            vep_cache=vep_cache,
+            interactive=False,
+        )
+        annotated = await vcf_annotator.annotate(str(input_path))
+        selector = None
+        if disease_description:
+            selector = TranscriptSelector(
+                tissue_profile="general",
+                disease_description=disease_description,
+            )
+        return variants_from_vep_annotation(annotated, selector)
+
+    elif input_type == InputType.ANNOTATED_VCF:
+        return parse_annotated_vcf(str(input_path), sample_idx=0)
+
+    else:
+        raise ValueError(f"Unsupported input type for VCF loading: {input_type}")
+
+
 def _run_gpa_vcf_direct(
     input_path: Path,
     tissue: str = "general",
@@ -262,92 +319,34 @@ def _run_gpa_vcf_direct(
     vep_cache: Optional[str] = None,
     two_phase: bool = False,
 ) -> Dict[str, Any]:
-    """Pass raw VCF directly to dgra_core.py which handles VEP annotation.
-
-    v0.10.2: Supports --two-phase flag passthrough.
+    """DEPRECATED v0.10.15: VCF path now uses direct Python API via _load_variants_from_file().
+    Kept for backward compatibility — redirects to run_gpa_from_file().
     """
-    import tempfile, subprocess, json as _json
-    with tempfile.TemporaryDirectory(prefix="dgra_vcf_direct_") as tmpdir:
-        tmp = Path(tmpdir)
-        json_out = tmp / "results.json"
-        md_out = tmp / "report.md"
-
-        cmd = [
-            sys.executable,
-            str(GPA_CORE),
-            "--input", str(input_path),
-            "--output", str(md_out),
-            "--json", str(json_out),
-        ]
-        if multi_organ:
-            cmd.extend(["--multi-organ", ",".join(multi_organ)])
-        else:
-            cmd.extend(["--tissue", tissue])
-        if offline:
-            cmd.append("--offline")
-        if somatic:
-            cmd.append("--somatic")
-        if force_sync:
-            cmd.append("--sync-gene-lists")
-        if target_population:
-            cmd.extend(["--target-population", target_population])
-        if evidence_detail:
-            cmd.extend(["--evidence-detail", evidence_detail])
-        if database_version:
-            cmd.extend(["--database-version", database_version])
-        if user_phenotypes:
-            cmd.extend(["--phenotypes", user_phenotypes])
-        if filter_preset:
-            cmd.extend(["--filter-preset", filter_preset])
-        if config_path:
-            cmd.extend(["--config", str(config_path)])
-        if spliceai_enabled:
-            cmd.append("--spliceai")
-            cmd.extend(["--spliceai-concurrency", str(spliceai_concurrency)])
-            cmd.extend(["--spliceai-timeout", str(spliceai_timeout)])
-        if disease_description:
-            cmd.extend(["--disease-description", disease_description])
-        if annotator and annotator != "auto":
-            cmd.extend(["--annotator", annotator])
-        if vep_cache:
-            cmd.extend(["--vep-cache", vep_cache])
-        if two_phase:
-            cmd.append("--two-phase")
-
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_per_batch,
-                cwd=str(SCRIPT_DIR),
-            )
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"VCF analysis timed out after {timeout_per_batch}s"}
-        except Exception as e:
-            return {"success": False, "error": f"Subprocess failed: {e}"}
-
-        if result.returncode != 0:
-            return {
-                "success": False,
-                "error": f"dgra_core.py exited with code {result.returncode}",
-                "stderr": result.stderr,
-                "stdout": result.stdout,
-            }
-
-        try:
-            with open(json_out, "r", encoding="utf-8") as f:
-                results = _json.load(f)
-        except Exception as e:
-            return {"success": False, "error": f"Failed to parse JSON output: {e}"}
-
-        try:
-            with open(md_out, "r", encoding="utf-8") as f:
-                report_md = f.read()
-        except Exception:
-            report_md = ""
-
-        return {"success": True, "results": results, "report_md": report_md}
+    return run_gpa_from_file(
+        input_path=input_path,
+        tissue=tissue,
+        user_phenotypes=user_phenotypes,
+        offline=offline,
+        somatic=somatic,
+        target_population=target_population,
+        multi_organ=multi_organ,
+        force_sync=force_sync,
+        evidence_detail=evidence_detail,
+        database_version=database_version,
+        config_path=config_path,
+        filter_preset=filter_preset,
+        auto_batch=auto_batch,
+        batch_size=batch_size,
+        timeout_per_batch=timeout_per_batch,
+        max_batch_retries=max_batch_retries,
+        spliceai_enabled=spliceai_enabled,
+        spliceai_concurrency=spliceai_concurrency,
+        spliceai_timeout=spliceai_timeout,
+        disease_description=disease_description,
+        annotator=annotator,
+        vep_cache=vep_cache,
+        two_phase=two_phase,
+    )
 
 
 def run_gpa_from_file(
@@ -382,6 +381,8 @@ def run_gpa_from_file(
     # v0.10.2: Two-phase pipeline and companion annotation file
     two_phase: bool = False,
     annotation_file: Optional[Path] = None,
+    # v0.10.15: Report detail level for VCF and direct API paths
+    report_detail_level: str = "minimal",
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -450,29 +451,37 @@ def run_gpa_from_file(
                 print(f"[GPA] Estimated VEP REST API time: ~{est_minutes} minutes for {variant_count} variants")
                 print(f"[GPA] Tip: re-run with --annotation-file {companion} to use the companion file")
 
-        return _run_gpa_vcf_direct(
-            input_path=input_path,
+        # v0.10.15: VCF path now uses direct Python API via _load_variants_from_file()
+        import asyncio
+        try:
+            variants = asyncio.run(_load_variants_from_file(
+                input_path=input_path,
+                annotator=annotator,
+                vep_cache=vep_cache,
+                disease_description=disease_description,
+            ))
+        except Exception as e:
+            return {"success": False, "error": f"VCF loading/annotation failed: {e}"}
+
+        return _run_gpa_direct(
+            variants=variants,
             tissue=tissue,
             user_phenotypes=user_phenotypes,
             offline=offline,
             somatic=somatic,
             target_population=target_population,
-            multi_organ=multi_organ,
-            force_sync=force_sync,
             evidence_detail=evidence_detail,
-            database_version=database_version,
             config_path=config_path,
-            filter_preset=filter_preset,
-            auto_batch=auto_batch,
-            batch_size=batch_size,
-            timeout_per_batch=timeout_per_batch,
-            max_batch_retries=max_batch_retries,
             spliceai_enabled=spliceai_enabled,
             spliceai_concurrency=spliceai_concurrency,
             spliceai_timeout=spliceai_timeout,
+            multi_organ=multi_organ,
+            database_version=database_version,
             disease_description=disease_description,
             annotator=annotator,
             vep_cache=vep_cache,
+            force_sync=force_sync,
+            report_detail_level=report_detail_level,
             two_phase=two_phase or auto_two_phase,
         )
 
@@ -616,7 +625,13 @@ def run_gpa(
             }
 
     # Validate tissue
-    valid_tissues = {"general", "hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
+    ref_path = SCRIPT_DIR.parent / "references" / "tissue_context.json"
+    try:
+        with open(ref_path, "r", encoding="utf-8") as f:
+            tissue_data = json.load(f)
+        valid_tissues = set(tissue_data.get("profiles", {}).keys())
+    except (FileNotFoundError, json.JSONDecodeError):
+        valid_tissues = {"general", "hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
     if tissue not in valid_tissues:
         return {
             "success": False,

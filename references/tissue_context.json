@@ -171,6 +171,94 @@
           "none基因 + 良性"
         ]
       }
+    },
+    "endocrine": {
+      "display_name": "内分泌系统 / Endocrine System",
+      "gtex_tissue": "Pituitary",
+      "gtex_tissues": ["Pituitary", "Thyroid", "Adrenal Gland", "Pancreas"],
+      "fast_track_rule": "GTEx内分泌表达≈0且无内分泌功能 → Tier 3",
+      "special_gene_lists": {
+        "diabetes_mellitus": ["INS", "GCK", "HNF1A", "HNF4A", "ABCC8", "KCNJ11", "PPARG", "IRS1", "WFS1", "HNF1B", "NEUROD1", "PDX1", "CEL", "PAX4"],
+        "obesity_satiety": ["LEP", "LEPR", "POMC", "MC4R", "SIM1", "BDNF", "NTRK2", "SH2B1", "PCSK1", "MRAP2"],
+        "thyroid_disorders": ["TSHR", "TG", "TPO", "DUOX2", "DUOXA2", "SLC5A5", "SLC26A4", "FOXE1", "PAX8", "NKX2-1"],
+        "adrenal_disorders": ["CYP21A2", "CYP11B1", "CYP17A1", "HSD3B2", "STAR", "NR0B1", "MC2R", "MRAP", "AAAS", "ABCD1"],
+        "glp1_receptor_pathway": ["GLP1R", "GCG", "PCSK1", "DPP4", "KCNQ1", "TCF7L2", "SLC30A8", "CDKN2A", "CDKAL1"]
+      },
+      "tier_rules": {
+        "tier_1_conditions": [
+          "纯合截断 + primary内分泌基因 → 确认表型（如新生儿糖尿病、先天性甲减）",
+          "ClinVar致病 + diabetes_mellitus基因 → 糖尿病分型/胰岛素依赖评估",
+          "ClinVar致病 + adrenal_disorders基因 → 肾上腺危象风险评估"
+        ],
+        "tier_2_conditions": [
+          "杂合MODY基因 → 青少年糖尿病携带者筛查",
+          "肥胖相关基因杂合 → 代谢综合征风险",
+          "GLP1通路变异 → GLP-1受体激动剂药物反应评估"
+        ],
+        "tier_3_conditions": [
+          "none基因 + 良性/常见多态性",
+          "旁系补偿基因"
+        ]
+      }
+    },
+    "metabolic": {
+      "display_name": "代谢系统 / Metabolic System",
+      "gtex_tissue": "Liver",
+      "gtex_tissues": ["Liver", "Adipose - Subcutaneous", "Adipose - Visceral (Omentum)", "Muscle - Skeletal", "Pancreas"],
+      "fast_track_rule": "GTEx代谢组织表达≈0且无代谢功能 → Tier 3",
+      "special_gene_lists": {
+        "lipid_metabolism": ["LDLR", "PCSK9", "APOB", "APOE", "LPL", "LCAT", "CETP", "ABCA1", "ABCG5", "ABCG8", "ANGPTL3", "ANGPTL4", "APOC3"],
+        "glycogen_storage": ["G6PC", "SLC37A4", "AGL", "GBE1", "PYGL", "PYGM", "PHKA2", "PHKB", "PHKG2", "GAA"],
+        "mitochondrial_disorders": ["POLG", "TK2", "RRM2B", "SUCLA2", "SUCLG1", "BCS1L", "TWNK", "OPA1", "MFN2", "MT-TL1", "MT-TK", "MT-TE"],
+        "amino_acid_disorders": ["PAH", "PTS", "QDPR", "GCH1", "PCBD1", "SPR", "DHFR", "MTHFR", "CBS", "MTR", "MTRR", "MMACHC"],
+        "porphyria": ["HMBS", "CPOX", "PPOX", "UROS", "UROD", "ALAD", "FECH"]
+      },
+      "tier_rules": {
+        "tier_1_conditions": [
+          "纯合截断 + primary代谢基因 → 确认表型（如糖原累积病、线粒体病）",
+          "ClinVar致病 + lipid_metabolism基因 → 心血管风险/他汀反应评估",
+          "ClinVar致病 + mitochondrial_disorders基因 → 能量代谢障碍评估"
+        ],
+        "tier_2_conditions": [
+          "杂合FH基因 → 家族性高胆固醇血症筛查",
+          "杂合线粒体基因 → 线粒体病携带者",
+          "药物代谢基因 → 代谢相关药物剂量调整"
+        ],
+        "tier_3_conditions": [
+          "none基因 + 良性/常见多态性",
+          "旁系补偿基因"
+        ]
+      }
+    },
+    "ophthalmic": {
+      "display_name": "眼组织 / Ophthalmic System",
+      "gtex_tissue": null,
+      "gtex_tissues": [],
+      "fast_track_rule": "无眼组织功能且非视网膜/角膜基因 → Tier 3",
+      "special_gene_lists": {
+        "retinal_dystrophy": ["RHO", "OPN1LW", "OPN1MW", "OPN1SW", "RPGR", "RP2", "CHM", "USH2A", "ABCA4", "EYS", "CERKL", "FAM161A", "PROM1", "PRPF31", "PRPF8", "PRPF3", "SNRNP200"],
+        "glaucoma": ["MYOC", "OPTN", "WDR36", "CYP1B1", "LTBP2", "TBK1", "TMCO1", "CDKN2B", "SIX1", "FOXC1", "PITX2", "PAX6"],
+        "corneal_dystrophy": ["TGFBI", "CHST6", "KRT3", "KRT12", "COL8A2", "PIKFYVE", "SLC4A11", "GSN", "M1S1", "UBIAD1"],
+        "cataract": ["CRYAA", "CRYAB", "CRYBA1", "CRYBB2", "CRYGC", "CRYGD", "GJA8", "HSF4", "MAF", "PITX3", "FOXE3", "FYCO1", "EPHA2", "LAMA3"],
+        "optic_neuropathy": ["OPA1", "OPA3", "MFN2", "WFS1", "AFG3L2", "SPG7", "CISD2", "TMEM126A", "RTN4IP1"]
+      },
+      "tier_rules": {
+        "tier_1_conditions": [
+          "纯合截断 + primary眼基因 → 确认表型（如视网膜色素变性、先天性青光眼）",
+          "ClinVar致病 + retinal_dystrophy基因 → 视力丧失风险评估",
+          "ClinVar致病 + glaucoma基因 → 青光眼进展/眼压管理评估"
+        ],
+        "tier_2_conditions": [
+          "杂合primary眼基因 → 携带者筛查（如RP杂合携带者）",
+          "角膜营养不良基因 → 角膜移植评估"
+        ],
+        "tier_3_conditions": [
+          "none基因 + 良性/常见多态性",
+          "旁系补偿基因",
+          "非眼组织相关基因"
+        ]
+      },
+      "_note": "GTEx v8 does not include eye tissues. Expression data is not available via GTEx API for this profile."
     }
   },
   "_notes": [

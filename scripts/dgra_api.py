@@ -22,6 +22,12 @@ from pathlib import Path
 from dgra_config import DGRAGlobalConfig, APIConfig
 from dgra_cache import DGRACache
 
+# v0.10.15: Local gnomAD frequency archive fallback
+try:
+    from dgra_gnomad_local import GnomADLocalArchive
+except ImportError:
+    GnomADLocalArchive = None
+
 
 class DGRAAPIError(Exception):
     """Base exception for API errors."""
@@ -139,6 +145,8 @@ class DGRAAPIClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._last_request_time: Dict[str, float] = {}  # api_name -> timestamp
         self._proxy_url: Optional[str] = None  # detected working proxy or None for direct
+        # v0.10.15: Local gnomAD frequency archive for offline fallback
+        self._gnomad_local = GnomADLocalArchive() if GnomADLocalArchive else None
 
     @staticmethod
     async def _probe_endpoint(proxy: Optional[str], timeout: float = 3.0) -> bool:
@@ -1149,9 +1157,34 @@ class DGRAAPIClient:
             "confidence": "medium",
         }
         """
+        # v0.10.15: Check local archive before API call
+        if self._gnomad_local:
+            local_result = self._gnomad_local.query(chrom, pos, ref, alt)
+            if local_result:
+                # Convert local archive format to standard gnomAD response format
+                af_populations = {}
+                if local_result.get("af_eas") is not None:
+                    af_populations["EAS"] = {
+                        "af": local_result["af_eas"],
+                        "ac": 0,
+                        "an": 0,
+                    }
+                return {
+                    "variant_id": f"{chrom}-{pos}-{ref}-{alt}",
+                    "af": local_result.get("af"),
+                    "af_popmax": local_result.get("af"),
+                    "af_populations": af_populations,
+                    "af_exome": None,
+                    "af_genome": None,
+                    "status": "SUCCESS",
+                    "source": "gnomad_local_archive",
+                    "confidence": "medium",
+                    "note": "From local archive (previously queried)",
+                }
+
         if populations is None:
             populations = ["EAS", "AMR", "AFR", "NFE", "SAS", "ASJ", "FIN", "MID", "OTH"]
-        
+
         # Build populations query fragment
         # v0.9.3: gnomAD removed population-specific fields (EAS, AMR, etc.) from VariantPopulation type.
         # Now populations is an array of {id, ac, an, homozygote_count} objects.
@@ -1315,6 +1348,15 @@ class DGRAAPIClient:
                     if pop_af > popmax_af:
                         popmax_af = pop_af
             
+            # v0.10.15: Save successful API result to local archive
+            if self._gnomad_local and not result.get("from_cache"):
+                af_eas = af_populations.get("EAS", {}).get("af")
+                af_nfe = af_populations.get("NFE", {}).get("af")
+                self._gnomad_local.save(
+                    chrom=chrom, pos=pos, ref=ref, alt=alt,
+                    af=combined_af, af_eas=af_eas, af_nfe=af_nfe,
+                )
+
             return {
                 "variant_id": variant_id,
                 "af": combined_af,

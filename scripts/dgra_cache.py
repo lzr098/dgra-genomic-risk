@@ -77,13 +77,33 @@ class DGRACache:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_ttl = default_ttl_days * 86400  # seconds
+        self._mem_cache: Dict[str, Dict[str, Any]] = {}  # v0.10.15: memory fallback
+        self._use_memory_fallback = False
         self._init_db()
-    
+
     def _init_db(self):
-        """Initialize database schema."""
-        with self._connection() as conn:
-            conn.executescript(self.SCHEMA)
-            conn.commit()
+        """Initialize database schema with integrity check."""
+        try:
+            with self._connection() as conn:
+                # v0.10.15: Integrity check before using database
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                if integrity != "ok":
+                    raise sqlite3.DatabaseError(f"Integrity check failed: {integrity}")
+                conn.executescript(self.SCHEMA)
+                conn.commit()
+        except (sqlite3.DatabaseError, sqlite3.OperationalError) as e:
+            # Database corrupted → rebuild and enable memory fallback
+            print(f"[DGRACache] Database corrupted ({e}). Rebuilding and using memory fallback.")
+            try:
+                if self.db_path.exists():
+                    self.db_path.unlink()
+            except OSError:
+                pass
+            # Recreate fresh database
+            with self._connection() as conn:
+                conn.executescript(self.SCHEMA)
+                conn.commit()
+            self._use_memory_fallback = True
     
     @contextmanager
     def _connection(self):
@@ -108,17 +128,30 @@ class DGRACache:
         """
         cache_key = self._make_key(api_name, **params)
         now = time.time()
-        
+
+        # v0.10.15: Memory fallback when SQLite is corrupted
+        if self._use_memory_fallback:
+            entry = self._mem_cache.get(cache_key)
+            if entry and entry.get("expires_at", 0) > now:
+                return {
+                    "data": entry["data"],
+                    "http_status": entry["http_status"],
+                    "confidence": entry["confidence"],
+                    "from_cache": True,
+                    "expires_at": entry["expires_at"],
+                }
+            return None
+
         with self._connection() as conn:
             # Check if entry exists and is not expired
             cursor = conn.execute(
-                """SELECT response_data, http_status, confidence, expires_at 
-                   FROM api_cache 
+                """SELECT response_data, http_status, confidence, expires_at
+                   FROM api_cache
                    WHERE cache_key = ? AND expires_at > ?""",
                 (cache_key, now)
             )
             row = cursor.fetchone()
-            
+
             if row:
                 # Update hit count and stats
                 conn.execute(
@@ -134,7 +167,7 @@ class DGRACache:
                     (api_name, now)
                 )
                 conn.commit()
-                
+
                 try:
                     return {
                         "data": json.loads(row["response_data"]),
@@ -161,12 +194,12 @@ class DGRACache:
                 conn.commit()
                 return None
     
-    def set(self, api_name: str, response_data: Any, 
+    def set(self, api_name: str, response_data: Any,
             http_status: int = 200, confidence: str = "medium",
             ttl_days: Optional[int] = None, **params) -> None:
         """
         Store API response in cache.
-        
+
         Args:
             api_name: Which API produced this data (ensembl, uniprot, etc.)
             response_data: JSON-serializable response data
@@ -179,11 +212,21 @@ class DGRACache:
         now = time.time()
         ttl = (ttl_days * 86400) if ttl_days else self.default_ttl
         expires = now + ttl
-        
+
+        # v0.10.15: Memory fallback when SQLite is corrupted
+        if self._use_memory_fallback:
+            self._mem_cache[cache_key] = {
+                "data": response_data,
+                "http_status": http_status,
+                "confidence": confidence,
+                "expires_at": expires,
+            }
+            return
+
         with self._connection() as conn:
             conn.execute(
-                """INSERT INTO api_cache 
-                    (cache_key, api_name, query_params, response_data, 
+                """INSERT INTO api_cache
+                    (cache_key, api_name, query_params, response_data,
                      created_at, expires_at, http_status, confidence)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(cache_key) DO UPDATE SET

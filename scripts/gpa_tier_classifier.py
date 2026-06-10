@@ -46,13 +46,36 @@ def _sa_get(sa, key, default=None):
 # GRCh38 sometimes selects a rare/ancestral allele as REF, causing
 # near-fixation variants to appear as "homozygous deletions" (e.g. SLC37A4).
 # These are NOT pathogenic — they are reference genome artifacts.
+
+# v0.10.15 FIX: Use exact SO term set instead of substring matching.
+# VEP Consequence is '&'-delimited SO terms (e.g. "frameshift_variant&stop_lost").
+_INDEL_CONSEQUENCES = {
+    "frameshift_variant",
+    "inframe_deletion",
+    "inframe_insertion",
+    "protein_altering_variant",
+}
+
+
+def _is_indel_consequence(consequence: str) -> bool:
+    """Check if VEP consequence contains an indel-related SO term.
+
+    VEP Consequence field uses '&' to separate multiple SO terms.
+    We split and check intersection with _INDEL_CONSEQUENCES.
+    """
+    if not consequence:
+        return False
+    terms = {t.strip() for t in consequence.split("&")}
+    return bool(terms & _INDEL_CONSEQUENCES)
+
+
 def _is_reference_polymorphism_artifact(variant: Variant, gnomad_af: Optional[float]) -> bool:
     """
     Detect reference genome polymorphism artifacts.
 
     Criteria (ALL must be met):
     1. gnomAD AF > 0.99 (near-fixation in human population)
-    2. Variant is a deletion (DEL) or insertion (INS) — indels are most affected
+    2. Variant is an indel (frameshift, inframe_del/ins, protein_altering)
     3. Genotype is homozygous (1/1 or 1|1) — consistent with fixation
     4. ClinVar is benign, likely_benign, or not pathogenic
 
@@ -69,16 +92,8 @@ def _is_reference_polymorphism_artifact(variant: Variant, gnomad_af: Optional[fl
         return False
 
     # Must be indel (deletions are the most common artifacts)
-    consequence_lower = str(variant.consequence or "").lower()
-    is_indel = (
-        "deletion" in consequence_lower
-        or "insertion" in consequence_lower
-        or "del" in consequence_lower
-        or "ins" in consequence_lower
-        or "frameshift" in consequence_lower
-        or "inframe" in consequence_lower
-    )
-    if not is_indel:
+    # v0.10.15 FIX: exact SO term matching instead of substring
+    if not _is_indel_consequence(variant.consequence):
         return False
 
     # Must be homozygous (consistent with fixation)
@@ -391,15 +406,44 @@ def classify_variant_tier(variant: Variant, domain_info: Dict, tissue_assessment
     special_lists = tissue_profile.get("special_gene_lists", {})
 
     # v0.5 P0-7: Helpers for conservative UNKNOWN handling
+    # v0.10.15: Non-coding transcript prefixes that indicate predicted/non-coding RefSeq
+    _NON_CODING_TRANSCRIPT_PREFIXES = ("NR_", "XM_", "XR_")
+
+    def _is_non_coding_transcript(transcript_id: str) -> bool:
+        """Check if transcript ID indicates non-coding or predicted RefSeq."""
+        if not transcript_id:
+            return False
+        return any(transcript_id.startswith(prefix) for prefix in _NON_CODING_TRANSCRIPT_PREFIXES)
+
     def _impact_high(impact):
         """Impact HIGH check - UNKNOWN is treated as HIGH (conservative, no downgrade).
         v0.5.2: TRANSCRIPT_DISCREPANCY with non-coding annotator transcript (NR_/XM_/XR_)
         but canonical protein-coding (ENST/ENSG) → downgrade HIGH to prevent false Tier 1.
+        v0.10.15: Also proactively detect non-coding transcripts even without warning.
         """
         if _is_unknown(impact):
             return True  # Missing impact data → assume worst case
 
-        # v0.5.2: Transcript discrepancy check
+        # v0.10.15 FIX: Proactive non-coding transcript detection.
+        # Even without transcript_warning, if the annotator used NR_/XM_/XR_
+        # for a HIGH impact call, downgrade to MODERATE because these transcripts
+        # are not clinically standard annotation targets.
+        if impact == "HIGH" and _is_non_coding_transcript(variant.transcript):
+            actions.append(
+                f"WARNING: Non-coding/predicted transcript {variant.transcript} used for annotation. "
+                f"HIGH impact downgraded to MODERATE. Recommend re-annotate with canonical/MANE transcript."
+            )
+            _add_evidence(
+                "TranscriptWarning",
+                f"Non-coding transcript {variant.transcript} → HIGH downgraded to MODERATE",
+                weight=0.5, confidence="medium",
+                raw_data={"transcript": variant.transcript, "reason": "non_coding_prefix"},
+            )
+            if "NON_CODING_TRANSCRIPT_USED" not in variant.qc_flags:
+                variant.qc_flags.append("NON_CODING_TRANSCRIPT_USED")
+            return False  # Treat as non-HIGH for tier classification
+
+        # v0.5.2: Transcript discrepancy check (kept for backward compatibility)
         if (transcript_warning and
             transcript_warning.get("type") == "TRANSCRIPT_DISCREPANCY"):
             annotator_tx = transcript_warning.get("annotator_selected", "")

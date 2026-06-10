@@ -309,6 +309,11 @@ class GPAConfig:
     vep_cache: Optional[str] = None
     # v0.10.1: Two-phase pipeline for large VCF optimization
     two_phase: bool = False
+    # v0.10.15: Report detail level — controls verbosity of Markdown/JSON output
+    # "minimal": Tier 1/2 detail + Tier 3 stats only (default for large samples)
+    # "standard": Tier 1/2 detail + Tier 3 top 20 + stats
+    # "full": all variants detail (legacy behavior)
+    report_detail_level: str = "minimal"
 
     def to_global(self) -> GPAGlobalConfig:
         gc = GPAGlobalConfig()
@@ -1950,6 +1955,13 @@ def main():
                         help="Enable two-phase pipeline: fast local triage first, then API enrichment only for "
                              "Tier 1/2 candidates. Reduces API calls by 50-200x for large VCFs. "
                              "Recommended for VCF input with > 1000 variants. (v0.10.1)")
+    # v0.10.15: Report detail level
+    parser.add_argument("--report-detail-level",
+                        choices=["minimal", "standard", "full"],
+                        default="minimal",
+                        help="Report verbosity level: minimal (Tier 1/2 detail + Tier 3 stats only), "
+                             "standard (Tier 1/2 detail + Tier 3 top 20), "
+                             "full (all variants detail). (v0.10.15)")
 
     args = parser.parse_args()
 
@@ -1968,6 +1980,15 @@ def main():
         except Exception as e:
             print(f"[GPA] Warning: Failed to load config {config_path}: {e}")
 
+    # v0.10.15: Dynamic tissue validation from tissue_context.json
+    ref_path = Path(__file__).parent.parent / "references" / "tissue_context.json"
+    try:
+        with open(ref_path, "r", encoding="utf-8") as f:
+            tissue_data = json.load(f)
+        valid_tissues = set(tissue_data.get("profiles", {}).keys())
+    except (FileNotFoundError, json.JSONDecodeError):
+        valid_tissues = {"general", "hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
+
     # v0.5 P1-7: Validate --multi-organ vs --tissue mutual exclusion
     multi_organ = None
     if args.multi_organ:
@@ -1976,7 +1997,6 @@ def main():
             print("Error: --tissue and --multi-organ are mutually exclusive. Use one or the other.")
             sys.exit(1)
         multi_organ = [p.strip() for p in args.multi_organ.split(",") if p.strip()]
-        valid_tissues = {"general", "hematopoietic", "cardiovascular", "hepatic", "renal", "neurological"}
         invalid = [p for p in multi_organ if p not in valid_tissues]
         if invalid:
             print(f"Error: Invalid multi-organ profile(s): {', '.join(invalid)}. Valid: {', '.join(sorted(valid_tissues))}")
@@ -2079,6 +2099,8 @@ def main():
         vep_cache=args.vep_cache,
         # v0.10.1: Two-phase pipeline
         two_phase=getattr(args, 'two_phase', False),
+        # v0.10.15: Report detail level
+        report_detail_level=getattr(args, 'report_detail_level', 'minimal'),
     )
 
     # v0.5 P2-3: Apply YAML config overrides to user config

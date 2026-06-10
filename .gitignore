@@ -1,28 +1,22 @@
+# Test artifacts
+coverage.xml
+.coverage
+htmlcov/
+.pytest_cache/
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
 
-# Cache and offline data (generated at runtime)
+# Local cache & data
 cache/
 references/offline_data/
+references/gnomad_freq_local.tsv.bgz
+references/gnomad_freq_local.tsv.bgz.tbi
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Logs
-*.log
