@@ -54,6 +54,7 @@ GPA 接收任何格式的基因组变异数据（VCF / Excel / TSV / 自由文�
 | 🔬 **SpliceAI 剪接验证** | Broad Institute API + Ensembl VEP REST fallback |
 | 🧪 **Raw VCF 端到端** | 无注释 VCF 自动调用 VEP REST API 实时注释 + 疾病感知转录本选择 |
 | ⚡ **两阶段管线优化** | 大型 VCF API 调用量减少 50-200x |
+| 🩺 **表型 Rescue 搜索** | 自动分级未发现 Tier 1 时，根据患者表型动态构建基因集，救援被遗漏的候选变异 |
 | 🛡️ **Preflight 健康检查** | 分析前自动检查依赖就绪状态 |
 | 🌍 **中英文兼容** | 输入支持中文/英文 consequence 术语自动映射 |
 
@@ -270,6 +271,39 @@ python scripts/dgra_cli_wrapper.py \
 ```
 
 预检会验证：Python 依赖、8 个 API 连通性、本地文件、磁盘空间、网络代理。
+
+---
+
+### 🩺 表型 Rescue 搜索
+
+当 GPA 自动分级**未发现 Tier 1** 或 Tier 1/2 与患者表型不匹配时，启动 Rescue 模块：
+
+```bash
+# Step 1: 根据表型动态构建基因集（OMIM + HPO）
+python scripts/gpa_gene_set_builder.py \
+  --phenotypes "joubert,polydactyly,epilepsy" \
+  --omim-db ~/.workbuddy/data/omim/omim.db \
+  --output genes.txt \
+  --max-genes 80
+
+# Step 2: 在 VCF 中搜索候选变异
+python scripts/gpa_phenotype_rescue.py \
+  --vcf patient.vep.vcf.gz \
+  --gene-list genes.txt \
+  --output rescue.tsv \
+  --patient-sex male \
+  --min-impact MODERATE \
+  --max-af 0.01
+```
+
+**Rescue 能解决什么问题？**
+- MODERATE  impact 变异被自动分级低估
+- ClinVar 标签保守（"likely benign" / VUS）的新兴基因
+- GTEx 组织数据缺失导致组织评分失败
+- X 连锁男性半合子被忽略
+- 数据库滞后、尚未收录的新致病基因
+
+**典型场景**：患者有明显临床综合征（如多指 + 小脑蚓部发育不全），GPA 因数据库原因未检出 Tier 1，Rescue 通过 ciliopathy 通路动态构建基因集，在 VCF 中定位到 OFD1 半合子致病变异。
 
 ---
 
@@ -517,6 +551,7 @@ GPA accepts genomic variant data in any format (VCF / Excel / TSV / free text), 
 | 🔬 **SpliceAI Splice Verification** | Broad Institute API + Ensembl VEP REST fallback |
 | 🧪 **Raw VCF End-to-End** | Unannotated VCF auto-detected → VEP REST API annotation → Disease-aware transcript selection |
 | ⚡ **Two-Phase Pipeline** | API calls reduced 50-200x for large VCFs |
+| 🩺 **Phenotype Rescue Search** | When automated tiering finds no Tier 1, dynamically build gene set from phenotypes and rescue missed candidates |
 | 🛡️ **Preflight Health Check** | Auto-check dependency readiness before analysis |
 | 🌍 **Bilingual Support** | Chinese/English consequence term auto-mapping |
 
@@ -733,6 +768,39 @@ python scripts/dgra_cli_wrapper.py \
 ```
 
 Preflight verifies: Python dependencies, 8 API connectivity, local files, disk space, network proxy.
+
+---
+
+### 🩺 Phenotype Rescue Search
+
+When GPA automated tiering **finds no Tier 1** or Tier 1/2 variants do not match the patient's phenotype, trigger the Rescue module:
+
+```bash
+# Step 1: Dynamically build gene set from phenotypes (OMIM + HPO)
+python scripts/gpa_gene_set_builder.py \
+  --phenotypes "joubert,polydactyly,epilepsy" \
+  --omim-db ~/.workbuddy/data/omim/omim.db \
+  --output genes.txt \
+  --max-genes 80
+
+# Step 2: Search VCF for candidate variants
+python scripts/gpa_phenotype_rescue.py \
+  --vcf patient.vep.vcf.gz \
+  --gene-list genes.txt \
+  --output rescue.tsv \
+  --patient-sex male \
+  --min-impact MODERATE \
+  --max-af 0.01
+```
+
+**What problems does Rescue solve?**
+- MODERATE impact variants underestimated by automated tiering
+- Emerging genes with conservative ClinVar labels ("likely benign" / VUS)
+- Tissue scoring failures due to missing GTEx data
+- X-linked hemizygosity in males overlooked
+- Database lag — newly discovered disease genes not yet annotated
+
+**Typical scenario**: A patient presents with a recognizable syndrome (e.g., polydactyly + cerebellar vermis hypoplasia). GPA finds no Tier 1 due to database limitations. Rescue dynamically builds a ciliopathy gene set, scans the VCF, and identifies a hemizygous OFD1 pathogenic variant.
 
 ---
 
@@ -983,6 +1051,8 @@ dgra-genomic-risk/
 │   ├── gpa_report.py               # Markdown/JSON report generation
 │   ├── gpa_vcf_annotator.py        # Raw VCF → VEP REST annotation
 │   ├── gpa_transcript_selector.py  # Disease-aware transcript selection
+│   ├── gpa_phenotype_rescue.py     # Phenotype-driven VCF rescue search
+│   ├── gpa_gene_set_builder.py     # Dynamic gene set builder (OMIM + HPO)
 │   ├── gpa_phenotype_match.py      # LLM semantic phenotype matching
 │   ├── gpa_phaser.py               # Phasing analysis
 │   ├── gpa_multi_hit.py            # Multi-gene hit detection
@@ -1017,6 +1087,7 @@ dgra-genomic-risk/
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| **v0.10.16** | 2026-06-10 | Phenotype Rescue workflow: dynamic gene set building + VCF rescue search for cases with no Tier 1 |
 | **v0.10.15** | 2026-06-10 | VCF direct API · 9 tissue profiles · Report detail levels · gnomAD local archive · SQLite integrity fallback · Exact SO term matching |
 | **v0.10.0** | 2026-05-25 | God Module split: dgra_core.py 2098 lines → 6 independent modules |
 | **v0.9.0** | 2026-05-23 | Raw VCF end-to-end: VEP REST annotation + disease-aware transcript selection |
