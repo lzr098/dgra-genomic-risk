@@ -27,6 +27,12 @@ if TYPE_CHECKING:
 
 from version import __version__
 
+# v0.6: Pseudogene lookup (lazy import to avoid circular deps)
+try:
+    from dgra_core import _load_pseudogene_lookup
+except ImportError:
+    _load_pseudogene_lookup = None  # type: ignore
+
 # Offline archive path (shared with dgra_core)
 _OFFLINE_ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "references" / "offline_data"
 
@@ -306,9 +312,10 @@ def _generate_pseudogene_assessment_section(variants: List[Variant]) -> Optional
     if not pg_variants:
         return None
 
+    pg_lookup = _load_pseudogene_lookup() if _load_pseudogene_lookup else {}
     lines = []
     lines.append("## 🧬 假基因干扰评估\n")
-    lines.append(f"*基于 v0.6 轻量版假基因数据库({len(_load_pseudogene_lookup())} 个临床相关基因对)*\n")
+    lines.append(f"*基于 v0.6 轻量版假基因数据库({len(pg_lookup)} 个临床相关基因对)*\n")
     lines.append(f"**检测到 {len(pg_variants)} 个变异存在假基因干扰风险**\n\n")
 
     # Summary table
@@ -358,7 +365,7 @@ def _generate_pseudogene_assessment_section(variants: List[Variant]) -> Optional
         if pgs:
             lines.append(f"- **相关假基因**: {', '.join(pgs)}\n")
             # Add notes from lookup if available
-            lookup = _load_pseudogene_lookup()
+            lookup = _load_pseudogene_lookup() if _load_pseudogene_lookup else {}
             entry = lookup.get(v.gene, {})
             if entry.get("notes"):
                 lines.append(f"- **注释**: {entry['notes']}\n")

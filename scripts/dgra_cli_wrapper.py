@@ -190,6 +190,15 @@ def _run_gpa_direct(
                 config=config,
             ))
 
+        # v0.10.16 FIX: If the pipeline returned an error dict, propagate it as
+        # a failed call instead of wrapping it in success=True.
+        if result.get("error"):
+            return {
+                "success": False,
+                "error": f"Pipeline returned error: {result.get('error')}",
+                "results": result,
+            }
+
         # Ensure report_md exists
         report_md = result.get("report_md", "")
         if not report_md:
@@ -443,6 +452,8 @@ def run_gpa_from_file(
             disease_description=disease_description,
             annotator=annotator,
             vep_cache=vep_cache,
+            two_phase=two_phase,
+            progress_log_path=progress_log_path,
         )
 
     # v0.9.0 fix: When input is a raw VCF, pass it directly to dgra_core.py
@@ -529,13 +540,15 @@ def run_gpa_from_file(
         timeout_per_batch=timeout_per_batch,
         max_batch_retries=max_batch_retries,
         # v0.8.0: SpliceAI
-        spliceai_enabled=spliceai_enabled,
-        spliceai_concurrency=spliceai_concurrency,
-        # v0.9.0: VCF annotation + transcript selection
-        disease_description=disease_description,
-        annotator=annotator,
-        vep_cache=vep_cache,
-    )
+            spliceai_enabled=spliceai_enabled,
+            spliceai_concurrency=spliceai_concurrency,
+            # v0.9.0: VCF annotation + transcript selection
+            disease_description=disease_description,
+            annotator=annotator,
+            vep_cache=vep_cache,
+            two_phase=two_phase,
+            progress_log_path=progress_log_path,
+        )
 
 
 def run_gpa(
@@ -566,6 +579,10 @@ def run_gpa(
     disease_description: Optional[str] = None,
     annotator: str = "auto",
     vep_cache: Optional[str] = None,
+    # v0.10.2: Two-phase pipeline
+    two_phase: bool = False,
+    # v0.10.16: Fine-grained progress logging
+    progress_log_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
@@ -606,6 +623,8 @@ def run_gpa(
             spliceai_timeout=spliceai_timeout,
             multi_organ=multi_organ,
             database_version=database_version,
+            two_phase=two_phase,
+            progress_log_path=progress_log_path,
         )
 
     # v0.7.1: Auto-batch for medium variant sets
@@ -883,6 +902,9 @@ def main():
             spliceai_enabled=args.spliceai,
             spliceai_concurrency=args.spliceai_concurrency,
             spliceai_timeout=args.spliceai_timeout,
+            # v0.10.2/v0.10.16: two-phase + progress log
+            two_phase=args.two_phase,
+            progress_log_path=args.progress_log,
         )
     else:
         # Inline JSON variants
@@ -914,6 +936,9 @@ def main():
             spliceai_enabled=args.spliceai,
             spliceai_concurrency=args.spliceai_concurrency,
             spliceai_timeout=args.spliceai_timeout,
+            # v0.10.2/v0.10.16: two-phase + progress log
+            two_phase=args.two_phase,
+            progress_log_path=args.progress_log,
         )
 
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)

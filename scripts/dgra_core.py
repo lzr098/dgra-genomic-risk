@@ -1351,20 +1351,22 @@ def evaluate_missense_tier(variant: Variant, domain_info: Optional[Dict],
                 "reason": f"Missense tolerated by structure but in conserved region (mis_z={mis_z:.2f})",
             }
     else:
-        # No domain info or unknown
+        # No domain info or unknown — v0.10.8 FIX: do NOT conservatively upgrade to Tier 2.
+        # Offline mode often lacks UniProt domain data; without structural evidence,
+        # missense variants should fall through to standard Priority 3 (Tier 3) logic.
         if mis_z is not None and mis_z > 3.09:
             return {
                 "score": 0.5,
-                "tier_recommendation": 2,
+                "tier_recommendation": None,
                 "category": "conservation_concern",
-                "reason": f"Missense in highly constrained gene (mis_z={mis_z:.2f}) - domain info unavailable",
+                "reason": f"Missense in highly constrained gene (mis_z={mis_z:.2f}) - domain info unavailable, no structural evidence for upgrade",
             }
         else:
             return {
                 "score": 0.3,
-                "tier_recommendation": 2,
+                "tier_recommendation": None,
                 "category": "unknown",
-                "reason": "Missense with unknown domain impact - conservative Tier 2",
+                "reason": "Missense with unknown domain impact - no structural evidence, fall through to Tier 3",
             }
 
 
@@ -1688,16 +1690,69 @@ def assess_tissue_relevance(variant: Variant, tissue_profile: Dict,
                 "source": f"special_list:{list_name}",
             }
 
-    # --- Priority 4: Completely unknown ---
+    # --- Priority 3.5: Local GTEx database (shared across skills) ---
+    # v0.10.8: Query the shared local GTEx SQLite DB before falling back to unknown.
+    try:
+        import sys
+        gtex_local_path = str(Path.home() / ".workbuddy" / "scripts")
+        if gtex_local_path not in sys.path:
+            sys.path.insert(0, gtex_local_path)
+        from gtex_local import query_gtex_local
+        gtex_local_data = query_gtex_local(gene)
+        if gtex_local_data:
+            # Determine relevance based on phenotype-matched tissues from profile
+            gtex_tissues = tissue_profile.get("gtex_tissues", [])
+            if not gtex_tissues and tissue_profile.get("gtex_tissue"):
+                gtex_tissues = [tissue_profile.get("gtex_tissue")]
+            
+            if gtex_tissues:
+                matched_tpms = [gtex_local_data.get(t) for t in gtex_tissues if t in gtex_local_data]
+                max_tpm = max(matched_tpms) if matched_tpms else 0.0
+                all_tpms = list(gtex_local_data.values())
+                global_max = max(all_tpms) if all_tpms else 0.0
+            else:
+                # General profile - use max across all tissues
+                all_tpms = list(gtex_local_data.values())
+                max_tpm = max(all_tpms) if all_tpms else 0.0
+                global_max = max_tpm
+
+            if max_tpm >= 10.0:
+                relevance = "primary"
+                rationale = f"High expression (max TPM={max_tpm:.1f}) in profile-matched tissues per local GTEx DB."
+            elif max_tpm >= 1.0:
+                relevance = "secondary"
+                rationale = f"Moderate expression (max TPM={max_tpm:.1f}) in profile-matched tissues per local GTEx DB."
+            else:
+                relevance = "none"
+                rationale = f"Low/no expression (max TPM={max_tpm:.2f}) in profile-matched tissues per local GTEx DB."
+
+            return {
+                "tier_suggestion": "assess_via_standard_pipeline",
+                "relevance": relevance,
+                "rationale": rationale,
+                "fast_track": False,
+                "clinical_note": f"{gene} {relevance}-relevant to {profile_name} (local GTEx DB, max TPM={max_tpm:.1f}).",
+                "gtex_tpm": max_tpm,
+                "global_max_tpm": global_max,
+                "source": "gtex_local_db",
+            }
+    except Exception:
+        pass
+
+    # --- Priority 4: Not in any annotation source ---
+    # v0.10.8 FIX: Return "none" instead of "unknown" when gene is not in any
+    # special list, local tissue profile, or GTEx DB. "unknown" triggers overly
+    # conservative Tier 2 catch-all in offline mode. "none" is biologically more
+    # accurate for genes with no tissue relevance evidence.
     return {
         "tier_suggestion": "assess_via_standard_pipeline",
-        "relevance": "unknown",
-        "rationale": f"{gene} not in GTEx or local tissue profile '{profile_name}'.",
+        "relevance": "none",
+        "rationale": f"{gene} not in GTEx, local tissue profile, or special gene lists for '{profile_name}'.",
         "fast_track": False,
-        "action": "Proceed with standard domain + ClinVar + gnomAD assessment. Do NOT fast-track.",
-        "clinical_note": "Gene relevance unknown - conservative assessment.",
+        "action": "Proceed with standard domain + ClinVar + gnomAD assessment. No tissue-specific fast-track.",
+        "clinical_note": f"No tissue relevance evidence for {gene} in {profile_name} context.",
         "gtex_rpkm": None,
-        "source": "unknown",
+        "source": "no_relevance_evidence",
     }
 
 # =============================================================================

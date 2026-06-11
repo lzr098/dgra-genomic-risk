@@ -373,6 +373,10 @@ class VCFParser(InputParser):
                         parts = csq_part.split("|")
                         if len(parts) > 0 and parts[0] == alt:
                             allele_csq.append(parts)
+                    # Fallback for INDELs: VEP Allele field uses '-' for deletions
+                    # and inserted sequence for insertions, not the full ALT allele.
+                    if not allele_csq and all_csq_parts:
+                        allele_csq = [p.split("|") for p in all_csq_parts]
                     chosen = self._pick_csq(allele_csq, csq_map)
                     variant = self._csq_to_variant(
                         chrom, pos, ref, alt, chosen, csq_map,

@@ -126,3 +126,12 @@ class GPAProgressTracker:
 
     def summary(self, message: str, data: Dict[str, Any]) -> None:
         self._emit("summary", "pipeline", "", message, data)
+
+    def finish(self, message: str = "Pipeline complete", data: Optional[Dict[str, Any]] = None) -> None:
+        """Emit a final summary event marking the pipeline as finished.
+
+        This is a convenience method for callers that expect a tracker.finish()
+        call at the end of a run. It simply records a summary event; the log
+        file remains open-append and does not need to be closed.
+        """
+        self.summary(message, data or {})

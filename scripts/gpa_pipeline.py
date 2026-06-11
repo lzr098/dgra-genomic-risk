@@ -255,17 +255,33 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     if not config.offline_mode and unique_genes:
         cache = DGRACache(global_config.cache_db_path)
         async with DGRAAPIClient(global_config, cache) as client:
-            # v0.5 P1-6: Multi-tissue GTEx aggregation
-            gtex_tissues = tissue_profile.get("gtex_tissues")
-            gtex_single_tissue = tissue_profile.get("gtex_tissue")
-
-            if gtex_tissues and len(gtex_tissues) > 1:
-                # v0.9.4: Skip GTEx when unreachable behind proxy — non-critical for tiering
-                gtex_data = {}
-                print(f"[GPA] GTEx query skipped ({len(gtex_tissues)} tissues) — using offline mode for expression")
-            else:
-                # Single tissue query (backward compatible)
-                gtex_data = {}
+            # v0.10.16: Query local GTEx DB for all unique genes
+            gtex_data = {}
+            try:
+                import sys
+                gtex_local_path = str(Path.home() / ".workbuddy" / "scripts")
+                if gtex_local_path not in sys.path:
+                    sys.path.insert(0, gtex_local_path)
+                from gtex_local import query_gtex_local
+                for gene in unique_genes:
+                    local_expr = query_gtex_local(gene, tissues=None)
+                    if local_expr:
+                        all_expressing = sorted(
+                            [(t, v) for t, v in local_expr.items() if v > 0],
+                            key=lambda x: x[1], reverse=True
+                        )
+                        max_tpm = max(local_expr.values()) if local_expr else 0.0
+                        gtex_data[gene] = {
+                            "median_tpm": max_tpm,
+                            "max_tpm": max_tpm,
+                            "all_tissues": [{"tissue": t, "tpm": v} for t, v in all_expressing],
+                            "expressing_tissues": len(all_expressing),
+                            "source": "gtex_local_db",
+                            "confidence": "medium",
+                        }
+                print(f"[GPA] GTEx local DB: expression data for {len(gtex_data)}/{len(unique_genes)} genes")
+            except Exception as e:
+                print(f"[GPA] GTEx local DB query failed: {e}")
 
             # Batch query other APIs concurrently with GTEx
             ensembl_raw, uniprot_raw, hgnc_raw, gnomad_constraint_raw = await asyncio.gather(
@@ -521,6 +537,28 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         hgnc_data = {}
         # gnomad_constraint_data already populated from archive above
         # No HGNC data in offline mode unless cached
+
+        # v0.10.4-fix: Offline mode local ClinVar VCF query
+        # Query local ClinVar VCF for variants with UNKNOWN ClinVar status
+        try:
+            from dgra_clinvar import _try_local_clinvar_query, _local_result_to_clinvar_result
+            variants_needing_clinvar = [v for v in variants if v.clinvar == _UNKNOWN or v.clinvar == "UNKNOWN"]
+            if variants_needing_clinvar:
+                print(f"[GPA] Offline mode: querying local ClinVar VCF for {len(variants_needing_clinvar)} variants...")
+                filled = 0
+                not_found = 0
+                for v in variants_needing_clinvar:
+                    local_result = _try_local_clinvar_query(v.chrom, v.pos, v.ref, v.alt)
+                    if local_result:
+                        v.clinvar = local_result.get("CLNSIG", _UNKNOWN)
+                        v.clinvar_review_status = local_result.get("CLNREVSTAT")
+                        v.clinvar_accession = local_result.get("ID")
+                        filled += 1
+                    else:
+                        not_found += 1
+                print(f"[GPA] Offline mode local ClinVar: {filled} filled, {not_found} not_found")
+        except Exception as e:
+            print(f"[GPA] Offline mode local ClinVar query failed (non-critical): {e}")
 
     # ------------------------------------------------------------------
     # Step 0.5: HGNC Gene Symbol Normalization (v0.5 P1-2)

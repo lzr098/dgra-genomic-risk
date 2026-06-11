@@ -15,6 +15,7 @@ import asyncio
 import aiohttp
 import hashlib
 import json
+import sys
 import time
 from typing import Optional, Dict, Any, List
 from pathlib import Path
@@ -147,6 +148,63 @@ class DGRAAPIClient:
         self._proxy_url: Optional[str] = None  # detected working proxy or None for direct
         # v0.10.15: Local gnomAD frequency archive for offline fallback
         self._gnomad_local = GnomADLocalArchive() if GnomADLocalArchive else None
+
+    # ------------------------------------------------------------------
+    # v0.10.16: Local GTEx SQLite DB integration (zero external API)
+    # ------------------------------------------------------------------
+    def _query_gtex_local_db(self, gene_symbol: str) -> Dict[str, float]:
+        """Query shared local GTEx SQLite DB for all tissues of a gene.
+
+        Returns {tissue_name: median_tpm}.
+        """
+        try:
+            gtex_local_path = str(Path.home() / ".workbuddy" / "scripts")
+            if gtex_local_path not in sys.path:
+                sys.path.insert(0, gtex_local_path)
+            from gtex_local import query_gtex_local
+            return query_gtex_local(gene_symbol, tissues=None)
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _normalize_tissue_name(tissue: str) -> str:
+        """Normalize tissue name for cross-format matching."""
+        return (
+            tissue.replace(" - ", "_")
+            .replace(" ", "_")
+            .replace("-", "_")
+            .replace("(", "")
+            .replace(")", "")
+            .lower()
+        )
+
+    def _match_tissue_in_local(self, tissue: str, local_data: Dict[str, float]) -> Optional[float]:
+        """Find matching TPM for a tissue in local GTEx data (handles mixed naming formats)."""
+        if tissue in local_data:
+            return local_data[tissue]
+        norm_input = self._normalize_tissue_name(tissue)
+        for local_tissue, tpm in local_data.items():
+            if self._normalize_tissue_name(local_tissue) == norm_input:
+                return tpm
+        return None
+
+    def _fetch_and_cache_gtex_local(self, gene_symbol: str) -> bool:
+        """Fetch GTEx data from API and write to local SQLite DB (sync, for asyncio.to_thread).
+
+        Returns True if data was fetched and cached.
+        """
+        try:
+            gtex_local_path = str(Path.home() / ".workbuddy" / "scripts")
+            if gtex_local_path not in sys.path:
+                sys.path.insert(0, gtex_local_path)
+            from gtex_local import query_gtex_api_median, insert_gtex_api_results
+            results = query_gtex_api_median(gene_symbol)
+            if results:
+                insert_gtex_api_results(None, gene_symbol, results)
+                return True
+        except Exception:
+            pass
+        return False
 
     @staticmethod
     async def _probe_endpoint(proxy: Optional[str], timeout: float = 3.0) -> bool:
@@ -894,6 +952,10 @@ class DGRAAPIClient:
         """
         Query GTEx v2 API for median gene expression in a specific tissue.
         
+        v0.10.16: LOCAL DB FIRST — queries shared local GTEx SQLite DB before
+        any external API. If found locally, returns immediately with zero network.
+        If not found locally, returns failed (external API disabled per user config).
+        
         GTEx v2 requires versioned gencodeIds (e.g. ENSG00000110799.13).
         Two-step process:
           1. Resolve gene symbol -> versioned gencodeId (cached)
@@ -909,98 +971,49 @@ class DGRAAPIClient:
             "confidence": "medium",
         }
         """
-        # --- Step 1: Resolve gene symbol -> versioned gencodeId ---
-        gencode_map = self._load_gencode_cache()
-        gencode_id = gencode_map.get(gene_id)
+        # --- v0.10.16: LOCAL DB FIRST ---
+        local_data = self._query_gtex_local_db(gene_id)
+        if local_data:
+            median_val = self._match_tissue_in_local(tissue, local_data)
+            if median_val is not None:
+                return {
+                    "gene": gene_id,
+                    "tissue": tissue,
+                    "median_tpm": median_val,
+                    "unit": "TPM",
+                    "source": "gtex_local_db",
+                    "confidence": "medium",
+                }
         
-        if not gencode_id:
-            # Query GTEx get_genes endpoint
-            search_result = await self._request_with_retry(
-                api_name="gtex",
-                endpoint="/reference/gene",
-                params={
-                    "geneId": gene_id,
-                    "page": 0,
-                    "itemsPerPage": 10,
-                },
-            )
-            
-            if search_result["data"] and search_result["http_status"] == 200:
-                data = search_result["data"]
-                items = data.get("data", [])
-                if items:
-                    # Prefer exact symbol match
-                    for item in items:
-                        if item.get("geneSymbol") == gene_id:
-                            gencode_id = item.get("gencodeId")
-                            break
-                    if not gencode_id:
-                        gencode_id = items[0].get("gencodeId")
-                
-                if gencode_id:
-                    gencode_map[gene_id] = gencode_id
-                    self._save_gencode_cache(gencode_map)
+        # --- v0.10.16b: LAZY LOAD — fetch from GTEx API and cache to local DB ---
+        try:
+            fetched = await asyncio.to_thread(self._fetch_and_cache_gtex_local, gene_id)
+            if fetched:
+                # Re-query local DB after cache insertion
+                local_data = self._query_gtex_local_db(gene_id)
+                if local_data:
+                    median_val = self._match_tissue_in_local(tissue, local_data)
+                    if median_val is not None:
+                        return {
+                            "gene": gene_id,
+                            "tissue": tissue,
+                            "median_tpm": median_val,
+                            "unit": "TPM",
+                            "source": "gtex_local_db",
+                            "confidence": "medium",
+                        }
+        except Exception:
+            pass
         
-        if not gencode_id:
-            return {
-                "gene": gene_id,
-                "tissue": tissue,
-                "median_tpm": None,
-                "unit": "TPM",
-                "source": "failed",
-                "confidence": "low",
-                "error": f"Could not resolve gencodeId for {gene_id}",
-            }
-        
-        # --- Step 2: Query medianGeneExpression ---
-        # GTEx tissue IDs use underscores: "Whole_Blood", "Heart_Left_Ventricle"
-        gtex_tissue = tissue.replace(" - ", "_").replace(" ", "_")
-        
-        result = await self._request_with_retry(
-            api_name="gtex",
-            endpoint="/expression/medianGeneExpression",
-            params={
-                "gencodeId": gencode_id,
-                "tissueSiteDetailIds": gtex_tissue,
-                "datasetId": "gtex_v8",
-            },
-        )
-        
-        if result["data"] and result["http_status"] == 200:
-            data = result["data"]
-            items = data.get("data", [])
-            
-            # Find the tissue-specific record
-            median_val = None
-            for item in items:
-                if item.get("tissueSiteDetailId") == gtex_tissue:
-                    median_val = item.get("median")
-                    break
-            
-            # Fallback: if tissue not found but data exists, return first (for debugging)
-            if median_val is None and items:
-                median_val = items[0].get("median")
-            
-            return {
-                "gene": gene_id,
-                "tissue": tissue,
-                "median_tpm": median_val,
-                "unit": "TPM",
-                "gencode_id": gencode_id,
-                "source": "cache" if result["from_cache"] else "gtex",
-                "confidence": result["confidence"],
-                "raw": data,
-            }
-        
+        # Not found locally and API fetch failed — return failed
         return {
             "gene": gene_id,
             "tissue": tissue,
             "median_tpm": None,
             "unit": "TPM",
-            "gencode_id": gencode_id,
             "source": "failed",
             "confidence": "low",
-            "error": result.get("error"),
+            "error": f"Gene {gene_id} not found in local GTEx DB and API fetch failed",
         }
     
     def _load_gencode_cache(self) -> Dict[str, str]:
@@ -1025,10 +1038,10 @@ class DGRAAPIClient:
     
     async def query_gtex_expression_multi(self, gene_id: str, tissues: List[str]) -> List[Dict[str, Any]]:
         """
-        Query GTEx v2 API for median gene expression across multiple tissues.
+        Query GTEx expression across multiple tissues.
         
-        Uses asyncio.gather to concurrently query all tissues.
-        Returns a list of individual tissue results.
+        v0.10.16: LOCAL DB FIRST — queries shared local GTEx SQLite DB before
+        any external API. Returns all matching tissues from local DB.
         
         Args:
             gene_id: Gene symbol (e.g., "VWF")
@@ -1040,81 +1053,53 @@ class DGRAAPIClient:
         if not tissues:
             return []
         
-        # v0.10.5 FIX: Single API call with comma-separated tissueSiteDetailIds
-        # instead of N concurrent calls. GTEx v2 API supports multiple tissues.
-        gencode_map = self._load_gencode_cache()
-        gencode_id = gencode_map.get(gene_id)
-
-        if not gencode_id:
-            search_result = await self._request_with_retry(
-                api_name="gtex",
-                endpoint="/reference/gene",
-                params={"geneId": gene_id, "page": 0, "itemsPerPage": 10},
-            )
-            if search_result["data"] and search_result["http_status"] == 200:
-                data = search_result["data"]
-                items = data.get("data", [])
-                if items:
-                    for item in items:
-                        if item.get("geneSymbol") == gene_id:
-                            gencode_id = item.get("gencodeId")
-                            break
-                    if not gencode_id:
-                        gencode_id = items[0].get("gencodeId")
-                if gencode_id:
-                    gencode_map[gene_id] = gencode_id
-                    self._save_gencode_cache(gencode_map)
-
-        if not gencode_id:
-            return [
-                {
-                    "gene": gene_id, "tissue": t, "median_tpm": None,
-                    "unit": "TPM", "source": "failed", "confidence": "low",
-                    "error": f"Could not resolve gencodeId for {gene_id}",
-                }
-                for t in tissues
-            ]
-
-        gtex_tissues = [t.replace(" - ", "_").replace(" ", "_") for t in tissues]
-        tissue_param = ",".join(gtex_tissues)
-
-        result = await self._request_with_retry(
-            api_name="gtex",
-            endpoint="/expression/medianGeneExpression",
-            params={
-                "gencodeId": gencode_id,
-                "tissueSiteDetailIds": tissue_param,
-                "datasetId": "gtex_v8",
-            },
-        )
-
-        if result["data"] and result["http_status"] == 200:
-            data = result["data"]
-            items = data.get("data", [])
-            tissue_median: Dict[str, float] = {}
-            for item in items:
-                tid = item.get("tissueSiteDetailId")
-                if tid in gtex_tissues:
-                    tissue_median[tid] = item.get("median")
-
+        # --- v0.10.16: LOCAL DB FIRST ---
+        local_data = self._query_gtex_local_db(gene_id)
+        if local_data:
             processed = []
             for tissue in tissues:
-                gtex_t = tissue.replace(" - ", "_").replace(" ", "_")
-                median_val = tissue_median.get(gtex_t)
+                median_val = self._match_tissue_in_local(tissue, local_data)
                 processed.append({
-                    "gene": gene_id, "tissue": tissue, "median_tpm": median_val,
-                    "unit": "TPM", "gencode_id": gencode_id,
-                    "source": "cache" if result["from_cache"] else "gtex",
-                    "confidence": result["confidence"],
+                    "gene": gene_id,
+                    "tissue": tissue,
+                    "median_tpm": median_val,
+                    "unit": "TPM",
+                    "source": "gtex_local_db",
+                    "confidence": "medium" if median_val is not None else "low",
                 })
             return processed
-
+        
+        # --- v0.10.16b: LAZY LOAD — fetch from GTEx API and cache to local DB ---
+        try:
+            fetched = await asyncio.to_thread(self._fetch_and_cache_gtex_local, gene_id)
+            if fetched:
+                local_data = self._query_gtex_local_db(gene_id)
+                if local_data:
+                    processed = []
+                    for tissue in tissues:
+                        median_val = self._match_tissue_in_local(tissue, local_data)
+                        processed.append({
+                            "gene": gene_id,
+                            "tissue": tissue,
+                            "median_tpm": median_val,
+                            "unit": "TPM",
+                            "source": "gtex_local_db",
+                            "confidence": "medium" if median_val is not None else "low",
+                        })
+                    return processed
+        except Exception:
+            pass
+        
+        # Not found in local DB and API fetch failed
         return [
             {
-                "gene": gene_id, "tissue": t, "median_tpm": None,
-                "unit": "TPM", "gencode_id": gencode_id,
-                "source": "failed", "confidence": "low",
-                "error": result.get("error"),
+                "gene": gene_id,
+                "tissue": t,
+                "median_tpm": None,
+                "unit": "TPM",
+                "source": "failed",
+                "confidence": "low",
+                "error": f"Gene {gene_id} not found in local GTEx DB and API fetch failed",
             }
             for t in tissues
         ]
