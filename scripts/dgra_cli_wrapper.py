@@ -122,6 +122,8 @@ def _run_gpa_direct(
     force_sync: bool = False,
     report_detail_level: str = "minimal",
     two_phase: bool = False,
+    # v0.10.16: Fine-grained progress logging
+    progress_log_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run GPA via direct Python API call - 5-10x faster than batch CLI.
 
@@ -179,6 +181,7 @@ def _run_gpa_direct(
                 config=config,
                 user_phenotypes=user_phenotypes,
                 max_candidates=150,
+                progress_log_path=progress_log_path,
             ))
         else:
             result = asyncio.run(run_dgra_pipeline(
@@ -397,6 +400,8 @@ def run_gpa_from_file(
     annotation_file: Optional[Path] = None,
     # v0.10.15: Report detail level for VCF and direct API paths
     report_detail_level: str = "minimal",
+    # v0.10.16: Fine-grained progress logging
+    progress_log_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -497,6 +502,7 @@ def run_gpa_from_file(
             force_sync=force_sync,
             report_detail_level=report_detail_level,
             two_phase=two_phase or auto_two_phase,
+            progress_log_path=progress_log_path,
         )
 
     try:
@@ -777,6 +783,9 @@ def main():
     parser.add_argument("--two-phase", action="store_true",
                         help="Enable two-phase pipeline: fast local triage first, then API enrichment only for "
                              "Tier 1/2 candidates. For raw VCFs, this is auto-enabled unless explicitly disabled. (v0.10.2)")
+    parser.add_argument("--progress-log", default=None,
+                        help="Path to a JSON Lines file for fine-grained progress tracking. "
+                             "Useful for monitoring long-running two-phase analyses. (v0.10.16)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
@@ -841,6 +850,8 @@ def main():
             # v0.10.2: Two-phase pipeline and companion annotation file
             two_phase=args.two_phase,
             annotation_file=args.annotation_file,
+            # v0.10.16: Progress logging
+            progress_log_path=args.progress_log,
         )
     elif args.free_text:
         try:

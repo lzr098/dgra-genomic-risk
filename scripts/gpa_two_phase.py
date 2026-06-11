@@ -296,6 +296,7 @@ async def _enrich_candidate_genes(
     candidate_indices: List[int],
     config: GPAConfig,
     tissue_profile: Dict,
+    tracker: Optional[Any] = None,
 ) -> Tuple[Dict, Dict, Dict]:
     """
     Phase 2: API enrichment ONLY for candidate genes.
@@ -305,11 +306,12 @@ async def _enrich_candidate_genes(
         return {}, {}, {}
 
     candidate_genes = list({variants[i].gene for i in candidate_indices})
+    n_genes = len(candidate_genes)
     global_config = config.to_global()
 
     if config.offline_mode:
         ensembl_data, uniprot_data, gnomad_constraint_data = {}, {}, {}
-        for gene in candidate_genes:
+        for idx, gene in enumerate(candidate_genes):
             archive = _load_offline_archive(gene)
             if archive:
                 ensembl_data[gene] = archive.get("ensembl", {})
@@ -317,16 +319,26 @@ async def _enrich_candidate_genes(
                 gc = archive.get("gnomad_constraint")
                 if gc and gc.get("status") == "CAPTURED":
                     gnomad_constraint_data[gene] = gc
+            if tracker and (idx + 1) % max(1, n_genes // 10) == 0:
+                tracker.step_progress("phase2", "gene_apis", idx + 1, n_genes)
         return ensembl_data, uniprot_data, gnomad_constraint_data
 
     cache = DGRACache(global_config.cache_db_path)
     async with DGRAAPIClient(global_config, cache) as client:
+        if tracker:
+            tracker.api_call("phase2", "gene_apis", "ensembl", "started", {"genes": n_genes})
+            tracker.api_call("phase2", "gene_apis", "uniprot", "started", {"genes": n_genes})
         # v0.12.1 FIX: gnomAD GraphQL is 429-rate-limited in batch mode;
         # skip gnomad_constraint here — gnomAD AF is provided by MyVariant.info.
         ensembl_raw, uniprot_raw = await asyncio.gather(
             client.batch_query_genes(candidate_genes, "ensembl"),
             client.batch_query_genes(candidate_genes, "uniprot"),
         )
+        if tracker:
+            tracker.api_call("phase2", "gene_apis", "ensembl", "completed",
+                             {"filled": len([g for g in candidate_genes if ensembl_raw.get(g)])})
+            tracker.api_call("phase2", "gene_apis", "uniprot", "completed",
+                             {"filled": len([g for g in candidate_genes if uniprot_raw.get(g)])})
         ensembl_data = {g: ensembl_raw.get(g, {}) for g in candidate_genes}
         uniprot_data = {g: uniprot_raw.get(g, {}) for g in candidate_genes}
         gnomad_constraint_data = {}  # skipped — gnomAD GraphQL is rate-limited
@@ -340,6 +352,7 @@ async def _enrich_gtex(
     config: GPAConfig,
     tissue_profile: Dict,
     user_phenotypes: Optional[str] = None,
+    tracker: Optional[Any] = None,
 ) -> Dict[str, Dict]:
     """
     Phase 2: GTEx expression data for candidate genes (v0.10.8).
@@ -468,71 +481,57 @@ async def _enrich_gtex(
         print(f"[GPA Phase 2] GTEx phenotype-relevant tissues: {len(phenotype_tissues)} tissues")
     
     candidate_genes = sorted({variants[i].gene for i in candidate_indices})
-    global_config = config.to_global()
-    
-    cache = DGRACache(global_config.cache_db_path)
     gtex_data: Dict[str, Dict] = {}
-    
-    async with DGRAAPIClient(global_config, cache) as client:
-        # Semaphore to be polite to GTEx API
-        gtex_sem = asyncio.Semaphore(5)
-        
-        async def _query_one_gene(gene: str) -> Tuple[str, Optional[Dict]]:
-            async with gtex_sem:
-                try:
-                    # v0.10.8: Query ALL tissues in a single batch call
-                    results = await client.query_gtex_expression_multi(gene, ALL_GTEX_TISSUES)
-                    if not results:
-                        return gene, None
-                    
-                    # Build tissue→TPM map
-                    tissue_tpm = {}
-                    for r in results:
-                        t = r.get("tissue")
-                        tpm = r.get("median_tpm")
-                        if t is not None and tpm is not None:
-                            tissue_tpm[t] = tpm
-                    
-                    if not tissue_tpm:
-                        return gene, None
-                    
-                    # Global max across all tissues
-                    global_max = max(tissue_tpm.values())
-                    
-                    # Phenotype-relevant max
-                    phenotype_values = [tissue_tpm.get(t) for t in phenotype_tissues if t in tissue_tpm]
-                    phenotype_max = max(phenotype_values) if phenotype_values else 0.0
-                    
-                    # All tissues with TPM > 0, sorted by TPM desc
-                    all_expressing = sorted(
-                        [(t, tpm) for t, tpm in tissue_tpm.items() if tpm > 0],
-                        key=lambda x: x[1], reverse=True
-                    )
-                    
-                    expressing_count = len(all_expressing)
-                    
-                    return gene, {
-                        "median_tpm": global_max,  # Use global max as representative
-                        "max_tpm": global_max,
-                        "all_tissues": [{"tissue": t, "tpm": tpm} for t, tpm in all_expressing],
-                        "expressing_tissues": expressing_count,
-                        "source": "gtex_multi",
-                        "confidence": "medium",
-                        # v0.10.8: Phenotype-relevance data
-                        "phenotype_max_tpm": phenotype_max,
-                        "phenotype_tissues": phenotype_tissues,
-                        "phenotype_matched_keywords": phenotype_matched_keywords,
-                        "global_max_tpm": global_max,
-                    }
-                except Exception as e:
-                    print(f"[GPA Phase 2] GTEx warning for {gene}: {type(e).__name__}: {e}")
-                    return gene, None
-        
-        gtex_results = await asyncio.gather(*[_query_one_gene(g) for g in candidate_genes])
-        for gene, data in gtex_results:
-            if data:
-                gtex_data[gene] = data
-    
+
+    # v0.10.16: Query local GTEx DB directly (zero external API calls)
+    try:
+        import sys
+        from pathlib import Path
+        gtex_local_path = str(Path.home() / ".workbuddy" / "scripts")
+        if gtex_local_path not in sys.path:
+            sys.path.insert(0, gtex_local_path)
+        from gtex_local import query_gtex_local
+
+        n_genes = len(candidate_genes)
+        progress_interval = max(1, n_genes // 10)
+        for idx, gene in enumerate(candidate_genes):
+            local_expr = query_gtex_local(gene, tissues=None)
+            if not local_expr:
+                continue
+
+            tissue_tpm = dict(local_expr)
+            global_max = max(tissue_tpm.values()) if tissue_tpm else 0.0
+
+            # Phenotype-relevant max
+            phenotype_values = [tissue_tpm.get(t) for t in phenotype_tissues if t in tissue_tpm]
+            phenotype_max = max(phenotype_values) if phenotype_values else 0.0
+
+            all_expressing = sorted(
+                [(t, tpm) for t, tpm in tissue_tpm.items() if tpm > 0],
+                key=lambda x: x[1], reverse=True
+            )
+            expressing_count = len(all_expressing)
+
+            gtex_data[gene] = {
+                "median_tpm": global_max,
+                "max_tpm": global_max,
+                "all_tissues": [{"tissue": t, "tpm": tpm} for t, tpm in all_expressing],
+                "expressing_tissues": expressing_count,
+                "source": "gtex_local_db",
+                "confidence": "medium",
+                "phenotype_max_tpm": phenotype_max,
+                "phenotype_tissues": phenotype_tissues,
+                "phenotype_matched_keywords": phenotype_matched_keywords,
+                "global_max_tpm": global_max,
+            }
+            if tracker and (idx + 1) % progress_interval == 0:
+                tracker.step_progress("phase2", "gtex", idx + 1, n_genes)
+        print(f"[GPA Phase 2] GTEx local DB: expression data for {len(gtex_data)}/{len(candidate_genes)} candidate genes")
+    except Exception as e:
+        print(f"[GPA Phase 2] GTEx local DB query failed: {type(e).__name__}: {e}")
+        if tracker:
+            tracker.error("phase2", "gtex", f"GTEx local DB query failed: {e}")
+
     return gtex_data
 
 
@@ -589,6 +588,7 @@ async def _enrich_variant_frequencies(
     variants: List[Variant],
     candidate_indices: List[int],
     config: GPAConfig,
+    tracker: Optional[Any] = None,
 ) -> None:
     """
     Phase 2: gnomAD frequency lookup ONLY for Tier 1/2 candidate variants.
@@ -624,6 +624,9 @@ async def _enrich_variant_frequencies(
         return
 
     print(f"[GPA Phase 2] gnomAD: querying {len(tier12_candidates_no_af)} Tier 1/2 candidate variants for AF")
+    if tracker:
+        tracker.api_call("phase2", "gnomad_freq", "myvariant", "started",
+                         {"variants": len(tier12_candidates_no_af), "batch_size": 100})
 
     # v0.12.2 FIX (E2): unify aiohttp proxy behavior with DGRAAPIClient.
     # MyVariant session must use the same proxy as DGRAAPIClient to avoid
@@ -664,19 +667,28 @@ async def _enrich_variant_frequencies(
                   f"{mv_stats['cadd_filled']} CADD filled, "
                   f"{mv_stats['not_found']} not_found, "
                   f"{mv_stats['errors']} errors")
+            if tracker:
+                tracker.api_call("phase2", "gnomad_freq", "myvariant", "completed", mv_stats)
             # v0.12.2 FIX (B3): diagnostic warning when MyVariant returns all empty
             if mv_stats['gnomad_filled'] == 0 and mv_stats['errors'] > 0:
-                print(f"[GPA Phase 2] WARNING: MyVariant.info returned zero gnomAD AF for all "
-                      f"{len(tier12_candidates_no_af)} variants ({mv_stats['errors']} errors). "
-                      f"Check proxy/network connectivity or MyVariant.info availability.")
+                warn_msg = (f"MyVariant.info returned zero gnomAD AF for all "
+                            f"{len(tier12_candidates_no_af)} variants ({mv_stats['errors']} errors)")
+                print(f"[GPA Phase 2] WARNING: {warn_msg}")
+                if tracker:
+                    tracker.warning("phase2", "gnomad_freq", warn_msg, mv_stats)
         except Exception as e:
             print(f"[GPA Phase 2] MyVariant.info batch query failed (non-critical): {type(e).__name__}: {e}")
+            if tracker:
+                tracker.error("phase2", "gnomad_freq", f"MyVariant.info failed: {e}")
 
         # v0.12.2 FIX (B1): restore gnomAD REST fallback when MyVariant fails.
         # v0.13.0: Replace fixed Semaphore(2) with AdaptiveRateLimiter for gnomAD GraphQL.
         still_no_af = [v for v in tier12_candidates_no_af if v.gnomad_af is None]
         if still_no_af:
             print(f"[GPA Phase 2] gnomAD REST fallback: querying {len(still_no_af)} Tier 1/2 candidates without AF")
+            if tracker:
+                tracker.api_call("phase2", "gnomad_freq", "gnomad_rest_fallback", "started",
+                                 {"variants": len(still_no_af)})
             cache = DGRACache(global_config.cache_db_path)
             async with DGRAAPIClient(global_config, cache) as client:
                 # v0.13.0: Adaptive rate limiter — starts at 2 req/s,
@@ -685,6 +697,10 @@ async def _enrich_variant_frequencies(
                     initial_rate=2.0, min_rate=0.2, max_rate=4.0,
                     success_threshold=5, rate_boost=1.2, rate_cut=0.5,
                 )
+
+                progress_counter = {"done": 0}
+                n_fallback = len(still_no_af)
+                progress_interval = max(1, n_fallback // 10)
 
                 async def _query_one(v):
                     await gnomad_limiter.acquire()
@@ -703,6 +719,12 @@ async def _enrich_variant_frequencies(
                         else:
                             gnomad_limiter.report_error(is_429=False)
                         return {"status": "API_FAILED", "error": str(e), "source": "failed"}
+                    finally:
+                        if tracker:
+                            progress_counter["done"] += 1
+                            if progress_counter["done"] % progress_interval == 0:
+                                tracker.step_progress("phase2", "gnomad_freq",
+                                                      progress_counter["done"], n_fallback)
 
                 results = await asyncio.gather(*[_query_one(v) for v in still_no_af])
                 n_filled = 0
@@ -717,6 +739,9 @@ async def _enrich_variant_frequencies(
                 stats = gnomad_limiter.stats
                 print(f"[GPA Phase 2] gnomAD REST fallback: {n_filled}/{len(still_no_af)} filled, "
                       f"rate={stats['current_rate']} req/s, 429s={stats['429_count']}")
+                if tracker:
+                    tracker.api_call("phase2", "gnomad_freq", "gnomad_rest_fallback", "completed",
+                                     {"filled": n_filled, "total": len(still_no_af), **stats})
 
         # Final warning if AF is still missing for many candidates
         still_no_af_final = [v for v in tier12_candidates_no_af if v.gnomad_af is None]
@@ -770,6 +795,7 @@ async def _enrich_spliceai(
     variants: List[Variant],
     candidate_indices: List[int],
     config: GPAConfig,
+    tracker: Optional[Any] = None,
 ) -> None:
     """Phase 2: SpliceAI for ALL Tier 1/2 candidate variants — AUTO-ENABLED in v0.10.7.
 
@@ -806,6 +832,9 @@ async def _enrich_spliceai(
 
     print(f"[GPA Phase 2] SpliceAI: querying {len(tier12_candidates)} Tier 1/2 candidate variants "
           f"(concurrency={getattr(config, 'spliceai_concurrency', 5)})")
+    if tracker:
+        tracker.api_call("phase2", "spliceai", "spliceai_batch", "started",
+                         {"variants": len(tier12_candidates)})
 
     spliceai_sem = asyncio.Semaphore(getattr(config, 'spliceai_concurrency', 5))
     spliceai_results = await query_spliceai_batch(
@@ -816,10 +845,13 @@ async def _enrich_spliceai(
     # Attach SpliceAI results to all Tier 1/2 candidates.
     # For variants without splice changes, the API returns delta=0 or not_in_db,
     # both of which are valid evidence entries.
+    n_spliceai_found = 0
     for v in tier12_candidates:
         key = _splice_key(v.chrom, v.pos, v.ref, v.alt)
         if key in spliceai_results:
             v.spliceai_result = spliceai_results[key]
+            if spliceai_results[key].get("delta_score") is not None:
+                n_spliceai_found += 1
         else:
             # Not queried or not in results — mark as not_in_db with null scores.
             # delta_score=None is used by the tier classifier to distinguish
@@ -827,12 +859,16 @@ async def _enrich_spliceai(
             v.spliceai_result = {"source": "not_in_db", "delta_score": None, "predicted_impact": None}
 
     print(f"[GPA Phase 2] SpliceAI: batch complete for {len(tier12_candidates)} variants")
+    if tracker:
+        tracker.api_call("phase2", "spliceai", "spliceai_batch", "completed",
+                         {"variants": len(tier12_candidates), "with_scores": n_spliceai_found})
 
 
 async def _enrich_phenotype(
     variants: List[Variant],
     candidate_indices: List[int],
     user_phenotypes: Optional[str],
+    tracker: Optional[Any] = None,
 ) -> None:
     """Phase 2: Phenotype LLM matching ONLY for candidate genes with local DB data."""
     if not user_phenotypes or not candidate_indices:
@@ -860,6 +896,9 @@ async def _enrich_phenotype(
             print(f"[GPA Phase 2] Phenotype: {len(genes_without_data)} genes skipped (no local phenotype data): {', '.join(genes_without_data[:5])}{'...' if len(genes_without_data) > 5 else ''}")
         if not genes_with_data:
             print("[GPA Phase 2] Phenotype: no candidate genes with known phenotype data — skipping LLM calls")
+            if tracker:
+                tracker.api_call("phase2", "phenotype", "phenotype_match", "skipped",
+                                 {"reason": "no_local_data", "genes_checked": len(candidate_genes)})
             for i in candidate_indices:
                 v = variants[i]
                 v.phenotype_match_score = 0.0
@@ -868,6 +907,8 @@ async def _enrich_phenotype(
             return
     except Exception as e:
         print(f"[GPA Phase 2] Phenotype pre-filter error (proceeding with all): {e}")
+        if tracker:
+            tracker.warning("phase2", "phenotype", f"Phenotype pre-filter error: {e}")
         genes_with_data = candidate_genes
         genes_without_data = []
 
@@ -876,6 +917,9 @@ async def _enrich_phenotype(
     try:
         from gpa_phenotype_match import PhenotypeMatcher
         matcher = PhenotypeMatcher()
+        if tracker:
+            tracker.api_call("phase2", "phenotype", "phenotype_match", "started",
+                             {"genes": len(genes_with_data)})
         match_results = await matcher.match_batch(genes_with_data, user_phenotypes)
 
         # Map results back by gene
@@ -898,8 +942,13 @@ async def _enrich_phenotype(
             v.phenotype_match_confidence = mr.get("confidence", "")
             v.phenotype_matched_pairs = mr.get("matched_pairs", [])
             v.phenotype_known_list = mr.get("known_phenotypes", [])
+        if tracker:
+            tracker.api_call("phase2", "phenotype", "phenotype_match", "completed",
+                             {"genes": len(genes_with_data)})
     except Exception as e:
         print(f"[GPA Phase 2] Phenotype matching failed (non-critical): {type(e).__name__}: {e}")
+        if tracker:
+            tracker.error("phase2", "phenotype", f"Phenotype matching failed: {e}")
 
 
 # ─── Main Two-Phase Entry Point ────────────────────────────────────────────
@@ -909,6 +958,7 @@ async def run_two_phase_pipeline(
     config: Optional[GPAConfig] = None,
     user_phenotypes: Optional[str] = None,
     max_candidates: int = 150,
+    progress_log_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Two-phase GPA pipeline optimized for large VCF datasets.
@@ -916,11 +966,17 @@ async def run_two_phase_pipeline(
     Phase 1: Fast local triage (VEP data + local gene lists → preliminary tiers)
     Phase 2: API enrichment + final classification ONLY for Tier 1/2 candidates
 
+    Args:
+        progress_log_path: Optional path to a JSON Lines progress log file.
+            If provided, fine-grained progress events are written here and
+            can be polled by an external monitor.
+
     Returns dict with report_markdown, summary, tier1/2/3_variants, etc.
     """
     try:
         return await _run_two_phase_pipeline_impl(
-            variants_data, config, user_phenotypes, max_candidates
+            variants_data, config, user_phenotypes, max_candidates,
+            progress_log_path=progress_log_path,
         )
     except Exception as e:  # noqa: BROAD_EXCEPT — outer process-level guard: never let pipeline crash the host process
         import traceback
@@ -951,10 +1007,18 @@ async def _run_two_phase_pipeline_impl(
     config: Optional[GPAConfig] = None,
     user_phenotypes: Optional[str] = None,
     max_candidates: int = 150,
+    progress_log_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Internal implementation — protected by run_two_phase_pipeline wrapper."""
     if config is None:
         config = GPAConfig()
+
+    # v0.10.16: Initialize fine-grained progress tracker
+    from gpa_progress import GPAProgressTracker
+    tracker = GPAProgressTracker(
+        log_path=progress_log_path,
+        enabled=progress_log_path is not None,
+    )
 
     t0 = time.time()
     global_config = config.to_global()
@@ -984,27 +1048,43 @@ async def _run_two_phase_pipeline_impl(
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
 
     # ── Phase 0: Parse all variants ──
+    tracker.phase_start("phase0", "Parsing variants", {"input_variants": len(variants_data)})
     variants = _parse_variants_phase1(variants_data)
     unique_genes = list({v.gene for v in variants})
     n_total = len(variants)
     print(f"[GPA Two-Phase] {n_total} variants across {len(unique_genes)} unique genes")
     print(f"[GPA Two-Phase] Tissue profile: {profile_name} | Offline: {config.offline_mode}")
+    tracker.phase_end("phase0", "Variants parsed", {
+        "total_variants": n_total,
+        "unique_genes": len(unique_genes),
+        "tissue_profile": profile_name,
+        "offline": config.offline_mode,
+    })
 
     # ── Phase 1: Fast Local Triage ──
+    tracker.phase_start("phase1", "Fast local triage", {"total_variants": n_total})
     phase1_start = time.time()
 
     # Phase 1.1: Pre-filter — identify candidate variants
+    tracker.step_start("phase1", "prefilter", "Identifying candidate variants")
     candidate_indices = []
+    progress_interval = max(1, n_total // 20)
     for i, v in enumerate(variants):
         if _is_potentially_pathogenic(v):
             candidate_indices.append(i)
+        if (i + 1) % progress_interval == 0 or i == n_total - 1:
+            tracker.step_progress("phase1", "prefilter", i + 1, n_total)
 
     n_candidates = len(candidate_indices)
     reduction = (1 - n_candidates / n_total) * 100 if n_total > 0 else 0
-    print(f"[GPA Phase 1] Fast triage complete: {n_candidates}/{n_total} candidates "
-          f"({reduction:.1f}% reduction) in {time.time() - phase1_start:.1f}s")
+    tracker.step_end("phase1", "prefilter", "Candidate identification complete", {
+        "candidates": n_candidates,
+        "total": n_total,
+        "reduction_percent": round(reduction, 2),
+    })
 
     # Phase 1.2: Assign preliminary tiers to ALL variants
+    tracker.step_start("phase1", "tier_assignment", "Assigning preliminary tiers")
     candidate_tier1 = []
     candidate_tier2 = []
     candidate_gene_set = set()
@@ -1017,11 +1097,21 @@ async def _run_two_phase_pipeline_impl(
         else:
             candidate_tier2.append(i)
         candidate_gene_set.add(variants[i].gene)
+    tracker.step_end("phase1", "tier_assignment", "Preliminary tiers assigned", {
+        "tier1": len(candidate_tier1),
+        "tier2": len(candidate_tier2),
+        "tier3": n_total - n_candidates,
+        "candidate_genes": len(candidate_gene_set),
+    })
 
     # v0.10.4: Warn if candidate count exceeds threshold, but do NOT truncate.
     # User wants to be notified rather than silently dropping variants.
     all_candidate_indices = list(set(candidate_tier1 + candidate_tier2))
     if len(all_candidate_indices) > max_candidates:
+        tracker.warning("phase1", "candidate_threshold",
+                        f"Candidate count {len(all_candidate_indices)} exceeds threshold {max_candidates}",
+                        {"candidates": len(all_candidate_indices), "threshold": max_candidates,
+                         "tier1": len(candidate_tier1), "tier2": len(candidate_tier2)})
         print("=" * 60)
         print(f"[GPA WARNING] Candidate count ({len(all_candidate_indices)}) exceeds "
               f"threshold={max_candidates}")
@@ -1043,6 +1133,14 @@ async def _run_two_phase_pipeline_impl(
     print(f"[GPA Phase 1] Preliminary tiers: {len(candidate_tier1)} Tier 1, "
           f"{len(candidate_tier2)} Tier 2, {len(non_candidate_indices)} Tier 3 "
           f"({len(candidate_gene_set)} candidate genes)")
+    tracker.phase_end("phase1", "Fast local triage complete", {
+        "candidates": n_candidates,
+        "tier1": len(candidate_tier1),
+        "tier2": len(candidate_tier2),
+        "tier3": len(non_candidate_indices),
+        "candidate_genes": len(candidate_gene_set),
+        "reduction_percent": round(reduction, 2),
+    })
 
     # If no candidates, skip Phase 2
     if not all_candidate_indices:
@@ -1055,39 +1153,65 @@ async def _run_two_phase_pipeline_impl(
 
     # ── Phase 2: Deep Enrichment for Candidates ONLY ──
     phase2_start = time.time()
+    tracker.phase_start("phase2", "API enrichment for candidates", {
+        "candidates": len(all_candidate_indices),
+        "candidate_genes": len(candidate_gene_set),
+        "tier1": len(candidate_tier1),
+        "tier2": len(candidate_tier2),
+    })
 
     print(f"[GPA Phase 2] Starting enrichment for {len(all_candidate_indices)} candidates "
           f"({len(candidate_gene_set)} genes)...")
 
     # Phase 2.1: Per-gene API enrichment (Ensembl/UniProt/gnomAD_constraint)
+    tracker.step_start("phase2", "gene_apis", "Ensembl/UniProt/gnomAD constraint enrichment",
+                       {"candidate_genes": len(candidate_gene_set)})
     ensembl_data, uniprot_data, gnomad_constraint_data = await _enrich_candidate_genes(
-        variants, all_candidate_indices, config, tissue_profile
+        variants, all_candidate_indices, config, tissue_profile, tracker=tracker
     )
+    tracker.step_end("phase2", "gene_apis", "Gene API enrichment complete", {
+        "ensembl_genes": len(ensembl_data),
+        "uniprot_genes": len(uniprot_data),
+        "gnomad_constraint_genes": len(gnomad_constraint_data),
+    })
     print(f"[GPA Phase 2] Gene APIs: Ensembl={len(ensembl_data)}, "
           f"UniProt={len(uniprot_data)}, gnomAD_constraint={len(gnomad_constraint_data)}")
 
     # Phase 2.1b: GTEx expression for candidate genes (v0.10.8)
-    # v0.10.8: Queries ALL GTEx tissues + phenotype-tissue association
+    tracker.step_start("phase2", "gtex", "GTEx expression enrichment",
+                       {"candidate_genes": len(candidate_gene_set)})
     gtex_data = await _enrich_gtex(
-        variants, all_candidate_indices, config, tissue_profile, user_phenotypes
+        variants, all_candidate_indices, config, tissue_profile, user_phenotypes, tracker=tracker
     )
+    tracker.step_end("phase2", "gtex", "GTEx enrichment complete", {
+        "gtex_genes": len(gtex_data),
+    })
     print(f"[GPA Phase 2] GTEx: expression data for {len(gtex_data)} candidate genes")
 
     # Phase 2.2: gnomAD frequency enrichment
-    await _enrich_variant_frequencies(variants, all_candidate_indices, config)
+    tracker.step_start("phase2", "gnomad_freq", "gnomAD frequency enrichment",
+                       {"candidates": len(all_candidate_indices)})
+    await _enrich_variant_frequencies(variants, all_candidate_indices, config, tracker=tracker)
+    tracker.step_end("phase2", "gnomad_freq", "gnomAD frequency enrichment complete")
 
     # Phase 2.3: SpliceAI (auto-enabled for Tier 1/2 candidates in v0.10.7/0.10.13)
-    # v0.10.13: Enable SpliceAI flag so that classify_variant_tier uses the results.
-    # The two-phase pipeline auto-queries SpliceAI for all Tier 1/2 candidates,
-    # so we set spliceai_enabled=True to ensure the classifier evaluates upgrades/downgrades.
-    # v0.12.2 FIX: respect config.spliceai_enabled — don't force override
+    tracker.step_start("phase2", "spliceai", "SpliceAI enrichment",
+                       {"candidates": len(all_candidate_indices)})
     if all_candidate_indices and config.spliceai_enabled:
-        await _enrich_spliceai(variants, all_candidate_indices, config)
+        await _enrich_spliceai(variants, all_candidate_indices, config, tracker=tracker)
+    else:
+        tracker.step_end("phase2", "spliceai", "SpliceAI skipped (disabled)")
+    tracker.step_end("phase2", "spliceai", "SpliceAI enrichment complete")
 
     # Phase 2.4: Phenotype LLM matching
-    await _enrich_phenotype(variants, all_candidate_indices, user_phenotypes)
+    tracker.step_start("phase2", "phenotype", "Phenotype matching",
+                       {"candidates": len(all_candidate_indices)})
+    await _enrich_phenotype(variants, all_candidate_indices, user_phenotypes, tracker=tracker)
+    tracker.step_end("phase2", "phenotype", "Phenotype matching complete")
 
     # Phase 2.5: Process candidate genes with enriched data
+    tracker.step_start("phase2", "post_process", "Post-processing candidates",
+                       {"candidates": len(all_candidate_indices)})
     # NMD prediction for truncating variants
     lof_terms = {"frameshift", "nonsense", "stop_gained", "start_lost"}
     for i in all_candidate_indices:
@@ -1130,9 +1254,14 @@ async def _run_two_phase_pipeline_impl(
         tissue = assess_tissue_relevance(v, tissue_profile, gtex_data)
         tissue_assessments[v.gene] = tissue
         v.tissue_relevance = tissue
+    tracker.step_end("phase2", "post_process", "Post-processing complete")
 
     # Phase 2.6: Final tier classification for candidates
+    tracker.step_start("phase2", "final_classification", "Final tier classification",
+                       {"candidates": len(all_candidate_indices)})
     from gpa_tier_classifier import classify_variant_tier
+    n_classified = 0
+    progress_interval = max(1, len(all_candidate_indices) // 10)
     for i in all_candidate_indices:
         v = variants[i]
         tissue = tissue_assessments.get(v.gene, {})
@@ -1150,18 +1279,35 @@ async def _run_two_phase_pipeline_impl(
         v.tier = tier
         v.tier_reason = reason
         v.tier_actions = actions
+        n_classified += 1
+        if tracker and n_classified % progress_interval == 0:
+            tracker.step_progress("phase2", "final_classification", n_classified, len(all_candidate_indices))
+    tracker.step_end("phase2", "final_classification", "Final classification complete",
+                     {"classified": n_classified})
 
     phase2_duration = time.time() - phase2_start
     total_duration = time.time() - t0
     print(f"[GPA Phase 2] Enrichment complete in {phase2_duration:.1f}s")
     print(f"[GPA Two-Phase] Total: {total_duration:.1f}s")
+    tracker.phase_end("phase2", "API enrichment complete", {
+        "duration_sec": round(phase2_duration, 2),
+    })
 
-    return _build_output(
+    tracker.phase_start("report", "Report generation", {"variants": len(variants)})
+    output = _build_output(
         variants, all_candidate_indices, tissue_profile, config, profile_name,
         f"Two-phase: Phase 1 filtered {n_total}→{n_candidates} candidates, "
         f"Phase 2 enriched {len(candidate_gene_set)} genes",
         gtex_data=gtex_data,
     )
+    tracker.phase_end("report", "Report generation complete", {
+        "tier1": output["summary"]["tier1_variant_count"],
+        "tier2": output["summary"]["tier2_variant_count"],
+        "tier3": output["summary"]["tier3_variant_count"],
+        "total_duration_sec": round(total_duration, 2),
+    })
+    tracker.finish()
+    return output
 
 
 def _build_output(
