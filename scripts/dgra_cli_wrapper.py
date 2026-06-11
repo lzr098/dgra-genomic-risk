@@ -145,6 +145,7 @@ def _run_gpa_direct(
     try:
         from dgra_core import GPAConfig
         from gpa_pipeline import run_dgra_pipeline
+        from gpa_two_phase import run_two_phase_pipeline
     except ImportError as e:
         return {"success": False, "error": f"Failed to import dgra_core: {e}"}
 
@@ -167,11 +168,24 @@ def _run_gpa_direct(
     )
 
     try:
-        result = asyncio.run(run_dgra_pipeline(
-            variants_data=variants,
-            user_phenotypes=user_phenotypes,
-            config=config,
-        ))
+        # v0.10.16 FIX: _run_gpa_direct must honor the two_phase flag.
+        # Previously it always called run_dgra_pipeline() which ignores
+        # config.two_phase, causing full main pipeline to run on large
+        # VCFs even when --two-phase was explicitly requested.
+        if two_phase:
+            print("[GPA Direct] Two-phase enabled — routing to run_two_phase_pipeline()")
+            result = asyncio.run(run_two_phase_pipeline(
+                variants_data=variants,
+                config=config,
+                user_phenotypes=user_phenotypes,
+                max_candidates=150,
+            ))
+        else:
+            result = asyncio.run(run_dgra_pipeline(
+                variants_data=variants,
+                user_phenotypes=user_phenotypes,
+                config=config,
+            ))
 
         # Ensure report_md exists
         report_md = result.get("report_md", "")

@@ -95,8 +95,8 @@ def detect_input_type(input_path: str) -> InputType:
 def _has_vcf_annotation(vcf_path: str) -> bool:
     """Check if VCF has CSQ or ANN annotation in INFO."""
     import gzip
-    opener = gzip.open if vcf_path.endswith('.gz') else open
-    try:
+
+    def _check_with_opener(opener):
         with opener(vcf_path, 'rt', encoding='utf-8') as f:
             for i, line in enumerate(f):
                 if i > 1000:
@@ -107,8 +107,22 @@ def _has_vcf_annotation(vcf_path: str) -> bool:
                     return True
                 if not line.startswith('#') and f'{VEP_ANNOTATION_FIELD}=' in line:
                     return True
-    except Exception:
-        pass
+        return False
+
+    # Try gzip first for .gz files, fallback to plain open if not actually gzipped
+    if vcf_path.endswith('.gz'):
+        try:
+            return _check_with_opener(gzip.open)
+        except Exception:
+            try:
+                return _check_with_opener(open)
+            except Exception:
+                pass
+    else:
+        try:
+            return _check_with_opener(open)
+        except Exception:
+            pass
     return False
 
 
