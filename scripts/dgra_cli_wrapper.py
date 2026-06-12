@@ -124,6 +124,8 @@ def _run_gpa_direct(
     two_phase: bool = False,
     # v0.10.16: Fine-grained progress logging
     progress_log_path: Optional[str] = None,
+    # v0.10.16: Tier-1-only mode for rapid focused reports
+    tier1_only: bool = False,
 ) -> Dict[str, Any]:
     """Run GPA via direct Python API call - 5-10x faster than batch CLI.
 
@@ -182,6 +184,7 @@ def _run_gpa_direct(
                 user_phenotypes=user_phenotypes,
                 max_candidates=150,
                 progress_log_path=progress_log_path,
+                tier1_only=tier1_only,
             ))
         else:
             result = asyncio.run(run_dgra_pipeline(
@@ -411,6 +414,8 @@ def run_gpa_from_file(
     report_detail_level: str = "minimal",
     # v0.10.16: Fine-grained progress logging
     progress_log_path: Optional[str] = None,
+    # v0.10.16: Tier-1-only mode for rapid focused reports
+    tier1_only: bool = False,
 ) -> Dict[str, Any]:
     """
     v0.5 P0-1/P0-2/P1-1: Run GPA from an input file (VCF, Excel, TSV, CSV, or free text).
@@ -454,6 +459,7 @@ def run_gpa_from_file(
             vep_cache=vep_cache,
             two_phase=two_phase,
             progress_log_path=progress_log_path,
+            tier1_only=tier1_only,
         )
 
     # v0.9.0 fix: When input is a raw VCF, pass it directly to dgra_core.py
@@ -514,6 +520,7 @@ def run_gpa_from_file(
             report_detail_level=report_detail_level,
             two_phase=two_phase or auto_two_phase,
             progress_log_path=progress_log_path,
+            tier1_only=tier1_only,
         )
 
     try:
@@ -548,6 +555,7 @@ def run_gpa_from_file(
             vep_cache=vep_cache,
             two_phase=two_phase,
             progress_log_path=progress_log_path,
+            tier1_only=tier1_only,
         )
 
 
@@ -583,6 +591,8 @@ def run_gpa(
     two_phase: bool = False,
     # v0.10.16: Fine-grained progress logging
     progress_log_path: Optional[str] = None,
+    # v0.10.16: Tier-1-only mode for rapid focused reports
+    tier1_only: bool = False,
 ) -> Dict[str, Any]:
     """
     v0.5 P1-1: 运行 GPA 分析管道。
@@ -625,6 +635,7 @@ def run_gpa(
             database_version=database_version,
             two_phase=two_phase,
             progress_log_path=progress_log_path,
+            tier1_only=tier1_only,
         )
 
     # v0.7.1: Auto-batch for medium variant sets
@@ -805,6 +816,10 @@ def main():
     parser.add_argument("--progress-log", default=None,
                         help="Path to a JSON Lines file for fine-grained progress tracking. "
                              "Useful for monitoring long-running two-phase analyses. (v0.10.16)")
+    parser.add_argument("--tier1-only", action="store_true",
+                        help="When --two-phase is enabled, restrict Phase 2 API enrichment and final "
+                             "classification to Tier 1 candidates only. Produces a focused high-confidence "
+                             "report in a fraction of the time. (v0.10.16)")
     parser.add_argument("--output-json", help="Write result JSON to this file")
 
     args = parser.parse_args()
@@ -871,6 +886,8 @@ def main():
             annotation_file=args.annotation_file,
             # v0.10.16: Progress logging
             progress_log_path=args.progress_log,
+            # v0.10.16: Tier-1-only focused report
+            tier1_only=args.tier1_only,
         )
     elif args.free_text:
         try:
@@ -905,6 +922,7 @@ def main():
             # v0.10.2/v0.10.16: two-phase + progress log
             two_phase=args.two_phase,
             progress_log_path=args.progress_log,
+            tier1_only=args.tier1_only,
         )
     else:
         # Inline JSON variants
@@ -939,6 +957,7 @@ def main():
             # v0.10.2/v0.10.16: two-phase + progress log
             two_phase=args.two_phase,
             progress_log_path=args.progress_log,
+            tier1_only=args.tier1_only,
         )
 
     output = json.dumps(result, indent=2, ensure_ascii=False, default=str)

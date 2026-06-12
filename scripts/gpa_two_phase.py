@@ -959,17 +959,23 @@ async def run_two_phase_pipeline(
     user_phenotypes: Optional[str] = None,
     max_candidates: int = 150,
     progress_log_path: Optional[str] = None,
+    tier1_only: bool = False,
 ) -> Dict[str, Any]:
     """
     Two-phase GPA pipeline optimized for large VCF datasets.
 
     Phase 1: Fast local triage (VEP data + local gene lists → preliminary tiers)
     Phase 2: API enrichment + final classification ONLY for Tier 1/2 candidates
+        (or ONLY Tier 1 candidates when tier1_only=True)
 
     Args:
         progress_log_path: Optional path to a JSON Lines progress log file.
             If provided, fine-grained progress events are written here and
             can be polled by an external monitor.
+        tier1_only: If True, restrict Phase 2 API enrichment and final
+            classification to Tier 1 candidates only. This significantly
+            reduces runtime when the user wants a focused high-confidence
+            report first.
 
     Returns dict with report_markdown, summary, tier1/2/3_variants, etc.
     """
@@ -977,6 +983,7 @@ async def run_two_phase_pipeline(
         return await _run_two_phase_pipeline_impl(
             variants_data, config, user_phenotypes, max_candidates,
             progress_log_path=progress_log_path,
+            tier1_only=tier1_only,
         )
     except Exception as e:  # noqa: BROAD_EXCEPT — outer process-level guard: never let pipeline crash the host process
         import traceback
@@ -1008,6 +1015,7 @@ async def _run_two_phase_pipeline_impl(
     user_phenotypes: Optional[str] = None,
     max_candidates: int = 150,
     progress_log_path: Optional[str] = None,
+    tier1_only: bool = False,
 ) -> Dict[str, Any]:
     """Internal implementation — protected by run_two_phase_pipeline wrapper."""
     if config is None:
@@ -1124,7 +1132,10 @@ async def _run_two_phase_pipeline_impl(
         all_candidate_indices = list(set(all_candidate_indices))
 
     # Non-candidates → Tier 3
-    non_candidate_indices = [i for i in range(n_total) if i not in candidate_indices]
+    # v0.10.16 FIX: candidate_indices was a list, making the membership test
+    # O(n*m) and causing hangs on large VCFs. Convert to set first.
+    candidate_index_set = set(candidate_indices)
+    non_candidate_indices = [i for i in range(n_total) if i not in candidate_index_set]
     for i in non_candidate_indices:
         variants[i].tier = 3
         variants[i].tier_reason = "Pre-filtered: low impact, no ClinVar pathogenicity, not in disease gene list"
@@ -1142,6 +1153,24 @@ async def _run_two_phase_pipeline_impl(
         "reduction_percent": round(reduction, 2),
     })
 
+    # v0.10.16: Optional Tier-1-only mode for rapid focused reporting.
+    # When enabled, drop Tier 2 candidates from Phase 2 enrichment and
+    # mark them as preliminary Tier 3 (they will be re-classified if the
+    # user later runs the full pipeline).
+    if tier1_only:
+        dropped_tier2 = len(candidate_tier2)
+        if dropped_tier2 > 0:
+            print(f"[GPA Two-Phase] Tier-1-only mode: dropping {dropped_tier2} Tier 2 candidates from Phase 2")
+            for i in candidate_tier2:
+                variants[i].tier = 3
+                variants[i].tier_reason = "[TIER1_ONLY] Preliminary Tier 2 candidate excluded from Phase 2 enrichment"
+                variants[i].tier_actions = ["Re-run full pipeline if broader review needed"]
+            all_candidate_indices = list(candidate_tier1)
+            candidate_gene_set = {variants[i].gene for i in all_candidate_indices}
+            tracker.warning("phase1", "tier1_only",
+                            f"Tier-1-only mode enabled: {dropped_tier2} Tier 2 candidates excluded",
+                            {"tier1": len(candidate_tier1), "tier2_excluded": dropped_tier2})
+
     # If no candidates, skip Phase 2
     if not all_candidate_indices:
         print(f"[GPA Two-Phase] No candidates — skipping Phase 2 enrichment. "
@@ -1158,6 +1187,7 @@ async def _run_two_phase_pipeline_impl(
         "candidate_genes": len(candidate_gene_set),
         "tier1": len(candidate_tier1),
         "tier2": len(candidate_tier2),
+        "tier1_only": tier1_only,
     })
 
     print(f"[GPA Phase 2] Starting enrichment for {len(all_candidate_indices)} candidates "
