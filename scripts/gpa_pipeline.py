@@ -42,6 +42,7 @@ from gpa_qc import _run_qc_checks
 from gpa_report import generate_tier_report, generate_json_report
 from dgra_cache import DGRACache
 from dgra_api import DGRAAPIClient
+from dgra_hgnc_local import LocalHGNC, local_hgnc_available
 
 async def run_dgra_pipeline(variants_data: List[Dict],
                       user_phenotypes: Optional[str] = None,
@@ -534,9 +535,24 @@ async def run_dgra_pipeline(variants_data: List[Dict],
         print(f"[GPA] Offline mode: loaded archived data for {loaded}/{len(unique_genes)} genes from {OFFLINE_ARCHIVE_DIR}")
         if loaded == 0:
             print("[GPA] Offline mode: no archive found, using local fallbacks only (conservative)")
+        # v0.10.5: Offline mode local HGNC symbol lookup
+        # If ~/.workbuddy/data/hgnc/hgnc_lookup.json exists, use it for full
+        # symbol validation/normalization without network access.
         hgnc_data = {}
-        # gnomad_constraint_data already populated from archive above
-        # No HGNC data in offline mode unless cached
+        try:
+            if local_hgnc_available():
+                local_hgnc = LocalHGNC()
+                hgnc_data = local_hgnc.batch_resolve(list(unique_genes))
+                meta = local_hgnc.metadata()
+                print(
+                    f"[GPA] Offline mode: loaded local HGNC lookup "
+                    f"({meta.get('total_symbols', 0):,} symbols, "
+                    f"{meta.get('approved_count', 0):,} approved)"
+                )
+            else:
+                print("[GPA] Offline mode: local HGNC lookup not found, using conservative known-symbol fallback")
+        except Exception as e:
+            print(f"[GPA] Offline mode local HGNC lookup failed (non-critical): {e}")
 
         # v0.10.4-fix: Offline mode local ClinVar VCF query
         # Query local ClinVar VCF for variants with UNKNOWN ClinVar status

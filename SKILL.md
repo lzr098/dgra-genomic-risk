@@ -1,7 +1,7 @@
 ---
 name: gpa-genomic-phenotype
 description: |
-  GPA (Genomic Phenotype Association) v0.10.0。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx/gnomAD 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + SpliceAI 剪接预测集成 + gnomAD 频率自动查询 + Raw VCF 实时注释 + 疾病感知转录本选择 + 两阶段管线优化 + Preflight 健康检查。
+  GPA (Genomic Phenotype Association) v0.10.5。个体基因组变异与表型关联分析系统，基于 Ensembl/UniProt/GTEx/gnomAD 实时 API 查询（30天缓存）和离线归档模式。组织上下文自适应：通用、造血、心血管、肝脏、肾脏、神经系统。支持 germline（疾病遗传风险）和 somatic（肿瘤驱动）两种分析模式。三层风险分级（Tier 1/2/3）+ 多基因命中检测 + 相位分析 + 表型关联 + 变异预过滤 + 中英文术语映射 + ClinVar 冲突注释检测 + ClinVar Review Status 星级置信度评估 + SpliceAI 剪接预测集成 + gnomAD 频率自动查询 + Raw VCF 实时注释 + 疾病感知转录本选择 + 两阶段管线优化 + Preflight 健康检查 + 本地 HGNC 基因符号库。
 
   **当以下情况时使用此 Skill**：
   (1) 用户提到"基因组风险评估"、"GPA"、"突变分析"、"基因筛查"
@@ -568,6 +568,34 @@ python3 .../dgra_cli_wrapper.py --variants '[...]' --tissue general --offline
 ```
 
 离线模式使用本地缓存（`references/offline_data/` 下的基因 JSON），对于已有归档的基因结果与在线模式一致。未归档的基因 fallback 到保守规则。
+
+### 本地 HGNC 库（v0.10.5+）
+
+离线模式下，GPA 会自动检测并使用 `~/.workbuddy/data/hgnc/hgnc_lookup.json` 进行 HGNC 基因符号校验与标准化，覆盖度与在线 HGNC REST API 相当，避免以往离线模式仅依赖 60 个常见基因白名单导致的 `INVALID_GENE_SYMBOL` 假阳性。
+
+**首次启用 / 更新数据：**
+
+```bash
+# 下载 HGNC complete set 并构建 lookup JSON
+python3 ~/.workbuddy/scripts/build_hgnc_local.py
+```
+
+数据文件位置：
+
+- 原始 TSV：`~/.workbuddy/data/hgnc/hgnc_complete_set.txt`
+- 构建的 lookup JSON：`~/.workbuddy/data/hgnc/hgnc_lookup.json`
+
+**建议更新频率**：每月一次，或在 HGNC 发布新版后。
+
+**自定义路径（可选）：**
+
+```bash
+python3 ~/.workbuddy/scripts/build_hgnc_local.py \
+  --tsv /path/to/hgnc_complete_set.txt \
+  --out /path/to/hgnc_lookup.json
+```
+
+GPA 运行时也会读取环境变量 `HGNC_LOOKUP_PATH` 指向自定义 lookup 文件。
 
 ---
 
