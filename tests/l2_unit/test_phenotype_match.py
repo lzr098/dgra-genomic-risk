@@ -168,7 +168,9 @@ class TestAsyncMatch:
         # Second call
         r2 = await pm.match("CAPN3", "肌萎缩")
         assert "CAPN3" in pm.gene_phenotype_cache
-        assert r2["known_phenotypes"] == ["远端肌无力"]
+        # v0.10.17: known_phenotypes may be enriched with local OMIM entries,
+        # so we only assert the local DB entry is present.
+        assert "远端肌无力" in r2["known_phenotypes"]
 
     async def test_unknown_gene_empty_phenotypes(self):
         """PM-14: Gene not in DB → empty known_phenotypes, score=0."""

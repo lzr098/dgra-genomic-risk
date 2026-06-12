@@ -1042,6 +1042,14 @@ class VCFAnnotator:
             "--protein",
             "--hgvs",
             "--numbers",
+            # v0.10.17: Add population AF and existing variant annotation.
+            # Fields that are absent in the cache are left empty by VEP rather
+            # than filled with placeholder values.
+            "--af_gnomad",
+            "--af_gnomad_exome",
+            "--af_gnomad_genome",
+            "--check_existing",
+            "--pubmed",
             "--fork", "4",
             *cache_flag,
             "--offline" if not self.vep_cache else "",
@@ -1163,6 +1171,12 @@ class VCFAnnotator:
                 "--protein",
                 "--hgvs",
                 "--numbers",
+                # v0.10.17: Add population AF and existing variant annotation.
+                "--af_gnomad",
+                "--af_gnomad_exome",
+                "--af_gnomad_genome",
+                "--check_existing",
+                "--pubmed",
             ]
             + vep_args
         )

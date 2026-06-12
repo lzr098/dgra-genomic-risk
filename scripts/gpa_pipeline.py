@@ -788,7 +788,9 @@ async def run_dgra_pipeline(variants_data: List[Dict],
     # Run BEFORE tier classification so phenotype_match_score is available for tier logic.
     if user_phenotypes:
         from gpa_phenotype_match import PhenotypeMatcher
-        matcher = PhenotypeMatcher()
+        # v0.10.17: Pass offline_mode so matcher uses OMIM-backed keyword matching
+        # instead of LLM calls when no network access is available.
+        matcher = PhenotypeMatcher(offline_mode=config.offline_mode)
         gene_symbols = [v.gene for v in variants]
         match_results = await matcher.match_batch(gene_symbols, user_phenotypes)
         for v, mr in zip(variants, match_results):

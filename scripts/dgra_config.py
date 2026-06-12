@@ -70,55 +70,58 @@ class DGRAGlobalConfig:
     
     # API endpoint configurations (no keys needed for public endpoints)
     apis: Dict[str, APIConfig] = field(default_factory=lambda: {
+        # v0.10.17: Reduced default rate limits. The AdaptiveRateLimiter in
+        # dgra_api.py will increase throughput when APIs can handle it, but
+        # starting conservative avoids mass 429s on large datasets.
         "ensembl": APIConfig(
             base_url="https://rest.ensembl.org",
             timeout=20.0,
-            max_retries=2,
-            retry_delay=1.0,
-            rate_limit_per_sec=10.0,
+            max_retries=3,
+            retry_delay=2.0,
+            rate_limit_per_sec=2.0,
         ),
         "uniprot": APIConfig(
             base_url="https://rest.uniprot.org",
             timeout=25.0,
-            max_retries=2,
+            max_retries=3,
             retry_delay=2.0,
-            rate_limit_per_sec=5.0,
+            rate_limit_per_sec=2.0,
         ),
         "gtex": APIConfig(
             base_url="https://gtexportal.org/api/v2",
             timeout=20.0,
-            max_retries=2,
+            max_retries=3,
             retry_delay=2.0,
-            rate_limit_per_sec=3.0,
+            rate_limit_per_sec=1.5,
         ),
         "gnomad": APIConfig(
             base_url="https://gnomad.broadinstitute.org/api",
             timeout=15.0,
             max_retries=5,       # v0.9.2: increased from 2 → 5 to survive transient 429 rate limits
-            retry_delay=2.0,
-            rate_limit_per_sec=0.5,  # v0.9.2: reduced from 2.0 → 0.5 to respect gnomAD API limits
+            retry_delay=3.0,
+            rate_limit_per_sec=0.3,  # v0.10.17: more conservative gnomAD GraphQL limit
             proxy=None,  # Use env proxy if available
         ),
         "ncbi_eutils": APIConfig(
             base_url="https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
             timeout=15.0,
-            max_retries=2,
-            retry_delay=1.0,
-            rate_limit_per_sec=3.0,  # NCBI: 3/sec without API key
+            max_retries=3,
+            retry_delay=2.0,
+            rate_limit_per_sec=2.0,  # NCBI: 3/sec without API key; stay conservative
         ),
         "clinvar_eutils": APIConfig(
             base_url="https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
             timeout=15.0,
-            max_retries=2,
-            retry_delay=1.0,
-            rate_limit_per_sec=3.0,
+            max_retries=3,
+            retry_delay=2.0,
+            rate_limit_per_sec=2.0,
         ),
         "hgnc": APIConfig(
             base_url="https://rest.genenames.org",
             timeout=15.0,
-            max_retries=2,
-            retry_delay=1.0,
-            rate_limit_per_sec=5.0,
+            max_retries=3,
+            retry_delay=2.0,
+            rate_limit_per_sec=2.0,
         ),
     })
     

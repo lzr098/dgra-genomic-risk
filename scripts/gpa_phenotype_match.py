@@ -2,12 +2,15 @@
 gpa_phenotype_match.py — Phenotype Association Engine (v0.7)
 
 Core principle: Use external LLM API for semantic matching, NO local synonym library.
+v0.10.17: Offline mode now enriches known phenotypes from local OMIM SQLite and falls
+back to OMIM-backed keyword matching when no LLM key is available or offline_mode=True.
 """
 
 import os
 import json
 import asyncio
-from typing import List, Dict, Optional
+import sys
+from typing import List, Dict, Optional, Set
 from pathlib import Path
 
 
@@ -15,14 +18,19 @@ class PhenotypeMatcher:
     """
     Phenotype association analysis engine.
     Core: Call external LLM API for semantic matching, no local static synonym library.
+    Offline: Use local OMIM SQLite + keyword overlap to produce a baseline phenotype_match_score.
     """
 
     def __init__(self, llm_api_key: Optional[str] = None, llm_model: str = "gpt-4o-mini",
-                 refs_dir: Optional[Path] = None):
+                 refs_dir: Optional[Path] = None, offline_mode: bool = False):
         self.api_key = llm_api_key or os.environ.get("OPENAI_API_KEY")
         self.model = llm_model
+        self.offline_mode = offline_mode
         self.gene_phenotype_cache: Dict[str, List[str]] = {}
         self._local_db: Optional[Dict] = None
+        # v0.10.17: OMIM local DB handle (lazy-loaded)
+        self._omim_local = None
+        self._omim_available: Optional[bool] = None
         # Load local gene-phenotype fact database
         if refs_dir is None:
             refs_dir = Path(__file__).resolve().parent.parent / "references"
@@ -37,28 +45,49 @@ class PhenotypeMatcher:
         else:
             self._local_db = {}
 
+    def _omim_local_enabled(self) -> bool:
+        """Check once whether the shared local OMIM module/database is available."""
+        if self._omim_available is not None:
+            return self._omim_available
+        omim_script_path = Path.home() / ".workbuddy" / "scripts"
+        if str(omim_script_path) not in sys.path:
+            sys.path.insert(0, str(omim_script_path))
+        try:
+            from omim_local import get_gene_phenotype
+            self._omim_local = get_gene_phenotype
+            self._omim_available = True
+        except Exception:
+            self._omim_available = False
+        return self._omim_available
+
     async def match(self, gene_symbol: str, user_phenotypes: str) -> Dict:
         """
         Input: gene_symbol="CAPN3", user_phenotypes="远端肌无力、肌源性损害、缓慢进展"
         Output: {score, matched_terms, known_phenotypes, explanation, reasoning, confidence, warning}
 
         Flow:
-        1. Query known phenotypes for gene (OMIM/ClinVar/Orphanet, cached, NOT a keyword library)
-        2. Call LLM API to judge semantic similarity
-        3. Return structured result
+        1. Query known phenotypes for gene (local JSON + OMIM SQLite)
+        2. In offline mode or without LLM key: OMIM-backed keyword match
+        3. Online mode with LLM key: LLM semantic match (known phenotypes provided as context)
         """
         # Step 1: Get known phenotypes
         known_phenotypes = await self._get_known_phenotypes(gene_symbol)
 
-        # Step 2: Call LLM for semantic match
-        if self.api_key:
-            result = await self._llm_semantic_match(gene_symbol, user_phenotypes, known_phenotypes)
-        else:
+        # Step 2: Choose matching strategy
+        if self.offline_mode or not self.api_key:
             result = self._fallback_keyword_match(user_phenotypes, known_phenotypes)
-            result["warning"] = (
-                "LLM API key not configured, using fallback keyword match. "
-                "Set OPENAI_API_KEY for better accuracy."
-            )
+            if self.offline_mode:
+                result["warning"] = (
+                    "Offline mode: using OMIM-backed keyword phenotype match. "
+                    "Scores are baseline estimates; use online mode with OPENAI_API_KEY for semantic matching."
+                )
+            else:
+                result["warning"] = (
+                    "LLM API key not configured, using fallback OMIM-backed keyword match. "
+                    "Set OPENAI_API_KEY for better accuracy."
+                )
+        else:
+            result = await self._llm_semantic_match(gene_symbol, user_phenotypes, known_phenotypes)
 
         result["gene"] = gene_symbol
         result["user_phenotypes"] = user_phenotypes
@@ -76,19 +105,42 @@ class PhenotypeMatcher:
         Data source priority:
         1. Local cache (gene_phenotype_cache)
         2. Built-in top gene-phenotype fact table (references/gene_phenotype_map.json)
+        3. Local OMIM SQLite (offline, shared with dgra-prefilter/sensory-genomics)
         """
         if gene_symbol in self.gene_phenotype_cache:
             return self.gene_phenotype_cache[gene_symbol]
 
         phenotypes: List[str] = []
+        sources: Set[str] = set()
 
         # From built-in local database (fact data, NOT synonym library)
         if self._local_db and gene_symbol in self._local_db:
             entries = self._local_db[gene_symbol].get("phenotypes", [])
             phenotypes.extend(e.get("name", "") for e in entries if e.get("name"))
+            sources.add("local_json")
+
+        # v0.10.17: Enrich with local OMIM phenotype titles/clinical synopsis
+        if self._omim_local_enabled():
+            try:
+                omim_data = self._omim_local(gene_symbol)
+                for ph in omim_data.get("phenotypes", []):
+                    title = ph.get("title")
+                    if title:
+                        phenotypes.append(title)
+                    synopsis = ph.get("clinical_synopsis")
+                    if synopsis:
+                        # Clinical synopsis often contains multiple semicolon-separated features
+                        for part in str(synopsis).split(";"):
+                            part = part.strip()
+                            if part and len(part) > 3:
+                                phenotypes.append(part)
+                if omim_data.get("phenotypes"):
+                    sources.add("omim_local")
+            except Exception:
+                pass
 
         # Deduplicate and cache
-        unique = list(set(p for p in phenotypes if p))
+        unique = list({p.strip() for p in phenotypes if p and p.strip()})
         self.gene_phenotype_cache[gene_symbol] = unique
         return unique
 

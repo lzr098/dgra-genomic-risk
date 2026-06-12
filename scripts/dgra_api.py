@@ -146,8 +146,25 @@ class DGRAAPIClient:
         self._session: Optional[aiohttp.ClientSession] = None
         self._last_request_time: Dict[str, float] = {}  # api_name -> timestamp
         self._proxy_url: Optional[str] = None  # detected working proxy or None for direct
+        # v0.10.17: Per-API adaptive rate limiters to survive aggressive 429 throttling.
+        self._rate_limiters: Dict[str, AdaptiveRateLimiter] = {}
         # v0.10.15: Local gnomAD frequency archive for offline fallback
         self._gnomad_local = GnomADLocalArchive() if GnomADLocalArchive else None
+
+    def _get_rate_limiter(self, api_name: str) -> AdaptiveRateLimiter:
+        """Return (creating if necessary) the adaptive rate limiter for an API."""
+        if api_name not in self._rate_limiters:
+            cfg = self.config.apis.get(api_name)
+            initial_rate = getattr(cfg, "rate_limit_per_sec", 2.0) if cfg else 2.0
+            self._rate_limiters[api_name] = AdaptiveRateLimiter(
+                initial_rate=initial_rate,
+                min_rate=0.05,
+                max_rate=initial_rate,
+                success_threshold=5,
+                rate_boost=1.2,
+                rate_cut=0.5,
+            )
+        return self._rate_limiters[api_name]
 
     # ------------------------------------------------------------------
     # v0.10.16: Local GTEx SQLite DB integration (zero external API)
@@ -286,15 +303,14 @@ class DGRAAPIClient:
             self._session = None
     
     async def _rate_limit(self, api_name: str):
-        """Enforce per-API rate limit using token bucket logic."""
-        cfg = self.config.apis[api_name]
-        min_interval = 1.0 / cfg.rate_limit_per_sec
-        now = time.time()
-        last = self._last_request_time.get(api_name, 0)
-        elapsed = now - last
-        if elapsed < min_interval:
-            await asyncio.sleep(min_interval - elapsed)
-        self._last_request_time[api_name] = time.time()
+        """Enforce per-API adaptive rate limit.
+
+        v0.10.17: Replaced fixed token bucket with AdaptiveRateLimiter so that
+        the client backs off exponentially on 429s and slowly recovers after
+        a run of successful requests.
+        """
+        limiter = self._get_rate_limiter(api_name)
+        await limiter.acquire()
     
     async def _request_with_retry(
         self, 
@@ -369,6 +385,8 @@ class DGRAAPIClient:
                     http_status = response.status
                     
                     if http_status == 200:
+                        limiter = self._get_rate_limiter(api_name)
+                        limiter.report_success()
                         try:
                             data = await response.json()
                         except Exception:
@@ -421,14 +439,18 @@ class DGRAAPIClient:
                         }
                     
                     elif http_status == 429:
-                        # Rate limited - read Retry-After header and wait
+                        # Rate limited - report to adaptive limiter and wait
+                        limiter = self._get_rate_limiter(api_name)
+                        limiter.report_429()
                         retry_after = response.headers.get("Retry-After")
                         if retry_after:
                             wait = int(retry_after)
                         else:
-                            wait = cfg.retry_delay * (2 ** attempt)
-                        last_error = DGRAAPIError(api_name, f"Rate limited (429), retry after {wait}s", http_status)
-                        print(f"[DGRA API] {api_name}: Rate limited (429), waiting {wait}s before retry {attempt+1}/{cfg.max_retries}")
+                            # v0.10.17: combine exponential backoff with adaptive rate.
+                            adaptive_wait = max(1.0, 1.0 / max(limiter.rate, 0.05))
+                            wait = max(cfg.retry_delay * (2 ** attempt), adaptive_wait)
+                        last_error = DGRAAPIError(api_name, f"Rate limited (429), retry after {wait}s (current rate={limiter.rate:.2f}/s)", http_status)
+                        print(f"[DGRA API] {api_name}: Rate limited (429), waiting {wait}s before retry {attempt+1}/{cfg.max_retries} (rate={limiter.rate:.2f}/s)")
                         await asyncio.sleep(wait)
                         continue
                     

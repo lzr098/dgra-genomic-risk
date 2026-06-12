@@ -869,6 +869,7 @@ async def _enrich_phenotype(
     candidate_indices: List[int],
     user_phenotypes: Optional[str],
     tracker: Optional[Any] = None,
+    config: Optional[Any] = None,
 ) -> None:
     """Phase 2: Phenotype LLM matching ONLY for candidate genes with local DB data."""
     if not user_phenotypes or not candidate_indices:
@@ -877,9 +878,11 @@ async def _enrich_phenotype(
     candidate_genes = sorted({variants[i].gene for i in candidate_indices})
 
     # v0.10.3: Pre-filter — only query genes that have known phenotype data locally
+    # v0.10.17: Pass offline_mode so matcher can also use OMIM-backed keyword matching.
+    offline_mode = bool(getattr(config, "offline_mode", False))
     try:
         from gpa_phenotype_match import PhenotypeMatcher
-        matcher = PhenotypeMatcher()
+        matcher = PhenotypeMatcher(offline_mode=offline_mode)
         # Check which genes have local phenotype entries by reading _local_db directly
         genes_with_data = []
         genes_without_data = []
@@ -916,7 +919,7 @@ async def _enrich_phenotype(
 
     try:
         from gpa_phenotype_match import PhenotypeMatcher
-        matcher = PhenotypeMatcher()
+        matcher = PhenotypeMatcher(offline_mode=offline_mode)
         if tracker:
             tracker.api_call("phase2", "phenotype", "phenotype_match", "started",
                              {"genes": len(genes_with_data)})
@@ -1236,7 +1239,7 @@ async def _run_two_phase_pipeline_impl(
     # Phase 2.4: Phenotype LLM matching
     tracker.step_start("phase2", "phenotype", "Phenotype matching",
                        {"candidates": len(all_candidate_indices)})
-    await _enrich_phenotype(variants, all_candidate_indices, user_phenotypes, tracker=tracker)
+    await _enrich_phenotype(variants, all_candidate_indices, user_phenotypes, tracker=tracker, config=config)
     tracker.step_end("phase2", "phenotype", "Phenotype matching complete")
 
     # Phase 2.5: Process candidate genes with enriched data

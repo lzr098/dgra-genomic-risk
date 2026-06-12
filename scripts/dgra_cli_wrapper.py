@@ -153,6 +153,18 @@ def _run_gpa_direct(
     except ImportError as e:
         return {"success": False, "error": f"Failed to import dgra_core: {e}"}
 
+    # v0.10.17: Auto-enable two-phase for large online datasets to avoid
+    # flooding external APIs. Two-phase pre-filters candidates locally before
+    # making any API calls, which is much kinder to rate-limited endpoints.
+    AUTO_TWO_PHASE_THRESHOLD = 500
+    if not offline and not two_phase and len(variants) > AUTO_TWO_PHASE_THRESHOLD:
+        print(
+            f"[GPA Direct] Dataset has {len(variants)} variants (> {AUTO_TWO_PHASE_THRESHOLD}) "
+            "and online mode is requested. Auto-enabling two-phase pipeline to reduce API load. "
+            "Use --offline for fully offline analysis or --two-phase explicitly to suppress this message."
+        )
+        two_phase = True
+
     config = GPAConfig(
         tissue_profile=tissue,
         offline_mode=offline,
