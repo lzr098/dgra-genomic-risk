@@ -791,6 +791,13 @@ async def _enrich_variant_frequencies(
                     print(f"[GPA Phase 2] ClinVar (NCBI): {n_found}/{n_cv} filled")
 
 
+def _sa_get(sa, key, default=None):
+    """Uniform accessor for spliceai_result (supports dict and SpliceAIResult dataclass)."""
+    if isinstance(sa, dict):
+        return sa.get(key, default)
+    return getattr(sa, key, default)
+
+
 async def _enrich_spliceai(
     variants: List[Variant],
     candidate_indices: List[int],
@@ -850,7 +857,7 @@ async def _enrich_spliceai(
         key = _splice_key(v.chrom, v.pos, v.ref, v.alt)
         if key in spliceai_results:
             v.spliceai_result = spliceai_results[key]
-            if spliceai_results[key].get("delta_score") is not None:
+            if _sa_get(spliceai_results[key], "delta_score") is not None:
                 n_spliceai_found += 1
         else:
             # Not queried or not in results — mark as not_in_db with null scores.
