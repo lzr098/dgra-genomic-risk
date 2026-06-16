@@ -1045,9 +1045,9 @@ class VCFAnnotator:
             # v0.10.17: Add population AF and existing variant annotation.
             # Fields that are absent in the cache are left empty by VEP rather
             # than filled with placeholder values.
-            "--af_gnomad",
-            "--af_gnomad_exome",
-            "--af_gnomad_genome",
+            # "--af_gnomad",  # v0.10.18: VEP 115 Docker lacks gnomAD plugin
+            # "--af_gnomad_exome",
+            # "--af_gnomad_genome",
             "--check_existing",
             "--pubmed",
             "--fork", "4",
@@ -1172,11 +1172,12 @@ class VCFAnnotator:
                 "--hgvs",
                 "--numbers",
                 # v0.10.17: Add population AF and existing variant annotation.
-                "--af_gnomad",
-                "--af_gnomad_exome",
-                "--af_gnomad_genome",
+                # "--af_gnomad",  # v0.10.18: VEP 115 Docker lacks gnomAD plugin
+                # "--af_gnomad_exome",
+                # "--af_gnomad_genome",
                 "--check_existing",
                 "--pubmed",
+                "--fork", "4",
             ]
             + vep_args
         )

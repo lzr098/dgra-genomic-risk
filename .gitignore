@@ -20,3 +20,4 @@ references/gnomad_freq_local.tsv.bgz.tbi
 # OS
 .DS_Store
 Thumbs.db
+MagicMock/
