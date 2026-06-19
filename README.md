@@ -3,6 +3,12 @@
 </h1>
 
 <p align="center">
+  <a href="https://github.com/lzr098/dgra-genomic-risk"><img src="https://img.shields.io/badge/version-0.10.16-blue" alt="version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/python-3.10%2B-green" alt="python"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT--0-lightgrey" alt="license"></a>
+</p>
+
+<p align="center">
   <strong>Individual genomic variants → Phenotype association → Tier 1/2/3 risk classification</strong><br>
   API-first · Offline resilient · Tissue-aware · Evidence-traceable
 </p>
@@ -1111,6 +1117,20 @@ Ensembl · UniProt · GTEx · gnomAD · ClinVar · HGNC · Orphanet · OMIM · C
 ## License
 
 MIT-0
+
+---
+
+---
+
+## Related Skills · 相关技能
+
+| Skill · 技能 | Repo · 仓库 | Purpose · 用途 |
+|---|---|---|
+| **GPA Filter** | [lzr098/GPA-Filter](https://github.com/lzr098/GPA-Filter) | Genomic region pre-filter |
+| **variant-impact** | [lzr098/variant-impact](https://github.com/lzr098/variant-impact) | Single variant ACMG classification |
+| **disease-risk-query** | [lzr098/Disease-Risk-Query](https://github.com/lzr098/Disease-Risk-Query) | Disease-specific genetic risk |
+| **sensory-genomics** | [lzr098/sensory-genomics-skill](https://github.com/lzr098/sensory-genomics-skill) | Five-sense genetic analysis |
+| **PGS/PRS** | [lzr098](https://github.com/lzr098) | Polygenic risk scores from VCF |
 
 ---
 
