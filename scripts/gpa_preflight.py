@@ -55,6 +55,11 @@ try:
 except Exception:
     aiohttp = None  # type: ignore[misc,assignment]
 
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 # =============================================================================
 # 1. 数据模型
 # =============================================================================
@@ -302,26 +307,27 @@ async def _probe_api(
     timeout: float = 5.0,
     proxy: Optional[str] = None,
     validator: Optional[Callable[[Any], bool]] = None,
+    config: Optional[Any] = None,
 ) -> CheckItem:
     """对单个 API 端点发起轻量探测请求。"""
-    if aiohttp is None:
+    if aiohttp is None or APIHub is None:
         return CheckItem(
             name=name,
             category="api_connectivity",
             required=True,
             status="SKIP",
-            message="aiohttp 未安装，跳过 API 检查",
+            message="aiohttp/api_hub 未安装，跳过 API 检查",
             suggestion="pip install aiohttp",
         )
 
     t0 = time.perf_counter()
-    session: Optional[Any] = None
+    hub_config = config
+    if hub_config is None and DGRAGlobalConfig is not None:
+        hub_config = DGRAGlobalConfig.from_env()
+    hub = APIHub(hub_config, None, detect_proxy=False)
+    await hub.setup()
     try:
-        session = aiohttp.ClientSession(
-            trust_env=False,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        )
-        async with session.get(url, proxy=proxy, allow_redirects=True) as resp:
+        async with hub.session.get(url, proxy=proxy, allow_redirects=True) as resp:
             latency_ms = int((time.perf_counter() - t0) * 1000)
             # SpliceAI 特殊处理：400/422 也算在线
             if name == "spliceai" and resp.status in (200, 400, 422):
@@ -389,8 +395,7 @@ async def _probe_api(
             suggestion="检查网络、代理或防火墙设置",
         )
     finally:
-        if session is not None:
-            await session.close()
+        await hub.close()
 
 
 async def check_api_connectivity(
@@ -409,7 +414,7 @@ async def check_api_connectivity(
 
     # 并发执行所有探测
     tasks = [
-        _probe_api(name, url, timeout, proxy, validator)
+        _probe_api(name, url, timeout, proxy, validator, config)
         for name, (url, timeout, validator) in _API_CHECKS.items()
     ]
     return await asyncio.gather(*tasks)
@@ -644,83 +649,47 @@ def check_disk_space(min_mb: int = 500) -> List[CheckItem]:
 
 async def check_network_proxy() -> List[CheckItem]:
     """探测网络环境：直连是否可用，常用代理是否可用。"""
-    if aiohttp is None:
+    if aiohttp is None or APIHub is None:
         return [
             CheckItem(
                 name="网络环境探测",
                 category="network_env",
                 required=False,
                 status="SKIP",
-                message="aiohttp 未安装，跳过",
+                message="aiohttp/api_hub 未安装，跳过",
             )
         ]
 
-    test_url = (
-        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-        "?db=clinvar&term=BRCA1%5BGene%5D&retmode=json&retmax=1"
-    )
     items: List[CheckItem] = []
 
     # 1. 直连测试
     t0 = time.perf_counter()
-    session: Optional[Any] = None
     try:
-        session = aiohttp.ClientSession(
-            trust_env=False,
-            timeout=aiohttp.ClientTimeout(total=5),
-        )
-        async with session.get(test_url) as resp:
-            latency_ms = int((time.perf_counter() - t0) * 1000)
-            if resp.status == 200:
-                data = await resp.json()
-                count = data.get("esearchresult", {}).get("count")
-                if count and int(count) > 0:
-                    items.append(
-                        CheckItem(
-                            name="直连 NCBI",
-                            category="network_env",
-                            required=False,
-                            status="PASS",
-                            message=f"直连可用，延迟 {latency_ms} ms",
-                            latency_ms=latency_ms,
-                        )
-                    )
-                else:
-                    items.append(
-                        CheckItem(
-                            name="直连 NCBI",
-                            category="network_env",
-                            required=False,
-                            status="WARN",
-                            message="HTTP 200 但响应异常",
-                            latency_ms=latency_ms,
-                        )
-                    )
-            else:
-                items.append(
-                    CheckItem(
-                        name="直连 NCBI",
-                        category="network_env",
-                        required=False,
-                        status="FAIL",
-                        message=f"HTTP {resp.status}",
-                        latency_ms=latency_ms,
-                        suggestion="可能需要配置代理",
-                    )
-                )
-    except asyncio.TimeoutError:
+        ok = await APIHub._probe_endpoint(proxy=None, timeout=5.0)
         latency_ms = int((time.perf_counter() - t0) * 1000)
-        items.append(
-            CheckItem(
-                name="直连 NCBI",
-                category="network_env",
-                required=False,
-                status="FAIL",
-                message=f"超时（>5s）",
-                latency_ms=latency_ms,
-                suggestion="检查网络连接，或尝试配置代理",
+        if ok:
+            items.append(
+                CheckItem(
+                    name="直连 NCBI",
+                    category="network_env",
+                    required=False,
+                    status="PASS",
+                    message=f"直连可用，延迟 {latency_ms} ms",
+                    latency_ms=latency_ms,
+                )
             )
-        )
+        else:
+            items.append(
+                CheckItem(
+                    name="直连 NCBI",
+                    category="network_env",
+                    required=False,
+                    status="FAIL",
+                    message="无法连通 NCBI",
+                    latency_ms=latency_ms,
+                    suggestion="可能需要配置代理",
+                )
+            )
     except Exception as e:
         latency_ms = int((time.perf_counter() - t0) * 1000)
         items.append(
@@ -734,9 +703,6 @@ async def check_network_proxy() -> List[CheckItem]:
                 suggestion="检查网络连接或代理配置",
             )
         )
-    finally:
-        if session is not None:
-            await session.close()
 
     # 2. 常用代理测试（仅当直连失败时才测试，节省时间）
     if not any(i.status == "PASS" for i in items if i.name == "直连 NCBI"):
@@ -748,38 +714,32 @@ async def check_network_proxy() -> List[CheckItem]:
             "http://127.0.0.1:10808",
             "http://127.0.0.1:10809",
         ]
-        # 并发测试，最多 3 个并发
         semaphore = asyncio.Semaphore(3)
 
         async def _test_proxy(proxy: str) -> CheckItem:
             t0 = time.perf_counter()
-            sess: Optional[Any] = None
             try:
                 async with semaphore:
-                    sess = aiohttp.ClientSession(
-                        trust_env=False,
-                        timeout=aiohttp.ClientTimeout(total=5),
-                    )
-                    async with sess.get(test_url, proxy=proxy) as resp:
-                        latency_ms = int((time.perf_counter() - t0) * 1000)
-                        if resp.status == 200:
-                            return CheckItem(
-                                name=f"代理 {proxy}",
-                                category="network_env",
-                                required=False,
-                                status="PASS",
-                                message=f"代理可用，延迟 {latency_ms} ms",
-                                latency_ms=latency_ms,
-                                suggestion=f"可在 dgra_config 中设置 proxy='{proxy}'",
-                            )
+                    ok = await APIHub._probe_endpoint(proxy=proxy, timeout=5.0)
+                    latency_ms = int((time.perf_counter() - t0) * 1000)
+                    if ok:
                         return CheckItem(
                             name=f"代理 {proxy}",
                             category="network_env",
                             required=False,
-                            status="FAIL",
-                            message=f"HTTP {resp.status}",
+                            status="PASS",
+                            message=f"代理可用，延迟 {latency_ms} ms",
                             latency_ms=latency_ms,
+                            suggestion=f"可在 dgra_config 中设置 proxy='{proxy}'",
                         )
+                    return CheckItem(
+                        name=f"代理 {proxy}",
+                        category="network_env",
+                        required=False,
+                        status="FAIL",
+                        message="无法连通",
+                        latency_ms=latency_ms,
+                    )
             except Exception as e:
                 latency_ms = int((time.perf_counter() - t0) * 1000)
                 return CheckItem(
@@ -790,9 +750,6 @@ async def check_network_proxy() -> List[CheckItem]:
                     message=f"异常: {type(e).__name__}",
                     latency_ms=latency_ms,
                 )
-            finally:
-                if sess is not None:
-                    await sess.close()
 
         proxy_tasks = [asyncio.create_task(_test_proxy(p)) for p in common_proxies]
         proxy_results = await asyncio.gather(*proxy_tasks)

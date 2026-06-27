@@ -22,6 +22,7 @@ from pathlib import Path
 
 from dgra_config import DGRAGlobalConfig, APIConfig
 from dgra_cache import DGRACache
+from api_hub import APIHub, AdaptiveRateLimiter
 
 # v0.10.15: Local gnomAD frequency archive fallback
 try:
@@ -40,76 +41,6 @@ class DGRAAPIError(Exception):
         super().__init__(f"[{api_name}] {message}")
 
 
-class AdaptiveRateLimiter:
-    """
-    v0.13.0: Self-tuning rate limiter for APIs with aggressive 429 throttling.
-
-    Strategy:
-    - Start conservative (2 req/s)
-    - On 429: halve rate, increase backoff (min 0.1 req/s)
-    - On success streak (5+): increase rate by 20% (max 5 req/s)
-    - Provide per-request pre-flight delay
-
-    This replaces fixed Semaphore + sleep with dynamic load shedding.
-    """
-    def __init__(
-        self,
-        initial_rate: float = 2.0,
-        min_rate: float = 0.1,
-        max_rate: float = 5.0,
-        success_threshold: int = 5,
-        rate_boost: float = 1.2,
-        rate_cut: float = 0.5,
-    ):
-        self.rate = initial_rate
-        self.min_rate = min_rate
-        self.max_rate = max_rate
-        self.success_threshold = success_threshold
-        self.rate_boost = rate_boost
-        self.rate_cut = rate_cut
-        self._success_streak = 0
-        self._429_count = 0
-        self._last_request_time = 0.0
-        self._lock = asyncio.Lock()
-
-    async def acquire(self) -> float:
-        """Wait appropriate delay then return current rate."""
-        async with self._lock:
-            now = time.time()
-            min_interval = 1.0 / self.rate
-            elapsed = now - self._last_request_time
-            if elapsed < min_interval:
-                wait = min_interval - elapsed
-                await asyncio.sleep(wait)
-            self._last_request_time = time.time()
-            return self.rate
-
-    def report_success(self):
-        self._success_streak += 1
-        if self._success_streak >= self.success_threshold:
-            self.rate = min(self.max_rate, self.rate * self.rate_boost)
-            self._success_streak = 0
-
-    def report_429(self):
-        self._429_count += 1
-        self._success_streak = 0
-        self.rate = max(self.min_rate, self.rate * self.rate_cut)
-
-    def report_error(self, is_429: bool = False):
-        if is_429:
-            self.report_429()
-        else:
-            self._success_streak = max(0, self._success_streak - 1)
-
-    @property
-    def stats(self) -> dict:
-        return {
-            "current_rate": round(self.rate, 2),
-            "success_streak": self._success_streak,
-            "429_count": self._429_count,
-        }
-
-
 class DGRAAPIClient:
     """
     Unified async API client for all DGRA external data sources.
@@ -123,48 +54,30 @@ class DGRAAPIClient:
     - Dynamic proxy auto-detection (v0.10.5)
     """
 
-    # Common proxy endpoints to probe (in priority order)
-    _COMMON_PROXIES: List[str] = [
-        "http://127.0.0.1:7897",
-        "http://127.0.0.1:7890",
-        "http://127.0.0.1:7891",
-        "http://127.0.0.1:1080",
-        "http://127.0.0.1:10808",
-        "http://127.0.0.1:10809",
-        "http://127.0.0.1:8000",
-        "http://127.0.0.1:8080",
-        "http://127.0.0.1:3128",
-    ]
-
-    def __init__(self, config: DGRAGlobalConfig, cache: DGRACache, proxy_route_map: Optional[Any] = None):
+    def __init__(
+        self,
+        config: DGRAGlobalConfig,
+        cache: DGRACache,
+        proxy_route_map: Optional[Any] = None,
+        hub: Optional[APIHub] = None,
+        audit_trail: Optional[Any] = None,
+    ):
         self.config = config
         self.cache = cache
+        self.audit_trail = audit_trail
         self._proxy_route_map = proxy_route_map
         # v0.10.12: fallback to config-attached route map (set by gpa_two_phase pipeline)
         if self._proxy_route_map is None and hasattr(config, '_proxy_route_map'):
             self._proxy_route_map = config._proxy_route_map
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._last_request_time: Dict[str, float] = {}  # api_name -> timestamp
-        self._proxy_url: Optional[str] = None  # detected working proxy or None for direct
-        # v0.10.17: Per-API adaptive rate limiters to survive aggressive 429 throttling.
-        self._rate_limiters: Dict[str, AdaptiveRateLimiter] = {}
+        # ponytail: delegate HTTP lifecycle to APIHub; create internally if not provided
+        self._own_hub = hub is None
+        self.hub = hub or APIHub(config, cache, audit_trail=audit_trail)
+        if self._proxy_route_map is not None:
+            self.hub.config._proxy_route_map = self._proxy_route_map
+        if audit_trail is not None and self.hub.audit_trail is None:
+            self.hub.audit_trail = audit_trail
         # v0.10.15: Local gnomAD frequency archive for offline fallback
         self._gnomad_local = GnomADLocalArchive() if GnomADLocalArchive else None
-
-    def _get_rate_limiter(self, api_name: str) -> AdaptiveRateLimiter:
-        """Return (creating if necessary) the adaptive rate limiter for an API."""
-        if api_name not in self._rate_limiters:
-            cfg = self.config.apis.get(api_name)
-            initial_rate = getattr(cfg, "rate_limit_per_sec", 2.0) if cfg else 2.0
-            self._rate_limiters[api_name] = AdaptiveRateLimiter(
-                initial_rate=initial_rate,
-                min_rate=0.05,
-                max_rate=initial_rate,
-                success_threshold=5,
-                rate_boost=1.2,
-                rate_cut=0.5,
-            )
-        return self._rate_limiters[api_name]
 
     # ------------------------------------------------------------------
     # v0.10.16: Local GTEx SQLite DB integration (zero external API)
@@ -223,97 +136,22 @@ class DGRAAPIClient:
             pass
         return False
 
-    @staticmethod
-    async def _probe_endpoint(proxy: Optional[str], timeout: float = 3.0) -> bool:
-        """Quickly probe NCBI esearch to test if a route works."""
-        test_url = (
-            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-            "?db=clinvar&term=BRCA1%5BGene%5D&retmode=json&retmax=1"
-        )
-        try:
-            session = aiohttp.ClientSession(
-                trust_env=False,
-                timeout=aiohttp.ClientTimeout(total=timeout),
-            )
-            try:
-                async with session.get(test_url, proxy=proxy) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        count = data.get("esearchresult", {}).get("count")
-                        return bool(count and int(count) > 0)
-            finally:
-                await session.close()
-        except Exception:
-            return False
-        return False
-
-    async def _detect_proxy(self) -> Optional[str]:
-        """
-        Auto-detect the best network route for scientific APIs.
-
-        Returns:
-            Proxy URL (e.g. "http://127.0.0.1:7897") if a proxy works,
-            None if direct connection works best.
-        """
-        # 1. Try direct connection first (fastest if it works)
-        print("[ProxyProbe] Testing direct connection to NCBI...")
-        if await self._probe_endpoint(proxy=None, timeout=3.0):
-            print("[ProxyProbe] Direct connection OK — no proxy needed")
-            return None
-        print("[ProxyProbe] Direct connection FAILED")
-
-        # 2. Try each common proxy in parallel (limited concurrency)
-        semaphore = asyncio.Semaphore(3)
-        results: Dict[str, bool] = {}
-
-        async def _test_one(proxy: str) -> None:
-            async with semaphore:
-                ok = await self._probe_endpoint(proxy=proxy, timeout=5.0)
-                results[proxy] = ok
-                if ok:
-                    print(f"[ProxyProbe] Proxy {proxy} OK")
-                else:
-                    print(f"[ProxyProbe] Proxy {proxy} FAILED")
-
-        tasks = [asyncio.create_task(_test_one(p)) for p in self._COMMON_PROXIES]
-        await asyncio.gather(*tasks)
-
-        # Return first working proxy
-        for proxy in self._COMMON_PROXIES:
-            if results.get(proxy):
-                return proxy
-
-        print("[ProxyProbe] No working proxy found — will use direct (expect failures)")
-        return None
-
     async def __aenter__(self):
-        # v0.10.5: Dynamic proxy auto-detection
-        # Probe once at session start, then reuse the route for all APIs.
-        self._proxy_url = await self._detect_proxy()
-        self._session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=50, limit_per_host=20),
-            timeout=aiohttp.ClientTimeout(total=120),
-            trust_env=False,  # Never trust env; use our detected proxy explicitly
-        )
+        if self._own_hub:
+            await self.hub.setup()
         return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._session:
-            await self._session.close()
-            self._session = None
-    
-    async def _rate_limit(self, api_name: str):
-        """Enforce per-API adaptive rate limit.
 
-        v0.10.17: Replaced fixed token bucket with AdaptiveRateLimiter so that
-        the client backs off exponentially on 429s and slowly recovers after
-        a run of successful requests.
-        """
-        limiter = self._get_rate_limiter(api_name)
-        await limiter.acquire()
-    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._own_hub:
+            await self.hub.close()
+
+    @property
+    def _session(self):
+        """Backward-compatible alias for tests/code that patch the underlying session."""
+        return self.hub.session
+
     async def _request_with_retry(
-        self, 
+        self,
         api_name: str,
         endpoint: str,
         method: str = "GET",
@@ -321,189 +159,16 @@ class DGRAAPIClient:
         json_body: Optional[Dict] = None,
         headers: Optional[Dict] = None,
     ) -> Dict[str, Any]:
-        """
-        Execute HTTP request with cache check, rate limiting, and retry.
-        
-        Returns dict with keys:
-        - data: parsed JSON response
-        - http_status: HTTP status code
-        - from_cache: bool
-        - confidence: 'high' if cache hit, 'medium' if API success, 'low' if partial
-        """
-        cfg = self.config.apis[api_name]
-        url = f"{cfg.base_url}/{endpoint.lstrip('/')}"
-        
-        # Phase 1: Check cache (skip if offline mode - we already checked before calling)
-        # v0.12.2 FIX: include json_body in cache key for POST/GraphQL requests.
-        # Without this, all POSTs to the same endpoint share one cache key,
-        # causing cache collisions (e.g. all gnomAD GraphQL queries overwrite each other).
-        cache_key_params = {"url": url, **(params or {})}
-        if json_body is not None:
-            # Use a stable, compact representation of the JSON body
-            body_key = json.dumps(json_body, sort_keys=True, separators=(',', ':'))
-            cache_key_params["_body"] = body_key
-        cached = self.cache.get(api_name, **cache_key_params)
-        
-        if cached:
-            return {
-                "data": cached["data"],
-                "http_status": cached["http_status"],
-                "from_cache": True,
-                "confidence": cached["confidence"],
-            }
-        
-        # Offline mode: no cache hit = return None
-        if self.config.offline_mode:
-            return {
-                "data": None,
-                "http_status": None,
-                "from_cache": False,
-                "confidence": "low",
-                "error": "Offline mode: no cached data available",
-            }
-        
-        # Phase 2: API call with retry
-        last_error = None
-        for attempt in range(cfg.max_retries):
-            try:
-                await self._rate_limit(api_name)
+        """Delegate to APIHub for unified cache, rate-limit, retry, and proxy handling."""
+        return await self.hub.request(
+            api_name=api_name,
+            endpoint=endpoint,
+            method=method,
+            params=params,
+            json_body=json_body,
+            headers=headers,
+        )
 
-                # v0.10.12: per-API proxy routing
-                proxy = self._proxy_url
-                if self._proxy_route_map is not None:
-                    proxy = self._proxy_route_map.get_proxy(api_name)
-
-                async with self._session.request(
-                    method=method,
-                    url=url,
-                    params=params,
-                    json=json_body,
-                    headers=headers,
-                    proxy=proxy,
-                    timeout=aiohttp.ClientTimeout(total=cfg.timeout),
-                ) as response:
-                    http_status = response.status
-                    
-                    if http_status == 200:
-                        limiter = self._get_rate_limiter(api_name)
-                        limiter.report_success()
-                        try:
-                            data = await response.json()
-                        except Exception:
-                            # Try to parse text as JSON fallback
-                            text = await response.text()
-                            try:
-                                data = json.loads(text)
-                            except Exception:
-                                # Not valid JSON — don't cache, return as error
-                                return {
-                                    "data": None,
-                                    "http_status": http_status,
-                                    "from_cache": False,
-                                    "confidence": "low",
-                                    "error": f"HTTP 200 but response is not valid JSON (len={len(text)})",
-                                }
-                        
-                        # Cache successful response
-                        self.cache.set(
-                            api_name=api_name,
-                            response_data=data,
-                            http_status=http_status,
-                            confidence="medium",
-                            **cache_key_params
-                        )
-                        
-                        return {
-                            "data": data,
-                            "http_status": http_status,
-                            "from_cache": False,
-                            "confidence": "medium",
-                        }
-                    
-                    elif http_status == 404:
-                        # Not found - cache the negative result with shorter TTL
-                        self.cache.set(
-                            api_name=api_name,
-                            response_data={"error": "not_found", "status": 404},
-                            http_status=404,
-                            confidence="medium",
-                            ttl_days=7,  # Shorter TTL for negatives
-                            **cache_key_params
-                        )
-                        return {
-                            "data": None,
-                            "http_status": 404,
-                            "from_cache": False,
-                            "confidence": "medium",
-                            "error": "Not found",
-                        }
-                    
-                    elif http_status == 429:
-                        # Rate limited - report to adaptive limiter and wait
-                        limiter = self._get_rate_limiter(api_name)
-                        limiter.report_429()
-                        retry_after = response.headers.get("Retry-After")
-                        if retry_after:
-                            wait = int(retry_after)
-                        else:
-                            # v0.10.17: combine exponential backoff with adaptive rate.
-                            adaptive_wait = max(1.0, 1.0 / max(limiter.rate, 0.05))
-                            wait = max(cfg.retry_delay * (2 ** attempt), adaptive_wait)
-                        last_error = DGRAAPIError(api_name, f"Rate limited (429), retry after {wait}s (current rate={limiter.rate:.2f}/s)", http_status)
-                        print(f"[DGRA API] {api_name}: Rate limited (429), waiting {wait}s before retry {attempt+1}/{cfg.max_retries} (rate={limiter.rate:.2f}/s)")
-                        await asyncio.sleep(wait)
-                        continue
-                    
-                    elif http_status in (502, 503, 504):
-                        # Gateway/server temporarily unavailable - retry
-                        last_error = DGRAAPIError(api_name, f"Server temporarily unavailable ({http_status})", http_status)
-                        wait = cfg.retry_delay * (2 ** attempt)
-                        print(f"[DGRA API] {api_name}: HTTP {http_status}, retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
-                        await asyncio.sleep(wait)
-                        continue
-                    
-                    elif http_status >= 500:
-                        # Other server errors - retry with backoff
-                        last_error = DGRAAPIError(api_name, f"Server error {http_status}", http_status)
-                        wait = cfg.retry_delay * (2 ** attempt)
-                        print(f"[DGRA API] {api_name}: HTTP {http_status}, retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
-                        await asyncio.sleep(wait)
-                        continue
-                    
-                    else:
-                        # Client error or other - don't retry
-                        text = await response.text()
-                        return {
-                            "data": None,
-                            "http_status": http_status,
-                            "from_cache": False,
-                            "confidence": "low",
-                            "error": f"HTTP {http_status}: {text[:200]}",
-                        }
-            
-            except asyncio.TimeoutError:
-                last_error = DGRAAPIError(api_name, f"Timeout after {cfg.timeout}s")
-                wait = cfg.retry_delay * (2 ** attempt)
-                print(f"[DGRA API] {api_name}: Timeout, retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
-                await asyncio.sleep(wait)
-                continue
-            
-            except aiohttp.ClientError as e:
-                last_error = DGRAAPIError(api_name, f"Connection error: {e}")
-                wait = cfg.retry_delay * (2 ** attempt)
-                print(f"[DGRA API] {api_name}: Connection error ({e}), retrying in {wait}s (attempt {attempt+1}/{cfg.max_retries})")
-                await asyncio.sleep(wait)
-                continue
-        
-        # All retries exhausted
-        return {
-            "data": None,
-            "http_status": last_error.status if last_error else None,
-            "from_cache": False,
-            "confidence": "low",
-            "error": str(last_error) if last_error else "All retries failed",
-        }
-    
     # =====================================================================
     # Ensembl REST API
     # =====================================================================
@@ -2055,15 +1720,15 @@ class DGRAAPIClient:
             latency_threshold = probe.get("latency_threshold_ms", 3000)
             
             try:
-                await self._rate_limit(api_name)
+                await self.hub.rate_limit(api_name)
                 start = time.time()
-                
-                async with self._session.request(
+
+                async with self.hub.session.request(
                     method=probe["method"],
                     url=url,
                     params=probe.get("params"),
                     json=probe.get("json_body"),
-                    proxy=self._proxy_url,  # v0.10.5: auto-detected proxy
+                    proxy=self.hub.proxy_for(api_name),
                     timeout=aiohttp.ClientTimeout(total=timeout),
                 ) as resp:
                     elapsed_ms = (time.time() - start) * 1000

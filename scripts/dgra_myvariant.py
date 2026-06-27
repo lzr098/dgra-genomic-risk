@@ -26,6 +26,16 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from dgra_config import DGRAGlobalConfig
+except Exception:
+    DGRAGlobalConfig = None  # type: ignore[misc,assignment]
+
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 
 @dataclass
 class MyVariantResult:
@@ -521,7 +531,9 @@ def apply_myvariant_results(
 
 async def _test_myvariant():
     """Self-test with a known common variant."""
-    async with aiohttp.ClientSession(trust_env=False) as session:
+    cfg = DGRAGlobalConfig.from_env() if DGRAGlobalConfig is not None else None
+    async with APIHub(cfg, None, detect_proxy=False) as hub:
+        session = hub.session
         # Known variant: chr1:218631822 G>A (common in AFR)
         result = await query_myvariant_single("chr1", 218631822, "G", "A", session)
         print(f"Single query test:")

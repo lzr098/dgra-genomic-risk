@@ -813,11 +813,12 @@ def main():
                         help="Clinical disease description for disease-aware transcript selection. "
                              "e.g. 'limb-girdle muscular dystrophy, proximal muscle weakness'. "
                              "Only used for raw VCF input; optional — falls back to canonical/MANE if not provided. (v0.9.0)")
-    parser.add_argument("--annotator", default="auto", choices=["auto", "vep_api", "vep_local"],
-                        help="Variant annotator for raw VCF: auto (default, zero-config VEP API), "
-                             "vep_api (Ensembl REST), vep_local (local VEP command). (v0.9.0)")
+    parser.add_argument("--annotator", default="auto", choices=["auto", "vep_api", "vep_docker", "vep_local"],
+                        help="Variant annotator for raw VCF: auto (default, auto-detect Docker > local > REST), "
+                             "vep_docker (Docker VEP with offline cache), "
+                             "vep_api (Ensembl REST), vep_local (local VEP command). (v0.10.5)")
     parser.add_argument("--vep-cache", default=None,
-                        help="Path to local VEP cache directory. Required for --annotator vep_local. (v0.9.0)")
+                        help="Path to local VEP cache directory. Required for --annotator vep_docker/vep_local. (v0.10.5)")
     # v0.10.2: Companion annotation file and two-phase pipeline
     parser.add_argument("--annotation-file", type=Path, default=None,
                         help="Path to a companion annotation file (TSV/CSV/Excel) to use instead of VEP REST API. "

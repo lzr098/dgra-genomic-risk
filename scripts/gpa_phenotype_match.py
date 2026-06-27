@@ -13,6 +13,16 @@ import sys
 from typing import List, Dict, Optional, Set
 from pathlib import Path
 
+try:
+    from dgra_config import DGRAGlobalConfig
+except Exception:
+    DGRAGlobalConfig = None  # type: ignore[misc,assignment]
+
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 
 class PhenotypeMatcher:
     """
@@ -161,9 +171,9 @@ class PhenotypeMatcher:
         prompt = self._build_match_prompt(gene, user_phenotypes, known_phenotypes)
 
         try:
-            import aiohttp
-            async with aiohttp.ClientSession(trust_env=False) as session:
-                async with session.post(
+            cfg = DGRAGlobalConfig.from_env() if DGRAGlobalConfig is not None else None
+            async with APIHub(cfg, None, detect_proxy=False) as hub:
+                async with hub.session.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self.api_key}",

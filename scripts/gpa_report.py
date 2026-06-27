@@ -13,7 +13,9 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Any, TYPE_CHECKING, Callable
+
+from report_composer import ReportComposer, ReportContext, ReportSection
 
 try:
     from jinja2 import Template
@@ -76,6 +78,90 @@ else:
     _REPORT_HEADER_TEMPLATE = None  # type: ignore
 
 
+def _build_header_md(
+    profile_name: str,
+    config: GPAConfig,
+    variants: List[Variant],
+    tier1: List[Variant],
+    tier2: List[Variant],
+    tier3: List[Variant],
+    version_info: Optional[Dict] = None,
+    impact_parts: Optional[List[str]] = None,
+    retention_parts: Optional[List[str]] = None,
+) -> str:
+    """Build report header, using Jinja2 when available."""
+    fs = config.filter_stats
+    version_info = version_info or _get_version_info(config)
+    if retention_parts is None and fs:
+        _rp: List[str] = []
+        if fs.get('splice_retained', 0) > 0:
+            _rp.append(f"splice retained: {fs['splice_retained']}")
+        if fs.get('synonymous_tissue_retained', 0) > 0:
+            _rp.append(f"synonymous tissue: {fs['synonymous_tissue_retained']}")
+        if fs.get('clinvar_conflicting_retained', 0) > 0:
+            _rp.append(f"ClinVar conflict: {fs['clinvar_conflicting_retained']}")
+        retention_parts = _rp
+    if _HAS_JINJA2 and _REPORT_HEADER_TEMPLATE is not None:
+        return _REPORT_HEADER_TEMPLATE.render(
+            version=__version__,
+            profile_name=profile_name,
+            tissue_profile=config.tissue_profile,
+            offline_mode=config.offline_mode,
+            analysis_date=datetime.now().isoformat(),
+            filter_stats=fs,
+            impact_distribution=" | ".join(impact_parts) if impact_parts else None,
+            filter_retention=" | ".join(retention_parts) if retention_parts else None,
+            filter_preset=config.filter_preset,
+            total_variants=len(variants),
+            version_info=version_info,
+            tier1_genes=len(set(v.gene for v in tier1)),
+            tier1_variants=len(tier1),
+            tier2_genes=len(set(v.gene for v in tier2)),
+            tier2_variants=len(tier2),
+            tier3_genes=len(set(v.gene for v in tier3)),
+            tier3_variants=len(tier3),
+        )
+
+    report_lines = []
+    report_lines.append(f"# GPA Report - Genomic Phenotype Association v{__version__}\n")
+    report_lines.append(f"**Analysis Context**: {profile_name}\n")
+    report_lines.append(f"**Tissue Profile**: `{config.tissue_profile}`\n")
+    report_lines.append(f"**Offline Mode**: {'Yes' if config.offline_mode else 'No'}\n")
+    report_lines.append(f"**Analysis Date**: {datetime.now().isoformat()}\n")
+
+    if fs:
+        report_lines.append(
+            f"**Input Variants**: {fs.get('input_count', '?')} → **Assessed**: "
+            f"{fs.get('output_count', '?')} (excluded: {fs.get('excluded', '?')})\n"
+        )
+        if impact_parts:
+            report_lines.append(f"**Impact Distribution (input)**: {' | '.join(impact_parts)}\n")
+        if retention_parts:
+            report_lines.append(f"**Filter Retention**: {' | '.join(retention_parts)}\n")
+        if config.filter_preset:
+            report_lines.append(f"**Filter Preset**: `{config.filter_preset}`\n")
+    else:
+        report_lines.append(f"**Total Variants Assessed**: {len(variants)}\n")
+
+    report_lines.append(f"**GPA Version**: {version_info.get('dgra_version', '0.9.0')}\n")
+    if version_info.get('cache_version'):
+        report_lines.append(f"**Cache Version**: {version_info['cache_version']}\n")
+    if version_info.get('offline_archive_date') and version_info['offline_archive_date'] not in ('no_archive', 'empty', 'unknown'):
+        report_lines.append(f"**Offline Archive Date**: {version_info['offline_archive_date']}\n")
+    if version_info.get('dgra_core_commit') and version_info['dgra_core_commit'] != 'unknown':
+        report_lines.append(f"**Code Commit**: `{version_info['dgra_core_commit']}`\n")
+    if version_info.get('database_version'):
+        report_lines.append(f"**Database Version**: {version_info['database_version']}\n")
+    report_lines.append("\n")
+
+    report_lines.append(f"**Tier 1 基因**: {len(set(v.gene for v in tier1))} 个 | **Tier 1 突变**: {len(tier1)} 个\n")
+    report_lines.append(f"**Tier 2 基因**: {len(set(v.gene for v in tier2))} 个 | **Tier 2 突变**: {len(tier2)} 个\n")
+    report_lines.append(f"**Tier 3 基因**: {len(set(v.gene for v in tier3))} 个 | **Tier 3 突变**: {len(tier3)} 个\n\n")
+
+    return "".join(report_lines)
+
+
+# Kept for backwards compatibility; delegates to _build_header_md.
 def _build_report_header(
     profile_name: str,
     config: GPAConfig,
@@ -85,6 +171,7 @@ def _build_report_header(
     tier3: List[Variant],
 ) -> str:
     """Fallback header builder when Jinja2 is not available."""
+    return _build_header_md(profile_name, config, variants, tier1, tier2, tier3)
     report_lines = []
     report_lines.append(f"# GPA Report - Genomic Phenotype Association v{__version__}\n")
     report_lines.append(f"**Analysis Context**: {profile_name}\n")
@@ -968,25 +1055,25 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
                         gtex_data: Optional[Dict[str, Dict]] = None) -> str:
     """
     Generate Markdown report with three-tier structure and dynamic tissue context.
+
+    v0.10.6: Internally assembled via ReportComposer for easier extension
+    (phase-aware, family co-segregation, domain-dive, rescue sections).
+    Public signature remains unchanged.
     """
-    # Sort by tier
     tier1 = [v for v in variants if v.tier == 1]
     tier2 = [v for v in variants if v.tier == 2]
     tier3 = [v for v in variants if v.tier == 3]
-
     profile_name = tissue_profile.get("display_name", config.tissue_profile)
-
-    # v0.10.0: Build header via Jinja2 template
     version_info = _get_version_info(config)
     fs = config.filter_stats
+
     impact_parts = []
+    retention_parts = []
     if fs:
         for imp in ['HIGH', 'MODERATE', 'LOW', 'MODIFIER']:
             cnt = fs.get('by_impact', {}).get(imp, 0)
             if cnt > 0:
                 impact_parts.append(f"{imp}: {cnt}")
-    retention_parts = []
-    if fs:
         if fs.get('splice_retained', 0) > 0:
             retention_parts.append(f"splice retained: {fs['splice_retained']}")
         if fs.get('synonymous_tissue_retained', 0) > 0:
@@ -994,43 +1081,418 @@ def generate_tier_report(variants: List[Variant], config: GPAConfig,
         if fs.get('clinvar_conflicting_retained', 0) > 0:
             retention_parts.append(f"ClinVar conflict: {fs['clinvar_conflicting_retained']}")
 
-    if _HAS_JINJA2 and _REPORT_HEADER_TEMPLATE is not None:
-        header_md = _REPORT_HEADER_TEMPLATE.render(
-            version=__version__,
-            profile_name=profile_name,
-            tissue_profile=config.tissue_profile,
-            offline_mode=config.offline_mode,
-            analysis_date=datetime.now().isoformat(),
-            filter_stats=fs,
-            impact_distribution=" | ".join(impact_parts) if impact_parts else None,
-            filter_retention=" | ".join(retention_parts) if retention_parts else None,
-            filter_preset=config.filter_preset,
-            total_variants=len(variants),
-            version_info=version_info,
-            tier1_genes=len(set(v.gene for v in tier1)),
-            tier1_variants=len(tier1),
-            tier2_genes=len(set(v.gene for v in tier2)),
-            tier2_variants=len(tier2),
-            tier3_genes=len(set(v.gene for v in tier3)),
-            tier3_variants=len(tier3),
-        )
-    else:
-        header_md = _build_report_header(
-            profile_name=profile_name,
-            config=config,
-            variants=variants,
-            tier1=tier1,
-            tier2=tier2,
-            tier3=tier3,
-        )
+    header_md = _build_header_md(
+        profile_name=profile_name,
+        config=config,
+        variants=variants,
+        tier1=tier1,
+        tier2=tier2,
+        tier3=tier3,
+        version_info=version_info,
+        impact_parts=impact_parts,
+        retention_parts=retention_parts,
+    )
 
-    report = [header_md]
+    ctx = ReportContext(
+        variants=variants,
+        config=config,
+        tissue_profile=tissue_profile,
+        multi_hits=multi_hits,
+        gtex_data=gtex_data,
+        extras={
+            "tier1": tier1,
+            "tier2": tier2,
+            "tier3": tier3,
+            "profile_name": profile_name,
+            "header_md": header_md,
+            "impact_parts": impact_parts,
+            "retention_parts": retention_parts,
+        },
+    )
 
-    # v0.5 P1-13: QC summary table
-    # Collect QC flags from all variants
+    composer = ReportComposer("gpa_tier_report")
+    composer.add_section(lambda c: c.get("header_md"), order=0)
+    composer.add_section(_qc_summary_section, order=10)
+    composer.add_section(_hla_section, order=20)
+    composer.add_section(_pseudogene_section, order=30)
+    composer.add_section(_multi_hit_section, order=40)
+    composer.add_section(_phenotype_section, order=50)
+    composer.add_section(_transcript_selection_section, order=60)
+    composer.add_section(_transcript_validation_section, order=70)
+    composer.add_section(_spliceai_section, order=80)
+    composer.add_section(_gtex_section, order=90)
+    composer.add_section(_tier12_section, order=100)
+    composer.add_section(_tier3_section, order=110)
+    composer.add_section(_methodology_section, order=120)
+    return composer.compose(ctx)
+
+
+# v0.10.6: Section plugins for ReportComposer (thin wrappers around helpers above).
+
+def _qc_summary_section(ctx: ReportContext) -> Optional[str]:
+    variants = ctx.variants
+    if not variants:
+        return None
     all_qc_flags = []
     for v in variants:
         all_qc_flags.extend(v.qc_flags)
+    if not all_qc_flags:
+        return None
+
+    from collections import Counter
+    flag_counts = Counter(all_qc_flags)
+    flag_descriptions = {
+        "INVALID_VAF": "VAF 超出 [0,1] 范围",
+        "LOW_DEPTH": "测序深度 < 10x",
+        "LOW_COMPLEXITY_REGION": "位于低复杂度/重复区域",
+        "INVALID_GENE_SYMBOL": "基因名格式不符合 HGNC 规范",
+        "VAF_GT_MISMATCH": "VAF 与基因型不一致(杂合 35-65%,纯合 85-100%,野生型 0-5%)",
+    }
+
+    lines = ["## ⚠️ 输入 QC 异常汇总\n"]
+    lines.append(f"**总异常数**: {len(all_qc_flags)} 条(涉及 {len(set((v.chrom, v.pos) for v in variants if v.qc_flags))} 个变异)\n\n")
+    lines.append("| QC 标志 | 计数 | 说明 |\n")
+    lines.append("|---------|------|------|\n")
+    for flag, count in flag_counts.most_common(5):
+        lines.append(f"| {flag} | {count} | {flag_descriptions.get(flag, '未知标志')} |\n")
+    if len(flag_counts) > 5:
+        lines.append(f"| ... | ... | 共 {len(flag_counts)} 种异常 |\n")
+
+    flagged = [v for v in variants if v.qc_flags][:5]
+    if flagged:
+        lines.append(f"\n**前 5 条异常变异**:\n")
+        lines.append("| 位置 | 基因 | 异常标志 |\n")
+        lines.append("|------|------|----------|\n")
+        for v in flagged:
+            lines.append(f"| {v.chrom}:{v.pos} | {v.gene} | {', '.join(v.qc_flags)} |\n")
+    if len([v for v in variants if v.qc_flags]) > 5:
+        lines.append(f"\n*... 共 {len([v for v in variants if v.qc_flags])} 个变异有异常,详见 JSON 输出*\n")
+    lines.append("\n")
+    return "".join(lines)
+
+
+def _hla_section(ctx: ReportContext) -> Optional[str]:
+    return _generate_hla_region_section(ctx.variants)
+
+
+def _pseudogene_section(ctx: ReportContext) -> Optional[str]:
+    return _generate_pseudogene_assessment_section(ctx.variants)
+
+
+def _multi_hit_section(ctx: ReportContext) -> Optional[str]:
+    multi_hits = ctx.multi_hits
+    if not multi_hits:
+        return None
+    lines = ["## ⚠️ Multi-Hit Gene Warnings\n"]
+    for mh in multi_hits:
+        lines.append(f"### {mh['gene']} - {mh['variant_count']} variants detected\n")
+        lines.append(f"- **Warning**: {mh['warning']}\n")
+        phase = mh.get('phase_result', {})
+        if phase:
+            status = phase.get('status', 'unknown')
+            confidence = phase.get('confidence', 'unknown')
+            method = phase.get('method', 'unknown')
+            evidence = phase.get('evidence', 'N/A')
+            max_gap = phase.get('max_gap_bp', 'N/A')
+            if status in ('cis', 'cis_both', 'cis_likely'):
+                status_icon = '🟢'
+            elif status == 'trans':
+                status_icon = '🔴'
+            elif status == 'ambiguous':
+                status_icon = '🟡'
+            elif status == 'unphased':
+                status_icon = '⚪'
+            else:
+                status_icon = '❓'
+            _has_real_phase = status not in ('unphased', 'unknown') and 'infeasible' not in method
+            if _has_real_phase:
+                lines.append(f"\n**相位分析**: {status_icon} **{status.upper()}** (置信度: {confidence})\n")
+                lines.append(f"- **判定方法**: {method}\n")
+                lines.append(f"- **间距**: {max_gap}bp\n")
+                lines.append(f"- **证据**: {evidence}\n")
+                phase_clinical = mh.get('phase_clinical_significance', '')
+                if phase_clinical:
+                    lines.append(f"- **临床意义**: {phase_clinical}\n")
+                lines.append(f"\n- **Cis hypothesis**: {mh['phases']['cis']}\n")
+                lines.append(f"- **Trans hypothesis**: {mh['phases']['trans']}\n")
+                lines.append(f"- **Required evidence**: {', '.join(mh['required_evidence'])}\n")
+                lines.append(f"- **Action**: {mh['action']}\n\n")
+            else:
+                lines.append(f"\n**相位分析**: {status_icon} **{status.upper()}** — {evidence}\n\n")
+    return "".join(lines)
+
+
+def _phenotype_section(ctx: ReportContext) -> Optional[str]:
+    return _generate_phenotype_assessment_section(ctx.variants)
+
+
+def _transcript_selection_section(ctx: ReportContext) -> Optional[str]:
+    return _generate_transcript_selection_section(ctx.variants)
+
+
+def _transcript_validation_section(ctx: ReportContext) -> Optional[str]:
+    return _generate_tier12_transcript_validation_section(ctx.variants)
+
+
+def _spliceai_section(ctx: ReportContext) -> Optional[str]:
+    return _generate_spliceai_section(ctx.variants)
+
+
+def _gtex_section(ctx: ReportContext) -> Optional[str]:
+    return _generate_gtex_section(ctx.variants, ctx.gtex_data)
+
+
+def _tier12_section(ctx: ReportContext) -> Optional[str]:
+    variants = ctx.variants
+    config = ctx.config
+    multi_hits = ctx.multi_hits
+    profile_name = ctx.get("profile_name", "")
+    tier1 = ctx.get("tier1", [])
+    tier2 = ctx.get("tier2", [])
+    tier12 = tier1 + tier2
+    if not tier12:
+        return None
+
+    lines = ["---\n\n## 重要变异分析（Tier 1/2）\n"]
+    lines.append(f"*基因-重要突变聚合视图 for {profile_name} context*\n\n")
+    tier12_genes = set(v.gene for v in tier12)
+    lines.append(f"**涉及基因总数**: {len(tier12_genes)} 个 | **变异总数**: {len(tier12)} 个")
+    if tier1:
+        lines.append(f" (Tier 1: {len(tier1)}, Tier 2: {len(tier2)})")
+    else:
+        lines.append(" (全为 Tier 2)")
+    lines.append("\n\n")
+
+    multi_hit_tier12_genes = tier12_genes.intersection(set(mh['gene'] for mh in multi_hits))
+    if multi_hit_tier12_genes:
+        lines.append(f"**其中 Multi-hit 基因** ({len(multi_hit_tier12_genes)} 个): {', '.join(sorted(multi_hit_tier12_genes))}\n")
+        lines.append("*注: Multi-hit 基因因检测到多个变异被标记关注,但各变异保持独立分级*\n\n")
+
+    from collections import OrderedDict
+    gene_groups: "OrderedDict[str, List[Variant]]" = OrderedDict()
+    for v in tier12:
+        gene_groups.setdefault(v.gene, []).append(v)
+
+    for gene, var_list in gene_groups.items():
+        t1_count = sum(1 for v in var_list if v.tier == 1)
+        t2_count = sum(1 for v in var_list if v.tier == 2)
+        tier_badge = ""
+        if t1_count > 0:
+            tier_badge += f" 🔴T1×{t1_count}"
+        if t2_count > 0:
+            tier_badge += f" 🟡T2×{t2_count}"
+        lines.append(f"### {gene}{tier_badge}\n")
+        is_multi_hit = gene in [mh['gene'] for mh in multi_hits]
+        if is_multi_hit:
+            lines.append(f"**[Multi-hit 基因]** | **变异数**: {len(var_list)}\n\n")
+        else:
+            lines.append(f"**基因**: {gene} | **变异数**: {len(var_list)}\n\n")
+
+        lines.append("| # | Tier | 染色体位置 | 转录本 | 变异名称 | 功能域 | 合子型 | ClinVar | 基因约束 | 置信度 | 说明 |\n")
+        lines.append("|---|------|-----------|--------|---------|--------|--------|---------|----------|--------|------|\n")
+        for i, v in enumerate(var_list, 1):
+            pos = f"{v.chrom}:{v.pos}"
+            tx = v.transcript or "N/A"
+            var_name = v.hgvsp or v.hgvsc or "N/A"
+            di = v.domain_info
+            domain = f"{di.get('domain', 'N/A')} ({di.get('domain_range', 'N/A')})" if di else "N/A"
+            zyg = v.gt or "N/A"
+            clin = v.clinvar or "N/A"
+            reason = v.tier_reason[:80] + "..." if len(v.tier_reason) > 80 else v.tier_reason
+            reason = reason.replace("|", "/")
+            tier_badge = "🔴" if v.tier == 1 else "🟡" if v.tier == 2 else "⚪"
+            gc_info = ""
+            if v.gene_constraint:
+                parts = []
+                pLI = v.gene_constraint.get("pLI")
+                loeuf = v.gene_constraint.get("loeuf")
+                if pLI is not None:
+                    parts.append(f"pLI={pLI:.2f}")
+                if loeuf is not None:
+                    parts.append(f"LOEUF={loeuf:.2f}")
+                if parts:
+                    gc_info = " | ".join(parts)
+            conf = v.tier_confidence or "UNKNOWN"
+            conf_icon = "⚠️" if conf == "LOW" else ""
+            lines.append(f"| {i} | {tier_badge} | {pos} | {tx} | {var_name} | {domain} | {zyg} | {clin} | {gc_info} | {conf_icon} {conf} | {reason} |\n")
+
+        lines.append("\n**详细说明**:\n")
+        for i, v in enumerate(var_list, 1):
+            tier_label = "🔴 Tier 1" if v.tier == 1 else "🟡 Tier 2"
+            lines.append(f"{i}. **{v.hgvsp or v.hgvsc}** ({v.chrom}:{v.pos}) — {tier_label}:\n")
+            vep_note = _format_vep_reannotation_note(v)
+            if vep_note:
+                lines.append(f"   - **{vep_note}**\n")
+            if "VAF_GT_MISMATCH" in v.qc_flags:
+                lines.append(f"   - ⚠️ **VAF 与基因型不一致**(GT={v.gt}, VAF={v.vaf:.2f}),提示可能存在假基因干扰、CNV 或比对错误\n")
+            if v.pseudogene_warning:
+                try:
+                    pw = json.loads(v.pseudogene_warning)
+                    if pw.get("type") == "PSEUDOGENE_INTERFERENCE":
+                        lines.append(f"   - ⚠️ **假基因干扰**: {pw.get('gene')} 观察 VAF={pw.get('observed_vaf', 'N/A')},远低于预期杂合 0.5,疑似 {', '.join(pw.get('pseudogenes', []))} 假基因读取\n")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            lines.append(f"   - 影响程度: {v.impact} | 后果: {v.consequence}\n")
+            if v.domain_info:
+                di = v.domain_info
+                lines.append(f"   - 功能域: {di.get('domain', 'N/A')} {di.get('domain_range', 'N/A')}\n")
+                rp = di.get('relative_position')
+                if isinstance(rp, (int, float)):
+                    lines.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp:.2f})\n")
+                else:
+                    lines.append(f"   - 域内位置: {di.get('position_in_domain', 'N/A')} (相对: {rp})\n")
+                lines.append(f"   - 损伤评估: {di.get('damage_type', 'N/A')}\n")
+            if v.tissue_relevance:
+                tr = v.tissue_relevance
+                lines.append(f"   - 组织相关性: {tr.get('relevance', 'N/A')} | GTEx TPM: {tr.get('gtex_tpm', 'N/A')}\n")
+            if v.gene_constraint:
+                gc = v.gene_constraint
+                parts = []
+                if gc.get("pLI") is not None:
+                    parts.append(f"pLI={gc['pLI']:.2f}")
+                if gc.get("loeuf") is not None:
+                    parts.append(f"LOEUF={gc['loeuf']:.2f}")
+                if gc.get("lof_z") is not None:
+                    parts.append(f"lof_z={gc['lof_z']:.2f}")
+                if gc.get("mis_z") is not None:
+                    parts.append(f"mis_z={gc['mis_z']:.2f}")
+                if parts:
+                    lines.append(f"   - 基因约束: {' | '.join(parts)} (来源: {gc.get('source', 'N/A')})\n")
+            lines.append(f"   - 分级原因: {v.tier_reason}\n")
+            if v.phenotype_match_score is not None:
+                score = v.phenotype_match_score
+                conf = v.phenotype_match_confidence
+                conf_icon = "🟢" if conf == "high" else "🟡" if conf == "medium" else "🔴"
+                lines.append(f"   - **表型关联**: {conf_icon} Score={score:.2f} (置信度: {conf})\n")
+                if v.phenotype_match_explanation:
+                    lines.append(f"     - 解释: {v.phenotype_match_explanation}\n")
+                if v.phenotype_matched_pairs:
+                    pairs_str = ", ".join([f"'{u}'→'{k}'" for u, k in v.phenotype_matched_pairs[:3]])
+                    lines.append(f"     - 匹配对: {pairs_str}{'...' if len(v.phenotype_matched_pairs) > 3 else ''}\n")
+                if v.phenotype_known_list:
+                    known_str = ", ".join(v.phenotype_known_list[:3])
+                    lines.append(f"     - 基因已知表型: {known_str}{'...' if len(v.phenotype_known_list) > 3 else ''}\n")
+            if v.evidence_chain:
+                lines.append(f"   - **证据链** ({len(v.evidence_chain)} 条):\n")
+                chain = v.evidence_chain
+                evidence_detail = getattr(config, 'evidence_detail', 'brief')
+                if evidence_detail == 'brief' and len(chain) > 3:
+                    chain = chain[:3]
+                    lines.append("     *(brief mode: 显示前 3 条关键证据)*\n")
+                for ev in chain:
+                    lines.append(f"     - **{ev.source}**: {ev.rule} (权重={ev.weight:.2f}, 置信度={ev.confidence})\n")
+                    if evidence_detail == 'full' and ev.raw_data:
+                        raw_summary = {k: v for k, v in ev.raw_data.items() if k in ('af', 'tpm', 'pLI', 'loeuf', 'status', 'domain')}
+                        if raw_summary:
+                            lines.append(f"       原始数据: {raw_summary}\n")
+            if v.tier_actions:
+                lines.append(f"   - 建议措施: {'; '.join(v.tier_actions)}\n")
+            if v.upgrade_conditions:
+                lines.append("   - **升级条件**:\n")
+                for uc in v.upgrade_conditions:
+                    lines.append(f"     → {uc}\n")
+            lines.append("\n")
+    return "".join(lines)
+
+
+def _tier3_section(ctx: ReportContext) -> Optional[str]:
+    tier3 = ctx.get("tier3", [])
+    if not tier3:
+        return None
+    config = ctx.config
+    profile_name = ctx.get("profile_name", "")
+    report_detail = getattr(config, 'report_detail_level', 'full')
+
+    if report_detail == "minimal":
+        from collections import Counter
+        impact_counts = Counter(v.impact for v in tier3)
+        lines = ["---\n\n## 🟢 Tier 3: Statistical Summary\n"]
+        lines.append(f"*Total Tier 3 variants: {len(tier3)} (in {len(set(v.gene for v in tier3))} genes)*\n\n")
+        lines.append("| Impact | Count |\n")
+        lines.append("|--------|-------|\n")
+        for impact, count in sorted(impact_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"| {impact} | {count} |\n")
+        lines.append("\n")
+        gene_counts = Counter(v.gene for v in tier3)
+        lines.append("**Top 10 genes by variant count:**\n")
+        lines.append("| Gene | Variants |\n")
+        lines.append("|------|----------|\n")
+        for gene, count in gene_counts.most_common(10):
+            lines.append(f"| {gene} | {count} |\n")
+        lines.append("\n")
+        lines.append(
+            "*Tier 3 variants are not shown in detail. "
+            "Use `report_detail_level='standard'` or `'full'` for complete listings.*\n"
+        )
+        return "".join(lines)
+
+    lines = ["---\n\n## 🟢 Tier 3: No Concern\n"]
+    lines.append(f"*Variants with no {profile_name} relevance*\n\n")
+    gene_groups_t3: Dict[str, List[Variant]] = {}
+    for v in tier3:
+        gene_groups_t3.setdefault(v.gene, []).append(v)
+    for gene, var_list in gene_groups_t3.items():
+        if len(var_list) <= 3:
+            lines.append(f"**{gene}** ({len(var_list)} variants):\n")
+            lines.append("| 位置 | 变异 | 功能域 | 置信度 | 原因 |\n")
+            lines.append("|------|------|--------|--------|------|\n")
+            for v in var_list:
+                pos = f"{v.chrom}:{v.pos}"
+                var_name = v.hgvsp or v.hgvsc or "N/A"
+                di = v.domain_info
+                domain = f"{di.get('domain', 'N/A')}" if di else "N/A"
+                conf = v.tier_confidence or "UNKNOWN"
+                conf_icon = "⚠️" if conf == "LOW" else ""
+                reason = v.tier_reason[:50] + "..." if len(v.tier_reason) > 50 else v.tier_reason
+                reason = reason.replace("|", "/")
+                vep_note = _format_vep_reannotation_note(v)
+                if vep_note:
+                    reason = f"⚠️ VEP reannotated | {reason}"
+                lines.append(f"| {pos} | {var_name} | {domain} | {conf_icon} {conf} | {reason} |\n")
+            lines.append("\n")
+            for v in var_list:
+                vep_note = _format_vep_reannotation_note(v)
+                if vep_note:
+                    lines.append(f"   *{v.hgvsp or v.hgvsc}*: {vep_note}\n")
+            lines.append("\n")
+            for v in var_list:
+                if v.upgrade_conditions:
+                    lines.append(f"   *{v.hgvsp or v.hgvsc} 升级条件*: {' / '.join(v.upgrade_conditions[:2])}\n")
+            lines.append("\n")
+        else:
+            lines.append(f"**{gene}**: {len(var_list)} variants - 详见原始数据\n\n")
+    return "".join(lines)
+
+
+def _methodology_section(ctx: ReportContext) -> Optional[str]:
+    profile_name = ctx.get("profile_name", "")
+    tissue_profile = ctx.tissue_profile or {}
+    lines = ["---\n\n## 方法学附录\n"]
+    lines.append(f"### 分析背景: {profile_name}\n")
+    lines.append(f"- **GTEx 参考组织**: {tissue_profile.get('gtex_tissue', 'N/A')}\n")
+    lines.append(f"- **快速排除规则**: {tissue_profile.get('fast_track_rule', 'N/A')}\n\n")
+    lines.append("### 分析流程\n")
+    lines.append("1. **转录本校正**: Ensembl REST API → canonical transcript → 本地回退\n")
+    lines.append("2. **假基因检测**: VAF 偏差分析识别已知假基因对\n")
+    lines.append("3. **gnomAD 整合**: AF>1% 常见; AF<0.1% 罕见; NOT_CAPTURED 明确标注\n")
+    lines.append("4. **蛋白功能域映射**: UniProt REST API → DOMAIN/REGION 特征 → 本地回退\n")
+    lines.append("5. **组织相关性评估**: GTEx API → median TPM → 自动分级 + 本地回退\n")
+    lines.append("6. **表型关联分析** (v0.7): LLM 语义匹配 → 基因已知表型 vs 用户输入表型 → 仅 Tier 1/2 执行\n")
+    lines.append("7. **三级分类**: Action (Tier 1) → Inform (Tier 2) → No concern (Tier 3)\n")
+    lines.append("8. **基因检测历史记录**: 保留变异信息用于后续分析\n")
+    lines.append("9. **缓存**: 所有 API 响应缓存 30 天 (SQLite); 离线模式仅用缓存\n")
+    return "".join(lines)
+
+
+# Backwards-compatible report entry point (legacy body removed in v0.10.6).
+# ---------------------------------------------------------------------------
+def _old_generate_tier_report(
+    variants: List[Variant], config: GPAConfig,
+    tissue_profile: Dict, multi_hits: List[Dict],
+    gtex_data: Optional[Dict[str, Dict]] = None,
+) -> str:
+    """Original imperative report builder (now delegates to composer)."""
+    return generate_tier_report(variants, config, tissue_profile, multi_hits, gtex_data)
 
     if all_qc_flags:
         from collections import Counter

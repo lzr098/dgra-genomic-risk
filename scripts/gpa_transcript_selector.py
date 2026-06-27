@@ -20,6 +20,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 
+try:
+    from dgra_config import DGRAGlobalConfig
+except Exception:
+    DGRAGlobalConfig = None  # type: ignore[misc,assignment]
+
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 logger = logging.getLogger(__name__)
 
 # Tissue profile → special gene lists mapping (loaded from tissue_context.json)
@@ -417,9 +427,9 @@ class TranscriptSelector:
         )
 
         try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-                async with session.post(
+            cfg = DGRAGlobalConfig.from_env() if DGRAGlobalConfig is not None else None
+            async with APIHub(cfg, None, detect_proxy=False) as hub:
+                async with hub.session.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self.llm_api_key}",

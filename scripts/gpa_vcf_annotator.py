@@ -34,6 +34,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiohttp
 
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 from dgra_input_parsers import VEP_ANNOTATION_FIELD
 
 logger = logging.getLogger(__name__)
@@ -81,6 +86,7 @@ class VCFAnnotator:
         resume: bool = False,
         checkpoint_path: Optional[str] = None,
         interactive: bool = True,
+        hub: Optional["APIHub"] = None,
     ):
         """
         Args:
@@ -118,6 +124,8 @@ class VCFAnnotator:
         self.resume = resume
         self.checkpoint_path = checkpoint_path
         self.interactive = interactive
+        self.hub = hub
+        self._own_hub = hub is None
         self._session: Optional[aiohttp.ClientSession] = None
 
     # ------------------------------------------------------------------
@@ -613,12 +621,15 @@ class VCFAnnotator:
             vep_proxy = self.proxy
 
         if not self._session:
-            timeout = aiohttp.ClientTimeout(total=self.timeout)
-            connector = aiohttp.TCPConnector(force_close=True)
-            trust_env = self.proxy != "__DIRECT__" and self.proxy_route_map is None
-            self._session = aiohttp.ClientSession(
-                connector=connector, timeout=timeout, trust_env=trust_env
-            )
+            if self.hub is not None:
+                self._session = self.hub.session
+            else:
+                timeout = aiohttp.ClientTimeout(total=self.timeout)
+                connector = aiohttp.TCPConnector(force_close=True)
+                trust_env = self.proxy != "__DIRECT__" and self.proxy_route_map is None
+                self._session = aiohttp.ClientSession(
+                    connector=connector, timeout=timeout, trust_env=trust_env
+                )
 
         semaphore = asyncio.Semaphore(self.max_concurrency)
         total = len(variants)
@@ -1270,7 +1281,9 @@ class VCFAnnotator:
         Do NOT rely on garbage collection — aiohttp.ClientSession.close()
         is async and cannot be safely triggered from __del__ without
         RuntimeWarning: coroutine 'ClientSession.close' was never awaited.
+
+        ponytail: if a shared APIHub owns the session, leave it alone.
         """
-        if self._session:
+        if self._session and self._own_hub:
             await self._session.close()
             self._session = None

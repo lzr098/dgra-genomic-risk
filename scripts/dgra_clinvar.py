@@ -27,6 +27,16 @@ from dataclasses import dataclass
 import sys
 from pathlib import Path
 
+try:
+    from dgra_config import DGRAGlobalConfig
+except Exception:
+    DGRAGlobalConfig = None  # type: ignore[misc,assignment]
+
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 # ---------------------------------------------------------------------------
 # Local ClinVar VCF integration
 # ---------------------------------------------------------------------------
@@ -567,7 +577,9 @@ def apply_clinvar_results(
 
 async def _test_clinvar():
     """Self-test with known variants."""
-    async with aiohttp.ClientSession(trust_env=False) as session:
+    cfg = DGRAGlobalConfig.from_env() if DGRAGlobalConfig is not None else None
+    async with APIHub(cfg, None, detect_proxy=False) as hub:
+        session = hub.session
         # Test 1: Known pathogenic variant (BRCA1)
         print("=== Test 1: BRCA1 known pathogenic ===")
         r1 = await query_clinvar_variant(

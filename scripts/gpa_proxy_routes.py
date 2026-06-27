@@ -20,6 +20,16 @@ try:
 except Exception:  # noqa: BROAD_EXCEPT — graceful fallback when aiohttp is missing
     aiohttp = None  # type: ignore
 
+try:
+    from dgra_config import DGRAGlobalConfig
+except Exception:
+    DGRAGlobalConfig = None  # type: ignore[misc,assignment]
+
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 
 # =============================================================================
 # 数据模型
@@ -130,22 +140,20 @@ async def _probe_single(
     validator: Optional[Callable[[Any], bool]] = None,
 ) -> Dict[str, Any]:
     """对单个 URL + 代理发起探测请求."""
-    if aiohttp is None:
+    if aiohttp is None or APIHub is None:
         return {
             "proxy": proxy,
             "status": "FAIL",
             "latency_ms": 999999,
-            "error": "aiohttp not installed",
+            "error": "aiohttp/api_hub not installed",
         }
 
     t0 = time.perf_counter()
-    session = None
+    cfg = DGRAGlobalConfig.from_env() if DGRAGlobalConfig is not None else None
+    hub = APIHub(cfg, None, detect_proxy=False)
+    await hub.setup()
     try:
-        session = aiohttp.ClientSession(
-            trust_env=False,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        )
-        async with session.get(url, proxy=proxy, allow_redirects=True) as resp:
+        async with hub.session.get(url, proxy=proxy, allow_redirects=True) as resp:
             latency_ms = int((time.perf_counter() - t0) * 1000)
 
             # SpliceAI 特殊处理：400/422 也算在线
@@ -198,8 +206,7 @@ async def _probe_single(
             "error": f"{type(e).__name__}: {str(e)[:60]}",
         }
     finally:
-        if session is not None:
-            await session.close()
+        await hub.close()
 
 
 async def probe_api_routes(

@@ -20,6 +20,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+try:
+    from dgra_config import DGRAGlobalConfig
+except Exception:
+    DGRAGlobalConfig = None  # type: ignore[misc,assignment]
+
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 import sys
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
@@ -225,10 +235,11 @@ class GeneListSynchronizer:
         queries = config.get("gene_phenotype_queries", [])
 
         result: Dict[str, List[str]] = {}
-        connector = aiohttp.TCPConnector(limit=5)
-        timeout = aiohttp.ClientTimeout(total=30)
-
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout, trust_env=False) as session:
+        cfg = DGRAGlobalConfig.from_env() if DGRAGlobalConfig is not None else None
+        hub = APIHub(cfg, None, detect_proxy=False)
+        await hub.setup()
+        try:
+            session = hub.session
             for q in queries:
                 orpha_id = q.get("phenotype_orpha_id", "")
                 list_name = q.get("list_name", "")
@@ -263,6 +274,8 @@ class GeneListSynchronizer:
                         "ORPHANET_EXCEPTION",
                         f"{orpha_id} -> {e}",
                     )
+        finally:
+            await hub.close()
 
         return result
 

@@ -15,6 +15,16 @@ import traceback
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
+try:
+    from dgra_config import DGRAGlobalConfig
+except Exception:
+    DGRAGlobalConfig = None  # type: ignore[misc,assignment]
+
+try:
+    from api_hub import APIHub
+except Exception:
+    APIHub = None  # type: ignore[misc,assignment]
+
 logger = logging.getLogger(__name__)
 
 # SpliceAI lookup API (Broad Institute)
@@ -89,16 +99,35 @@ class SpliceAIResult:
 class SpliceAIPredictor:
     """SpliceAI 预测器，支持异步批量查询、缓存、退避重试。"""
 
-    def __init__(self, max_concurrency: int = 5, timeout: int = 45, vep_enabled: bool = True):
+    def __init__(
+        self,
+        max_concurrency: int = 5,
+        timeout: int = 45,
+        vep_enabled: bool = True,
+        hub: Optional["APIHub"] = None,
+    ):
         self.max_concurrency = max_concurrency
         self.timeout = timeout
         self.vep_enabled = vep_enabled  # v0.9.5: fallback to VEP REST when Broad endpoint fails
+        self.hub = hub
+        self._own_hub = hub is None
         self._cache: Dict[str, SpliceAIResult] = {}
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
     def _cache_key(self, chrom: str, pos: int, ref: str, alt: str) -> str:
         """生成缓存键。"""
         return f"{chrom}:{pos}:{ref}:{alt}"
+
+    async def _ensure_hub(self) -> None:
+        if self.hub is None:
+            cfg = DGRAGlobalConfig.from_env() if DGRAGlobalConfig is not None else None
+            self.hub = APIHub(cfg, None, detect_proxy=False)
+            await self.hub.setup()
+
+    async def close(self) -> None:
+        if self.hub is not None and self._own_hub:
+            await self.hub.close()
+            self.hub = None
 
     @staticmethod
     def should_query(consequence_terms: List[str], is_near_exon_boundary: bool = False) -> bool:
@@ -195,12 +224,12 @@ class SpliceAIPredictor:
         backoff = [5, 10, 15, 20]
 
         async with self._semaphore:
+            await self._ensure_hub()
+            session = self.hub.session
             # Step 1: Try Broad Institute endpoint
             for attempt, delay in enumerate(backoff + [None]):
                 try:
-                    timeout = aiohttp.ClientTimeout(total=self.timeout)
-                    async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-                        async with session.get(base_url, params=params) as resp:
+                    async with session.get(base_url, params=params, timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
                             if resp.status == 200:
                                 data = await resp.json()
                                 return self._parse_response(data, "spliceai_lookup")
@@ -264,13 +293,14 @@ class SpliceAIPredictor:
         }
 
         try:
-            timeout = aiohttp.ClientTimeout(total=60)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-                async with session.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                ) as resp:
+            await self._ensure_hub()
+            session = self.hub.session
+            async with session.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return self._parse_vep_response(data[0] if isinstance(data, list) else data)
@@ -530,22 +560,25 @@ async def query_spliceai_batch(
     predictor = _get_predictor(max_concurrency=max_concurrency, timeout=timeout)
     results: Dict[str, SpliceAIResult] = {}
 
-    # v0.11.3: 移除外层 semaphore，predictor.query() 内部已有 self._semaphore 控制并发
-    for v in variants:
-        cache_key = _cache_key(v.chrom, v.pos, v.ref, v.alt)
-        if cache_key in predictor._cache:
-            results[cache_key] = predictor._cache[cache_key]
-            continue
+    try:
+        # v0.11.3: 移除外层 semaphore，predictor.query() 内部已有 self._semaphore 控制并发
+        for v in variants:
+            cache_key = _cache_key(v.chrom, v.pos, v.ref, v.alt)
+            if cache_key in predictor._cache:
+                results[cache_key] = predictor._cache[cache_key]
+                continue
 
-        try:
-            result = await predictor.query(v.chrom, v.pos, v.ref, v.alt)
-            results[cache_key] = result
-            predictor._cache[cache_key] = result
-        except Exception as e:
-            logger.error(f"SpliceAI batch query error for {cache_key}: {e}")
-            err_result = SpliceAIResult(source="api_error", raw_response={"error": str(e)})
-            results[cache_key] = err_result
-            predictor._cache[cache_key] = err_result
+            try:
+                result = await predictor.query(v.chrom, v.pos, v.ref, v.alt)
+                results[cache_key] = result
+                predictor._cache[cache_key] = result
+            except Exception as e:
+                logger.error(f"SpliceAI batch query error for {cache_key}: {e}")
+                err_result = SpliceAIResult(source="api_error", raw_response={"error": str(e)})
+                results[cache_key] = err_result
+                predictor._cache[cache_key] = err_result
+    finally:
+        await predictor.close()
 
     return results
 

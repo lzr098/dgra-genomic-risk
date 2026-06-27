@@ -27,7 +27,8 @@ from dgra_core import (
     _save_offline_archive, _load_offline_archive,
 )
 from dgra_cache import DGRACache
-from dgra_api import DGRAAPIClient, AdaptiveRateLimiter
+from dgra_api import DGRAAPIClient
+from api_hub import APIHub, AdaptiveRateLimiter
 
 
 # ─── Phase 1: Fast Local Triage ────────────────────────────────────────────
@@ -653,12 +654,10 @@ async def _enrich_variant_frequencies(
             mv_variants = [(v.chrom, v.pos, v.ref, v.alt) for v in tier12_candidates_no_af]
             n_mv = len(mv_variants)
             print(f"[GPA Phase 2] MyVariant.info: {n_mv} variants, batch=100, sem=5")
-            # v0.12.2 FIX (E2): pass explicit proxy to MyVariant session
-            async with aiohttp.ClientSession(
-                timeout=timeout_obj, trust_env=False
-            ) as mv_session:
+            # ponytail: use APIHub session instead of ad-hoc ClientSession
+            async with APIHub(global_config, None, detect_proxy=False) as hub:
                 mv_results = await query_myvariant_batch(
-                    mv_variants, mv_session, semaphore=mv_sem, batch_size=100,
+                    mv_variants, hub.session, semaphore=mv_sem, batch_size=100,
                     proxy=mv_proxy,
                 )
             mv_stats = apply_myvariant_results(tier12_candidates_no_af, mv_results)
